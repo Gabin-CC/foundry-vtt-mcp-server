@@ -8,6 +8,7 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { FoundrySession } from "./foundry.mjs";
+import { plan as advPlan, apply as advApply, fetchUuid } from "./advancement.mjs";
 import { rollFormula, derive, checkBonus, sheet, slotMax, useItem, translations, translateDoc, ABIL, SKILLS } from "./dnd5e.mjs";
 
 const PORT = Number(process.env.PORT || 8808);
@@ -153,7 +154,14 @@ const TOOLS = [
   { name: "send_chat", description: "Poste un message dans le chat Foundry (texte/HTML), en tant que joueur ou au nom d'un personnage.",
     inputSchema: { type: "object", required: ["content"], properties: {
       content: { type: "string" }, actor: { type: "string", description: "Parler au nom de ce personnage" },
-      whisper_to: { type: "array", items: { type: "string" }, description: "Noms d'utilisateurs destinataires (chuchotement)" } } } },
+      whisper_to: { type: "array", items: { type: "string" }, description: "Noms d'utilisateurs destinataires (chuchotement)" } } } },,
+  { name: "advance", description: "Montée de niveau / import avec l'assistant d'avancement de dnd5e (comme dans Foundry) : importe une classe, sous-classe, espèce, historique ou don depuis un compendium (source) ou fait monter une classe déjà présente (item) jusqu'à 'level'. Applique automatiquement aptitudes accordées, maîtrises, PV, sorts de domaine, sous-classe… Si des choix sont nécessaires, renvoie 'choix_requis' (id + options) : rappelle l'outil avec choices = { \"<id>\": valeur }. Valeurs : Trait → [\"skills:ins\", ...] ; AbilityScoreImprovement → {\"wis\":2} ou {\"feat\":\"<uuid>\"} ; ItemChoice → [\"<uuid>\", ...] (+ \"<id>:ability\": \"wis\" pour les sorts) ; Subclass → \"<uuid>\" ; Size → \"med\".",
+    inputSchema: { type: "object", required: ["actor"], properties: {
+      actor: { type: "string" },
+      source: { type: "object", description: "Objet à importer : {pack, id} ou {pack, name}", properties: { pack: { type: "string" }, id: { type: "string" }, name: { type: "string" } } },
+      item: { type: "string", description: "Classe déjà présente sur l'acteur (nom ou _id) à faire monter" },
+      level: { type: "number", description: "Niveau de classe visé (défaut : niveau actuel + 1, ou 1 pour un import)" },
+      choices: { type: "object" }, hp: { type: "string", enum: ["avg", "max"], default: "avg" } } } },
 ];
 
 // ---------- helpers D&D / Foundry ----------
@@ -450,6 +458,55 @@ export async function handleTool(fs, params) {
           }
           const id = await postChat(fs, { actor, content: a.content, extra });
           return out({ message: id });
+        }
+
+        case "advance": {
+          let actor = await findActor(fs, a.actor);
+          const classes = (actor.items || []).filter(i => i.type === "class");
+          let root, isNew = false;
+          if (a.source) {
+            const pack = (await packsOf(fs)).find(p => p.id === a.source.pack);
+            if (!pack) throw new Error(`Compendium inconnu : ${a.source.pack}`);
+            let id = a.source.id;
+            if (!id && a.source.name) { const q = norm(a.source.name); id = (await packIndex(fs, pack)).find(x => norm(x.name) === q || norm(x.name_fr) === q)?._id; }
+            if (!id) throw new Error(`Introuvable dans ${pack.id} : ${a.source.name}`);
+            root = await fetchUuid(fs, `Compendium.${pack.id}.${pack.type}.${id}`);
+            root.__src = `Compendium.${pack.id}.${pack.type}.${id}`; isNew = true;
+          } else if (a.item) root = findItem(actor, a.item);
+          else throw new Error("Précise 'source' (import) ou 'item' (classe à faire monter)");
+          const isClass = root.type === "class";
+          const current = isNew ? 0 : Number(root.system?.levels) || 0;
+          const target = isClass ? (a.level ?? current + 1) : 0;
+          if (isClass && target <= current) return out(`${root.name} est déjà niveau ${current}`);
+          const isFirstClass = isClass && (isNew ? classes.length === 0 : (actor.system?.details?.originalClass ? actor.system.details.originalClass === root._id : classes[0]?._id === root._id));
+          const from = isClass ? current + 1 : 0;
+          // inclut les avancements de la sous-classe existante
+          const { steps, pending } = await advPlan(fs, actor, root, { fromLevel: from, toLevel: target, choices: a.choices || {}, isFirstClass });
+          if (isClass && !isNew) {
+            const sub = (actor.items || []).find(i => i.type === "subclass" && i.system?.classIdentifier === root.system?.identifier);
+            if (sub) { const p2 = await advPlan(fs, actor, sub, { fromLevel: from, toLevel: target, choices: a.choices || {}, isFirstClass }); steps.push(...p2.steps); pending.push(...p2.pending); }
+          }
+          if (pending.length) return out({ choix_requis: pending, rappel: "Rappelle 'advance' avec les mêmes paramètres + choices { id: valeur }. Rien n'a encore été appliqué." });
+          if (isNew) {
+            const d = structuredClone(root); delete d._id; delete d.folder; delete d.sort; delete d.ownership; delete d.__src;
+            d._stats = { ...(d._stats || {}), compendiumSource: root.__src };
+            d.flags = { ...(d.flags || {}), dnd5e: { ...(d.flags?.dnd5e || {}), sourceId: root.__src } };
+            if (isClass) d.system.levels = target;
+            const [c] = await fs.doc("create", "Item", { parentUuid: `Actor.${actor._id}`, data: [d], modifiedTime: Date.now() });
+            root._id = c._id;
+            const det = {};
+            if (isClass && isFirstClass) det["system.details.originalClass"] = c._id;
+            if (root.type === "race") det["system.details.race"] = c._id;
+            if (root.type === "background") det["system.details.background"] = c._id;
+            if (Object.keys(det).length) await fs.doc("update", "Actor", { updates: [{ _id: actor._id, ...det }], diff: true, modifiedTime: Date.now() });
+            actor = await findActor(fs, actor._id);
+          } else if (isClass) {
+            await fs.doc("update", "Item", { parentUuid: `Actor.${actor._id}`, updates: [{ _id: root._id, "system.levels": target }], modifiedTime: Date.now() });
+          }
+          const log = await advApply(fs, actor, root._id, steps, { hpMode: a.hp || "avg", isFirstClass });
+          const after = sheet(await findActor(fs, actor._id));
+          return out({ applique: log, niveau: after.niveau, pv_max: after.pv.max, caracs: after.caracs,
+            rappel_sorts: isClass && root.system?.spellcasting?.progression && root.system.spellcasting.progression !== "none" ? "Les sorts préparés/connus se choisissent ensuite (search_compendium + add_from_compendium), comme dans Foundry." : undefined });
         }
         default: return out(`Outil inconnu : ${params.name}`);
       }
