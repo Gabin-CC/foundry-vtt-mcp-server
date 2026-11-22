@@ -44,6 +44,8 @@ export function rollFormula(formula, { flavor } = {}) {
   return { roll, total, dice, formula: roll.formula };
 }
 
+// liste depuis tableau, Set sérialisé, chaîne ou objet {clé: true}
+const toList = v => Array.isArray(v) ? v : typeof v === "string" ? [v] : v && typeof v === "object" ? Object.keys(v).filter(k => v[k]) : [];
 const sign = n => (n >= 0 ? `+${n}` : `${n}`);
 const num = v => { const n = Number(String(v ?? "").replace(/\s/g, "")); return Number.isFinite(n) ? n : 0; };
 
@@ -344,7 +346,7 @@ export function useItem(rawActor, item, { activityId, slotLevel, advantage, disa
     const dc = act.save?.dc?.calculation === "spellcasting" || (!act.save?.dc?.formula && item.type === "spell") ? d.spellDC
       : act.save?.dc?.calculation && ABIL[act.save.dc.calculation] ? 8 + d.prof + d.mods[act.save.dc.calculation]
       : num(resolveFormulaVars(act.save?.dc?.formula, actor, d, item)) || d.spellDC;
-    out.lignes.push(`Jet de sauvegarde de ${(act.save?.ability || []).map(a => ABIL[a]).join("/")} DD ${dc}${act.damage?.onSave === "half" ? " (moitié des dégâts si réussi)" : ""}`);
+    out.lignes.push(`Jet de sauvegarde de ${toList(act.save?.ability).map(a => ABIL[a] || a).join("/")} DD ${dc}${act.damage?.onSave === "half" ? " (moitié des dégâts si réussi)" : ""}`);
   }
 
   // --- dégâts ---
