@@ -74,7 +74,7 @@ const parentOpt = parent => parent ? { parentUuid: parent } : {};
 const typeProp = { type: "string", enum: TYPES, description: "Type de document Foundry" };
 const parentProp = { type: "string", description: "Pour un document embarqué : UUID du parent, ex. 'Actor.abc123' (objets/effets d'un acteur), 'Scene.xyz' (tokens, murs...), 'JournalEntry.id' (pages)." };
 
-const TOOLS = [
+export const TOOLS = [
   { name: "world_info", description: "Infos du monde Foundry actif, du compte connecté et liste des utilisateurs.",
     inputSchema: { type: "object", properties: {} } },
   { name: "list_documents",
@@ -154,7 +154,7 @@ const TOOLS = [
   { name: "send_chat", description: "Poste un message dans le chat Foundry (texte/HTML), en tant que joueur ou au nom d'un personnage.",
     inputSchema: { type: "object", required: ["content"], properties: {
       content: { type: "string" }, actor: { type: "string", description: "Parler au nom de ce personnage" },
-      whisper_to: { type: "array", items: { type: "string" }, description: "Noms d'utilisateurs destinataires (chuchotement)" } } } },,
+      whisper_to: { type: "array", items: { type: "string" }, description: "Noms d'utilisateurs destinataires (chuchotement)" } } } },
   { name: "advance", description: "Montée de niveau / import avec l'assistant d'avancement de dnd5e (comme dans Foundry) : importe une classe, sous-classe, espèce, historique ou don depuis un compendium (source) ou fait monter une classe déjà présente (item) jusqu'à 'level'. Applique automatiquement aptitudes accordées, maîtrises, PV, sorts de domaine, sous-classe… Si des choix sont nécessaires, renvoie 'choix_requis' (id + options) : rappelle l'outil avec choices = { \"<id>\": valeur }. Valeurs : Trait → [\"skills:ins\", ...] ; AbilityScoreImprovement → {\"wis\":2} ou {\"feat\":\"<uuid>\"} ; ItemChoice → [\"<uuid>\", ...] (+ \"<id>:ability\": \"wis\" pour les sorts) ; Subclass → \"<uuid>\" ; Size → \"med\".",
     inputSchema: { type: "object", required: ["actor"], properties: {
       actor: { type: "string" },
