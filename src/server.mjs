@@ -159,7 +159,7 @@ const TOOLS = [
 // ---------- helpers D&D / Foundry ----------
 async function findActor(fs, ref) {
   if (!ref) throw new Error("Acteur non précisé");
-  let [a] = await fs.doc("get", "Actor", { query: { _id: ref } });
+  const a = (await fs.doc("get", "Actor", { query: { _id: ref } })).find(x => x._id === ref);
   if (a) return a;
   const all = await fs.doc("get", "Actor", { query: {} });
   const low = String(ref).toLowerCase();
@@ -247,7 +247,8 @@ export async function handleTool(fs, params) {
           return out({ total, documents: docs.slice(0, a.limit || 200).map(d => pick(d, fields)) });
         }
         case "get_document": {
-          const [d] = await fs.doc("get", a.type, { query: { _id: a.id }, ...parentOpt(a.parent) });
+          // le filtre _id n'est pas appliqué par Foundry sur les collections embarquées : on filtre ici
+          const d = (await fs.doc("get", a.type, { query: { _id: a.id }, ...parentOpt(a.parent) })).find(x => x._id === a.id);
           if (!d) return out(`Introuvable : ${a.type} ${a.id}`);
           return out(getPath(d, a.path));
         }
@@ -352,7 +353,7 @@ export async function handleTool(fs, params) {
         case "get_compendium_entry": {
           const pack = (await packsOf(fs)).find(p => p.id === a.pack);
           if (!pack) return out(`Compendium inconnu : ${a.pack}`);
-          const [d] = await fs.doc("get", pack.type, { pack: pack.id, query: { _id: a.id } });
+          const d = (await fs.doc("get", pack.type, { pack: pack.id, query: { _id: a.id } })).find(x => x._id === a.id);
           if (!d) return out("Entrée introuvable");
           return out(getPath(await translateDoc(pack.id, d), a.path));
         }
@@ -363,7 +364,7 @@ export async function handleTool(fs, params) {
           for (const e of a.entries) {
             const pack = packs.find(p => p.id === e.pack);
             if (!pack) throw new Error(`Compendium inconnu : ${e.pack}`);
-            const [src] = await fs.doc("get", pack.type, { pack: pack.id, query: { _id: e.id } });
+            const src = (await fs.doc("get", pack.type, { pack: pack.id, query: { _id: e.id } })).find(x => x._id === e.id);
             if (!src) throw new Error(`Entrée ${e.id} introuvable dans ${e.pack}`);
             const d = await translateDoc(pack.id, src);
             delete d._id; delete d.folder; delete d.sort; delete d.ownership;
