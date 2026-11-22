@@ -20,7 +20,16 @@ export async function fetchUuid(fs, uuid) {
   const p = parseUuid(uuid);
   if (!p) throw new Error(`UUID de compendium invalide : ${uuid}`);
   fs._packIds ??= new Set(((await fs.worldData()).packs || []).map(x => x.id));
-  if (!fs._packIds.has(p.pack)) throw new Error(`Compendium non installé : ${p.pack} (${uuid})`);
+  if (!fs._packIds.has(p.pack)) {
+    // Le contenu "dnd-players-handbook" (module payant) réutilise les mêmes _id que le SRD 2024 du système :
+    // on tente la version SRD équivalente.
+    const alt = { spells: "dnd5e.spells24", classes: "dnd5e.classes24", origins: "dnd5e.origins24", feats: "dnd5e.feats24", equipment: "dnd5e.equipment24" }[p.pack.split(".")[1]];
+    if (alt && fs._packIds.has(alt)) {
+      const d = (await fs.doc("get", p.type, { pack: alt, query: { _id: p.id } })).find(x => x._id === p.id);
+      if (d) return translateDoc(alt, d);
+    }
+    throw new Error(`Compendium non installé : ${p.pack} (${uuid})`);
+  }
   const d = (await fs.doc("get", p.type, { pack: p.pack, query: { _id: p.id } })).find(x => x._id === p.id);
   if (!d) throw new Error(`Introuvable : ${uuid}`);
   return translateDoc(p.pack, d);
@@ -73,12 +82,8 @@ const matchPool = (k, pool) => pool.some(p => p === k || (p.endsWith("*") && k.s
 export async function plan(fs, actor, item, { fromLevel, toLevel, choices = {}, isFirstClass, depth = 0 }) {
   const steps = [], pending = [], warnings = [];
   const isClass = item.type === "class", isSub = item.type === "subclass";
-  const lvlOk = adv => {
-    const l = Number(adv.level ?? 0);
-    if (isClass || isSub) return l >= fromLevel && l <= toLevel && (adv.level != null);
-    return fromLevel <= 0; // espèce / historique / don : une seule fois, à l'import
-  };
-  const key = (adv, l) => adv._id + (isClass || isSub ? `@${l}` : "");
+  const lvlOk = adv => { const l = Number(adv.level ?? 0); return l >= fromLevel && l <= toLevel; };
+  const key = (adv, l) => adv._id + (l > 0 ? `@${l}` : "");
   const choice = (adv, l) => choices[key(adv, l)] ?? choices[adv._id];
 
   for (const adv of advList(item)) {
@@ -102,7 +107,7 @@ export async function plan(fs, actor, item, { fromLevel, toLevel, choices = {}, 
           try { d = await fetchUuid(fs, uuid); } catch (e) { warnings.push(`${item.name} niv. ${l} — ignoré : ${e.message}`); continue; }
           docs.push({ uuid, doc: d });
           if (depth < 3 && advList(d).length) {
-            const sub = await plan(fs, actor, d, { fromLevel: 0, toLevel: 0, choices, isFirstClass, depth: depth + 1 });
+            const sub = await plan(fs, actor, d, { fromLevel: 0, toLevel: Math.max(toLevel, 0), choices, isFirstClass, depth: depth + 1 });
             subSteps.push(...sub.steps); pending.push(...sub.pending); warnings.push(...sub.warnings);
           }
         }
@@ -137,7 +142,7 @@ export async function plan(fs, actor, item, { fromLevel, toLevel, choices = {}, 
         let featDoc = null, featSub = null;
         if (val?.feat) {
           featDoc = await fetchUuid(fs, val.feat);
-          if (depth < 3 && advList(featDoc).length) featSub = await plan(fs, actor, featDoc, { fromLevel: 0, toLevel: 0, choices, isFirstClass, depth: depth + 1 });
+          if (depth < 3 && advList(featDoc).length) featSub = await plan(fs, actor, featDoc, { fromLevel: 0, toLevel: Math.max(toLevel, 0), choices, isFirstClass, depth: depth + 1 });
         } else if (val) {
           const pts = Object.values(val).reduce((a, b) => a + Number(b || 0), 0);
           if (pts > (c.points ?? 2) || Object.entries(val).some(([k, v]) => v > (c.cap ?? 2) || (c.locked || []).includes(k)))
@@ -149,7 +154,7 @@ export async function plan(fs, actor, item, { fromLevel, toLevel, choices = {}, 
       }
       case "ItemChoice": {
         const val = choice(adv, l);
-        const count = Object.entries(c.choices || {}).filter(([lv]) => Number(lv) === l || (!isClass && !isSub)).reduce((a, [, v]) => a + Number(v.count ?? v), 0) || 1;
+        const count = Object.entries(c.choices || {}).filter(([lv]) => Number(lv) === l || (Number(lv) === 0 && l === 0)).reduce((a, [, v]) => a + Number(v.count ?? v), 0) || 1;
         if (!Array.isArray(val) || val.length < count) {
           let options = (c.pool || []).map(p => (typeof p === "string" ? p : p.uuid));
           if (!options.length && c.type === "spell" && c.restriction?.list?.length) {

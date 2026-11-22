@@ -484,7 +484,11 @@ export async function handleTool(fs, params) {
           const { steps, pending, warnings } = await advPlan(fs, actor, root, { fromLevel: from, toLevel: target, choices: a.choices || {}, isFirstClass });
           if (isClass && !isNew) {
             const sub = (actor.items || []).find(i => i.type === "subclass" && i.system?.classIdentifier === root.system?.identifier);
-            if (sub) { const p2 = await advPlan(fs, actor, sub, { fromLevel: from, toLevel: target, choices: a.choices || {}, isFirstClass }); steps.push(...p2.steps); pending.push(...p2.pending); warnings.push(...p2.warnings); }
+            const origins = [root._id, sub?._id].filter(Boolean);
+            // sous-classe + aptitudes déjà accordées qui ont leurs propres paliers (ex. sorts de domaine aux niv. 5/7/9)
+            const leveled = (actor.items || []).filter(i => i._id !== root._id && (i === sub || origins.some(o => i.flags?.dnd5e?.advancementOrigin?.startsWith(o + ".")))
+              && Object.values(i.system?.advancement || {}).some(x => Number(x.level) > 0));
+            for (const it of leveled) { const p2 = await advPlan(fs, actor, it, { fromLevel: from, toLevel: target, choices: a.choices || {}, isFirstClass }); steps.push(...p2.steps); pending.push(...p2.pending); warnings.push(...p2.warnings); }
           }
           if (pending.length) return out({ choix_requis: pending, avertissements: warnings.length ? warnings : undefined, rappel: "Rappelle 'advance' avec les mêmes paramètres + choices { id: valeur }. Rien n'a encore été appliqué." });
           if (isNew) {
