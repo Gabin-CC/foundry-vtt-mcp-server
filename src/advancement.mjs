@@ -181,9 +181,17 @@ export async function plan(fs, actor, item, { fromLevel, toLevel, choices = {}, 
             nombre: count, options: labels });
           break;
         }
-        const docs = [];
-        for (const u of val.slice(0, count)) { try { docs.push({ uuid: u, doc: await fetchUuid(fs, u) }); } catch (e) { warnings.push(e.message); } }
-        steps.push({ kind: "grant", item, adv, level: l, docs, spell: c.spell, choiceStore: true, spellAbility: choices[`${key(adv, l)}:ability`] });
+        const docs = [], subSteps = [];
+        for (const u of val.slice(0, count)) {
+          let d;
+          try { d = await fetchUuid(fs, u); } catch (e) { warnings.push(e.message); continue; }
+          docs.push({ uuid: u, doc: d });
+          if (depth < 3 && advList(d).length) {
+            const sub = await plan(fs, actor, d, { fromLevel: 0, toLevel: Math.max(toLevel, 0), choices, isFirstClass, depth: depth + 1 });
+            subSteps.push(...sub.steps); pending.push(...sub.pending); warnings.push(...sub.warnings);
+          }
+        }
+        steps.push({ kind: "grant", item, adv, level: l, docs, spell: c.spell, choiceStore: true, spellAbility: choices[`${key(adv, l)}:ability`] }, ...subSteps);
         break;
       }
       case "Subclass": {

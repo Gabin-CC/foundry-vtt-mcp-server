@@ -496,9 +496,11 @@ export async function handleTool(fs, params) {
           const { steps, pending, warnings } = await advPlan(fs, actor, root, { fromLevel: from, toLevel: target, choices: a.choices || {}, isFirstClass });
           if (isClass && !isNew) {
             const sub = (actor.items || []).find(i => i.type === "subclass" && i.system?.classIdentifier === root.system?.identifier);
-            const origins = [root._id, sub?._id].filter(Boolean);
+            // paliers liés au niveau de personnage : espèce, historique et ce qu'ils ont accordé (ex. lignage Haut-elfe aux niv. 3 et 5)
+            const originItems = (actor.items || []).filter(i => ["race", "background"].includes(i.type));
+            const origins = [root._id, sub?._id, ...originItems.map(i => i._id)].filter(Boolean);
             // sous-classe + aptitudes déjà accordées qui ont leurs propres paliers (ex. sorts de domaine aux niv. 5/7/9)
-            const leveled = (actor.items || []).filter(i => i._id !== root._id && (i === sub || origins.some(o => i.flags?.dnd5e?.advancementOrigin?.startsWith(o + ".")))
+            const leveled = (actor.items || []).filter(i => i._id !== root._id && (i === sub || originItems.includes(i) || origins.some(o => i.flags?.dnd5e?.advancementOrigin?.startsWith(o + ".")))
               && Object.values(i.system?.advancement || {}).some(x => Number(x.level) > 0));
             for (const it of leveled) { const p2 = await advPlan(fs, actor, it, { fromLevel: from, toLevel: target, choices: a.choices || {}, isFirstClass }); steps.push(...p2.steps); pending.push(...p2.pending); warnings.push(...p2.warnings); }
           }
