@@ -373,10 +373,11 @@ export async function handleTool(fs, params) {
             if (d.type === "class" && e.levels) {
               d.system.levels = e.levels;
               const isFirst = !(actor?.items || []).some(i => i.type === "class");
-              const hpAdv = (d.system.advancement || []).find(x => x.type === "HitPoints");
+              const advList = Array.isArray(d.system.advancement) ? d.system.advancement : Object.values(d.system.advancement || {});
+              const hpAdv = advList.find(x => x.type === "HitPoints");
               if (hpAdv) { hpAdv.value = {}; for (let l = 1; l <= e.levels; l++) hpAdv.value[l] = l === 1 && isFirst ? "max" : "avg"; }
               if (isFirst && actor) {
-                const saves = (d.system.advancement || []).filter(x => x.type === "Trait" && (x.level ?? 1) <= 1)
+                const saves = advList.filter(x => x.type === "Trait" && (x.level ?? 1) <= 1)
                   .flatMap(x => x.configuration?.grants || []).filter(g => g.startsWith("saves:")).map(g => g.split(":")[1]);
                 if (saves.length) {
                   await fs.doc("update", "Actor", { updates: [{ _id: actor._id, ...Object.fromEntries(saves.map(k => [`system.abilities.${k}.proficient`, 1])) }], diff: true, modifiedTime: Date.now() });
