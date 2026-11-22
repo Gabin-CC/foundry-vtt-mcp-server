@@ -47,6 +47,64 @@ export function rollFormula(formula, { flavor } = {}) {
 const sign = n => (n >= 0 ? `+${n}` : `${n}`);
 const num = v => { const n = Number(String(v ?? "").replace(/\s/g, "")); return Number.isFinite(n) ? n : 0; };
 
+
+// ====================== EFFETS ACTIFS ======================
+const MODES = { 0: "custom", 1: "multiply", 2: "add", 3: "downgrade", 4: "upgrade", 5: "override" };
+const getP = (o, p) => p.split(".").reduce((a, k) => a?.[k], o);
+const setP = (o, p, v) => { const ks = p.split("."); let x = o; for (const k of ks.slice(0, -1)) x = (x[k] ??= {}); x[ks.at(-1)] = v; };
+const changesOf = e => (e.system?.changes || e.changes || []).map(c => ({ key: c.key, value: c.value, type: c.type || MODES[c.mode] || "add" }));
+
+/** Effets actifs qui s'appliquent : effets de l'acteur + effets transférés des objets (équipés / harmonisés si requis). */
+function activeChanges(actor) {
+  const out = [];
+  for (const e of actor.effects || []) if (!e.disabled) out.push(...changesOf(e));
+  for (const i of actor.items || []) {
+    const s = i.system || {};
+    if (["equipment", "weapon", "consumable", "tool", "loot", "container"].includes(i.type) && s.equipped === false) continue;
+    if (s.attunement === "required" && !s.attuned) continue;
+    for (const e of i.effects || []) if (!e.disabled && e.transfer !== false && (e.type ?? "base") !== "enchantment") out.push(...changesOf(e));
+  }
+  return out;
+}
+
+/** Copie de l'acteur avec les effets actifs appliqués (approximation des règles de Foundry). */
+export function withEffects(actor) {
+  if (actor._effectsApplied) return actor;
+  const a = structuredClone(actor);
+  for (const c of activeChanges(actor)) {
+    if (!c.key?.startsWith("system.")) continue;
+    const cur = getP(a, c.key);
+    const n = Number(c.value);
+    if (c.type === "override") setP(a, c.key, c.value);
+    else if (c.type === "upgrade") setP(a, c.key, Math.max(Number(cur) || 0, n));
+    else if (c.type === "downgrade") setP(a, c.key, Math.min(Number(cur) ?? n, n));
+    else if (c.type === "multiply") setP(a, c.key, (Number(cur) || 0) * n);
+    else if (c.type === "add") {
+      if (Array.isArray(cur)) cur.push(c.value);
+      else if (typeof cur === "number") setP(a, c.key, cur + (Number.isFinite(n) ? n : 0));
+      else setP(a, c.key, cur ? `${cur} + ${c.value}` : String(c.value));
+    }
+  }
+  a._effectsApplied = true;
+  return a;
+}
+
+/** Évalue une formule de bonus simple : nombres, + - * /, max/min/floor/ceil, @abilities.x.mod, @prof, @details.level */
+export function evalBonus(v, actor) {
+  if (v == null || v === "") return 0;
+  if (typeof v === "number") return v;
+  const abil = actor?.system?.abilities || {};
+  const lvl = (actor?.items || []).filter(i => i.type === "class").reduce((s, c) => s + (Number(c.system?.levels) || 0), 0) || 1;
+  let f = String(v)
+    .replace(/@abilities\.(\w+)\.mod/g, (_, k) => Math.floor(((Number(abil[k]?.value) || 10) - 10) / 2))
+    .replace(/@abilities\.(\w+)\.value/g, (_, k) => Number(abil[k]?.value) || 10)
+    .replace(/@prof/g, Math.ceil(lvl / 4) + 1)
+    .replace(/@(details\.level|classes\.\w+\.levels)/g, lvl)
+    .replace(/\b(max|min|floor|ceil|round|abs)\(/g, "Math.$1(");
+  if (/@/.test(f) || !/^[\d\s+\-*/().,Mathaxinflorceundbs]*$/.test(f)) return 0;
+  try { const r = Function(`"use strict";return (${f});`)(); return Number.isFinite(r) ? r : 0; } catch { return 0; }
+}
+
 // ====================== STATS DÉRIVÉES ======================
 export const ABIL = { str: "FOR", dex: "DEX", con: "CON", int: "INT", wis: "SAG", cha: "CHA" };
 export const SKILLS = { acr: ["dex", "Acrobaties"], ani: ["wis", "Dressage"], arc: ["int", "Arcanes"], ath: ["str", "Athlétisme"],
@@ -56,6 +114,7 @@ export const SKILLS = { acr: ["dex", "Acrobaties"], ani: ["wis", "Dressage"], ar
   ste: ["dex", "Discrétion"], sur: ["wis", "Survie"] };
 
 export function derive(actor) {
+  actor = withEffects(actor);
   const s = actor.system || {};
   const items = actor.items || [];
   const classes = items.filter(i => i.type === "class");
@@ -66,25 +125,26 @@ export function derive(actor) {
   const scClass = classes.find(c => c.system?.spellcasting?.ability && c.system.spellcasting.progression !== "none");
   const scAbility = s.attributes?.spellcasting || scClass?.system?.spellcasting?.ability || "int";
   const scMod = mods[scAbility] ?? 0;
-  const spellAttack = prof + scMod + num(s.bonuses?.rsak?.attack);
-  const spellDC = 8 + prof + scMod + num(s.bonuses?.spell?.dc);
+  const spellAttack = prof + scMod + evalBonus(s.bonuses?.rsak?.attack, actor);
+  const spellDC = 8 + prof + scMod + evalBonus(s.bonuses?.spell?.dc, actor);
   return { level, prof, mods, scAbility, scMod, spellAttack, spellDC, classes };
 }
 
 export function checkBonus(actor, kind, key) {
-  const d = derive(actor), s = actor.system;
-  if (kind === "ability") return { bonus: d.mods[key] + num(s.bonuses?.abilities?.check), label: `Test de ${ABIL[key]}` };
+  actor = withEffects(actor);
+  const d = derive(actor), s = actor.system, ev = v => evalBonus(v, actor);
+  if (kind === "ability") return { bonus: d.mods[key] + ev(s.bonuses?.abilities?.check) + ev(s.abilities?.[key]?.bonuses?.check) + ev(s.abilities?.[key]?.check?.roll?.bonus), label: `Test de ${ABIL[key]}` };
   if (kind === "save") {
     const p = num(s.abilities?.[key]?.proficient);
-    return { bonus: d.mods[key] + Math.floor(p * d.prof) + num(s.abilities?.[key]?.bonuses?.save) + num(s.bonuses?.abilities?.save), label: `Sauvegarde de ${ABIL[key]}` };
+    return { bonus: d.mods[key] + Math.floor(p * d.prof) + ev(s.abilities?.[key]?.bonuses?.save) + ev(s.abilities?.[key]?.save?.roll?.bonus) + ev(s.bonuses?.abilities?.save), label: `Sauvegarde de ${ABIL[key]}` };
   }
   if (kind === "skill") {
     const sk = s.skills?.[key]; const [ab, name] = SKILLS[key] || [];
     if (!ab) throw new Error(`Compétence inconnue : ${key}`);
     const abil = sk?.ability || ab;
-    return { bonus: d.mods[abil] + Math.floor(num(sk?.value) * d.prof) + num(sk?.bonuses?.check) + num(s.bonuses?.abilities?.skill) + num(s.bonuses?.abilities?.check), label: `Test de ${name} (${ABIL[abil]})` };
+    return { bonus: d.mods[abil] + Math.floor(num(sk?.value) * d.prof) + ev(sk?.bonuses?.check) + ev(sk?.roll?.bonus) + ev(s.bonuses?.abilities?.skill) + ev(s.bonuses?.abilities?.check), label: `Test de ${name} (${ABIL[abil]})` };
   }
-  if (kind === "initiative") return { bonus: d.mods.dex + num(s.attributes?.init?.bonus), label: "Initiative" };
+  if (kind === "initiative") return { bonus: d.mods[s.attributes?.init?.ability || "dex"] + ev(s.attributes?.init?.bonus) + (s.attributes?.init?.prof ? d.prof : 0), label: "Initiative" };
   throw new Error(`Type de test inconnu : ${kind}`);
 }
 
@@ -105,9 +165,7 @@ function armorClass(actor, d) {
     base = num(a.value) + num(a.magicalBonus) + Math.min(d.mods.dex, dexCap);
   }
   if (shield) base += num(shield.system.armor?.value) + num(shield.system.armor?.magicalBonus);
-  // bonus d'objets harmonisés/équipés hors armure (ex. cape de protection) : magicalBonus sur armure de type "trinket"/"clothing"
-  for (const i of eq) if (i !== armor && i !== shield && num(i.system?.armor?.magicalBonus)) base += num(i.system.armor.magicalBonus);
-  return base + num(ac.bonus);
+  return base + evalBonus(ac.bonus, actor);
 }
 
 const SLOTS = [[], [2], [3], [4, 2], [4, 3], [4, 3, 2], [4, 3, 3], [4, 3, 3, 1], [4, 3, 3, 2], [4, 3, 3, 3, 1], [4, 3, 3, 3, 2],
@@ -145,6 +203,7 @@ export function slotMax(actor) {
 }
 
 export function sheet(actor) {
+  actor = withEffects(actor);
   const d = derive(actor), s = actor.system, items = actor.items || [];
   const hp = s.attributes?.hp || {};
   const hpMax = hp.max ?? estimateHpMax(actor, d);
@@ -157,6 +216,9 @@ export function sheet(actor) {
     pv: { actuels: hp.value, max: hpMax, temp: hp.temp || 0 },
     ca_estimee: armorClass(actor, d),
     caracs: Object.fromEntries(Object.entries(ABIL).map(([k, l]) => [l, `${s.abilities?.[k]?.value} (${sign(d.mods[k])})${num(s.abilities?.[k]?.proficient) ? " ★sauv" : ""}`])),
+    sauvegardes: Object.fromEntries(Object.entries(ABIL).map(([k, l]) => [l, sign(checkBonus(actor, "save", k).bonus)])),
+    initiative: sign(checkBonus(actor, "initiative").bonus),
+    perception_passive: 10 + checkBonus(actor, "skill", "prc").bonus,
     competences_maitrisees: Object.entries(s.skills || {}).filter(([, v]) => num(v.value) > 0).map(([k, v]) => `${SKILLS[k]?.[1] || k} ${sign(checkBonus(actor, "skill", k).bonus)}${num(v.value) >= 2 ? " (expertise)" : ""}`),
     incantation: d.classes.some(c => c.system?.spellcasting?.progression && c.system.spellcasting.progression !== "none")
       ? { carac: ABIL[d.scAbility], attaque: sign(d.spellAttack), dd: d.spellDC } : null,
@@ -216,7 +278,8 @@ const DMG_FR = { acid: "acide", bludgeoning: "contondant", cold: "froid", fire: 
   slashing: "tranchant", thunder: "tonnerre", healing: "soins", temphp: "PV temporaires" };
 
 /** Prépare l'utilisation : jets + mises à jour de consommation. Ne touche pas Foundry. */
-export function useItem(actor, item, { activityId, slotLevel, advantage, disadvantage, consume = true, versatile }) {
+export function useItem(rawActor, item, { activityId, slotLevel, advantage, disadvantage, consume = true, versatile }) {
+  const actor = withEffects(rawActor);
   const d = derive(actor);
   const acts = Object.values(item.system?.activities || {}).sort((a, b) => (a.sort || 0) - (b.sort || 0));
   const act = activityId ? acts.find(a => a._id === activityId || (a.name || "").toLowerCase() === String(activityId).toLowerCase()) : acts[0];
@@ -258,12 +321,12 @@ export function useItem(actor, item, { activityId, slotLevel, advantage, disadva
   // --- attaque ---
   if (act.type === "attack") {
     let bonus;
-    if (item.type === "spell") bonus = d.spellAttack;
+    if (item.type === "spell") bonus = d.prof + d.scMod + evalBonus(actor.system.bonuses?.[(act.attack?.type?.value === "melee" ? "m" : "r") + "sak"]?.attack, actor);
     else {
       const ab = act.attack?.ability && act.attack.ability !== "none" ? act.attack.ability : weaponAbility(item, d);
       const proficient = item.system?.proficient !== 0;
       bonus = d.mods[ab] + (proficient ? d.prof : 0) + num(item.system?.magicalBonus) + num(item.system?.attack?.bonus) + num(act.attack?.bonus)
-        + num(actor.system.bonuses?.[(act.attack?.type?.value === "ranged" ? "r" : "m") + "wak"]?.attack);
+        + evalBonus(actor.system.bonuses?.[(act.attack?.type?.value === "ranged" ? "r" : "m") + "wak"]?.attack, actor);
     }
     const dice = advantage && !disadvantage ? "2d20kh1" : disadvantage && !advantage ? "2d20kl1" : "1d20";
     const r = rollFormula(`${dice}${sign(bonus)}`, { flavor: `${item.name} — attaque` });
