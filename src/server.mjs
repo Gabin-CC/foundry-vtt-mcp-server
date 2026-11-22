@@ -70,8 +70,9 @@ const matches = (doc, filter) => Object.entries(filter || {}).every(([k, v]) => 
   const x = getPath(doc, k);
   return Array.isArray(x) ? x.includes(v) : x === v;
 });
-const parentOpt = parent => parent ? { parentUuid: parent } : {};
+const parentOpt = (parent, pack) => ({ ...(parent ? { parentUuid: parent } : {}), ...(pack ? { pack } : {}) });
 const typeProp = { type: "string", enum: TYPES, description: "Type de document Foundry" };
+const packProp = { type: "string", description: "Compendium (id, ex. 'world.classes-and-sous-classes') pour agir sur ses entrées au lieu du monde" };
 const parentProp = { type: "string", description: "Pour un document embarqué : UUID du parent, ex. 'Actor.abc123' (objets/effets d'un acteur), 'Scene.xyz' (tokens, murs...), 'JournalEntry.id' (pages)." };
 
 export const TOOLS = [
@@ -80,25 +81,25 @@ export const TOOLS = [
   { name: "list_documents",
     description: "Liste des documents d'un type (selon les droits du compte). Renvoie par défaut _id, name, type, folder. Filtres optionnels.",
     inputSchema: { type: "object", required: ["type"], properties: {
-      type: typeProp, parent: parentProp,
+      type: typeProp, pack: packProp, parent: parentProp,
       name_contains: { type: "string", description: "Filtre insensible à la casse sur le nom" },
       filter: { type: "object", description: "Égalités sur des chemins, ex. {\"type\":\"character\",\"folder\":\"id\"}" },
       fields: { type: "array", items: { type: "string" }, description: "Champs à renvoyer (chemins pointés), ex. [\"name\",\"system.attributes.hp.value\"]" },
       limit: { type: "number", default: 200 } } } },
   { name: "get_document", description: "Lit un document complet (ou une sous-partie via 'path').",
     inputSchema: { type: "object", required: ["type", "id"], properties: {
-      type: typeProp, id: { type: "string" }, parent: parentProp,
+      type: typeProp, pack: packProp, id: { type: "string" }, parent: parentProp,
       path: { type: "string", description: "Sous-partie à renvoyer, ex. 'system.abilities'" } } } },
   { name: "create_documents", description: "Crée un ou plusieurs documents.",
     inputSchema: { type: "object", required: ["type", "data"], properties: {
-      type: typeProp, parent: parentProp, data: { type: "array", items: { type: "object" } } } } },
+      type: typeProp, pack: packProp, parent: parentProp, data: { type: "array", items: { type: "object" } } } } },
   { name: "update_documents",
     description: "Modifie des documents. Chaque update contient _id + les champs à changer en notation pointée, ex. {\"_id\":\"abc\",\"system.abilities.str.value\":10}.",
     inputSchema: { type: "object", required: ["type", "updates"], properties: {
-      type: typeProp, parent: parentProp, updates: { type: "array", items: { type: "object" } } } } },
+      type: typeProp, pack: packProp, parent: parentProp, updates: { type: "array", items: { type: "object" } } } } },
   { name: "delete_documents", description: "Supprime des documents (irréversible).",
     inputSchema: { type: "object", required: ["type", "ids"], properties: {
-      type: typeProp, parent: parentProp, ids: { type: "array", items: { type: "string" } } } } },
+      type: typeProp, pack: packProp, parent: parentProp, ids: { type: "array", items: { type: "string" } } } } },
   { name: "actor_sheet", description: "Fiche calculée d'un personnage/PNJ (niveau, maîtrise, caracs+mods, CA estimée, PV, compétences, DD/attaque de sort, emplacements, sorts, objets avec leurs _id).",
     inputSchema: { type: "object", required: ["actor"], properties: { actor: { type: "string", description: "Nom ou _id de l'acteur" } } } },
   { name: "roll", description: "Lance des dés et poste le résultat dans le chat Foundry. Formules : 1d20+5, 2d20kh1+3 (avantage), 2d20kl1 (désavantage), 8d6, 4d6kh3...",
@@ -247,7 +248,7 @@ export async function handleTool(fs, params) {
             utilisateurs: users.map(u => ({ _id: u._id, name: u.name, role: ROLES[u.role], character: u.character })) });
         }
         case "list_documents": {
-          let docs = await fs.doc("get", a.type, { query: {}, ...parentOpt(a.parent) });
+          let docs = await fs.doc("get", a.type, { query: {}, ...parentOpt(a.parent, a.pack) });
           if (a.name_contains) docs = docs.filter(d => (d.name || "").toLowerCase().includes(a.name_contains.toLowerCase()));
           if (a.filter) docs = docs.filter(d => matches(d, a.filter));
           const total = docs.length;
@@ -256,20 +257,20 @@ export async function handleTool(fs, params) {
         }
         case "get_document": {
           // le filtre _id n'est pas appliqué par Foundry sur les collections embarquées : on filtre ici
-          const d = (await fs.doc("get", a.type, { query: { _id: a.id }, ...parentOpt(a.parent) })).find(x => x._id === a.id);
+          const d = (await fs.doc("get", a.type, { query: { _id: a.id }, ...parentOpt(a.parent, a.pack) })).find(x => x._id === a.id);
           if (!d) return out(`Introuvable : ${a.type} ${a.id}`);
           return out(getPath(d, a.path));
         }
         case "create_documents": {
-          const r = await fs.doc("create", a.type, { data: a.data, modifiedTime: Date.now(), render: true, renderSheet: false, ...parentOpt(a.parent) });
+          const r = await fs.doc("create", a.type, { data: a.data, modifiedTime: Date.now(), render: true, renderSheet: false, ...parentOpt(a.parent, a.pack) });
           return out({ crees: r.map(d => ({ _id: d._id, name: d.name })) });
         }
         case "update_documents": {
-          const r = await fs.doc("update", a.type, { updates: a.updates, diff: true, recursive: true, modifiedTime: Date.now(), render: true, ...parentOpt(a.parent) });
+          const r = await fs.doc("update", a.type, { updates: a.updates, diff: true, recursive: true, modifiedTime: Date.now(), render: true, ...parentOpt(a.parent, a.pack) });
           return out({ modifies: r.length, resultat: r });
         }
         case "delete_documents": {
-          const r = await fs.doc("delete", a.type, { ids: a.ids, modifiedTime: Date.now(), render: true, ...parentOpt(a.parent) });
+          const r = await fs.doc("delete", a.type, { ids: a.ids, modifiedTime: Date.now(), render: true, ...parentOpt(a.parent, a.pack) });
           return out({ supprimes: r });
         }
 
