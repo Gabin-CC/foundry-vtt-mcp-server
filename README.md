@@ -96,7 +96,7 @@ location = /mcp { proxy_pass http://127.0.0.1:8808; proxy_set_header X-Forwarded
 ### Mise à jour
 
 ```bash
-sudo -u foundrymcp /opt/foundry-vtt-mcp-server/scripts/update.sh
+sudo /opt/foundry-vtt-mcp-server/scripts/update.sh
 ```
 
 ## Connexion depuis Claude
