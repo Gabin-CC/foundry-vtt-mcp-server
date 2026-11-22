@@ -25,16 +25,7 @@ export async function fetchUuid(fs, uuid) {
   const p = parseUuid(uuid);
   if (!p) throw new Error(`UUID de compendium invalide : ${uuid}`);
   fs._packIds ??= new Set(((await fs.worldData()).packs || []).map(x => x.id));
-  if (!fs._packIds.has(p.pack)) {
-    // Le contenu "dnd-players-handbook" (module payant) réutilise les mêmes _id que le SRD 2024 du système :
-    // on tente la version SRD équivalente.
-    const alt = { spells: "dnd5e.spells24", classes: "dnd5e.classes24", origins: "dnd5e.origins24", feats: "dnd5e.feats24", equipment: "dnd5e.equipment24" }[p.pack.split(".")[1]];
-    if (alt && fs._packIds.has(alt)) {
-      const d = (await fs.doc("get", p.type, { pack: alt, query: { _id: p.id } })).find(x => x._id === p.id);
-      if (d) return translateDoc(alt, d);
-    }
-    throw new Error(`Compendium non installé : ${p.pack} (${uuid})`);
-  }
+  if (!fs._packIds.has(p.pack)) throw new Error(`Compendium non installé : ${p.pack} (${uuid})`);
   const d = (await fs.doc("get", p.type, { pack: p.pack, query: { _id: p.id } })).find(x => x._id === p.id);
   if (!d) throw new Error(`Introuvable : ${uuid}`);
   return translateDoc(p.pack, d);
