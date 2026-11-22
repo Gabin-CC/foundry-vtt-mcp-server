@@ -24,11 +24,33 @@ export async function fetchUuid(fs, uuid) {
   if (m) { const d = (await fs.doc("get", "Item", { parentUuid: `Actor.${m[1]}`, query: {} })).find(x => x._id === m[2]); if (d) return d; throw new Error(`Introuvable : ${uuid}`); }
   const p = parseUuid(uuid);
   if (!p) throw new Error(`UUID de compendium invalide : ${uuid}`);
-  fs._packIds ??= new Set(((await fs.worldData()).packs || []).map(x => x.id));
-  if (!fs._packIds.has(p.pack)) throw new Error(`Compendium non installé : ${p.pack} (${uuid})`);
-  const d = (await fs.doc("get", p.type, { pack: p.pack, query: { _id: p.id } })).find(x => x._id === p.id);
-  if (!d) throw new Error(`Introuvable : ${uuid}`);
-  return translateDoc(p.pack, d);
+  const packs = (fs._packs2 ??= ((await fs.worldData()).packs || []));
+  if (packs.some(x => x.id === p.pack)) {
+    const d = (await fs.doc("get", p.type, { pack: p.pack, query: { _id: p.id } })).find(x => x._id === p.id);
+    if (d) return translateDoc(p.pack, d);
+  }
+  // Ressource absente de ce compendium (ou compendium non installé) : on cherche la même
+  // ressource (même _id) dans tous les compendiums installés du même type.
+  const found = await findById(fs, p.type, p.id);
+  if (found) return translateDoc(found.pack, found.doc);
+  throw new Error(`Ressource introuvable dans les compendiums installés : ${uuid}`);
+}
+
+async function findById(fs, type, id) {
+  const packs = (fs._packs2 ??= ((await fs.worldData()).packs || [])).filter(x => x.type === type);
+  fs._idIdx ??= new Map(); // pack -> Set(_id)
+  for (const pk of packs) {
+    if (!fs._idIdx.has(pk.id)) {
+      let ids = [];
+      try { ids = (await fs.doc("get", type, { pack: pk.id, query: {}, index: true, indexFields: ["_id"] })).map(x => x._id); } catch { /* ignore */ }
+      fs._idIdx.set(pk.id, new Set(ids));
+    }
+    if (fs._idIdx.get(pk.id).has(id)) {
+      const d = (await fs.doc("get", type, { pack: pk.id, query: { _id: id } })).find(x => x._id === id);
+      if (d) return { pack: pk.id, doc: d };
+    }
+  }
+  return null;
 }
 
 // ---------- listes de sorts de classe (pages de journal de type "spells") ----------
