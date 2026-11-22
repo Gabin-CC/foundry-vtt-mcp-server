@@ -72,7 +72,7 @@ export function withEffects(actor) {
   if (actor._effectsApplied) return actor;
   const a = structuredClone(actor);
   for (const c of activeChanges(actor)) {
-    if (!c.key?.startsWith("system.")) continue;
+    if (!c.key?.startsWith("system.") && !c.key?.startsWith("flags.")) continue;
     const cur = getP(a, c.key);
     const n = Number(c.value);
     if (c.type === "override") setP(a, c.key, c.value);
@@ -101,7 +101,7 @@ export function evalBonus(v, actor) {
     .replace(/@prof/g, Math.ceil(lvl / 4) + 1)
     .replace(/@(details\.level|classes\.\w+\.levels)/g, lvl)
     .replace(/\b(max|min|floor|ceil|round|abs)\(/g, "Math.$1(");
-  if (/@/.test(f) || !/^[\d\s+\-*/().,Mathaxinflorceundbs]*$/.test(f)) return 0;
+  if (/@/.test(f) || !/^[\d\s+\-*/().,]*$/.test(f.replace(/Math\.(max|min|floor|ceil|round|abs)/g, ""))) return 0;
   try { const r = Function(`"use strict";return (${f});`)(); return Number.isFinite(r) ? r : 0; } catch { return 0; }
 }
 
@@ -144,7 +144,10 @@ export function checkBonus(actor, kind, key) {
     const abil = sk?.ability || ab;
     return { bonus: d.mods[abil] + Math.floor(num(sk?.value) * d.prof) + ev(sk?.bonuses?.check) + ev(sk?.roll?.bonus) + ev(s.bonuses?.abilities?.skill) + ev(s.bonuses?.abilities?.check), label: `Test de ${name} (${ABIL[abil]})` };
   }
-  if (kind === "initiative") return { bonus: d.mods[s.attributes?.init?.ability || "dex"] + ev(s.attributes?.init?.bonus) + (s.attributes?.init?.prof ? d.prof : 0), label: "Initiative" };
+  if (kind === "initiative") {
+    const alert = s.attributes?.init?.prof || actor.flags?.dnd5e?.initiativeAlert;
+    return { bonus: d.mods[s.attributes?.init?.ability || "dex"] + ev(s.attributes?.init?.bonus) + (alert ? d.prof : 0) + ev(s.bonuses?.abilities?.check), label: "Initiative" };
+  }
   throw new Error(`Type de test inconnu : ${kind}`);
 }
 
