@@ -135,8 +135,8 @@ const TOOLS = [
   { name: "add_from_compendium", description: "Ajoute des entrées de compendium à un acteur (sorts, objets, butin, classe, espèce, historique, dons...) ou les importe dans le monde si 'actor' est absent (ex. un monstre). Traduit en FR. Pour une classe, 'levels' fixe le niveau et remplit les PV (max au niv. 1, puis moyenne).",
     inputSchema: { type: "object", required: ["entries"], properties: {
       actor: { type: "string", description: "Acteur destinataire (nom ou _id). Absent = import dans le monde." },
-      entries: { type: "array", items: { type: "object", required: ["pack"], properties: {
-        pack: { type: "string" }, id: { type: "string" }, name: { type: "string", description: "Alternative à id : nom exact (FR ou EN)" }, item_type: { type: "string" }, quantity: { type: "number" }, levels: { type: "number" },
+      entries: { type: "array", items: { type: "object", properties: {
+        pack: { type: "string" }, id: { type: "string" }, name: { type: "string", description: "Alternative à id : nom exact (FR ou EN)" }, uuid: { type: "string", description: "Alternative à pack+id : UUID (Compendium.x.y.Item.id, Item.id, Actor.id.Item.id)" }, item_type: { type: "string" }, quantity: { type: "number" }, levels: { type: "number" },
         equipped: { type: "boolean" }, overrides: { type: "object", description: "Champs à surcharger (notation pointée)" } } } },
       folder: { type: "string", description: "Dossier (_id) pour un import dans le monde" } } } },
   { name: "give_loot", description: "Ajoute du butin à un acteur : pièces (pp, po, pe, pa, pc) et/ou objets créés à la volée (nom, type, description, valeur, quantité).",
@@ -371,6 +371,16 @@ export async function handleTool(fs, params) {
           const byType = {};
           const missing = [];
           for (const e of a.entries) {
+            if (e.uuid) {
+              const d = structuredClone(await fetchUuid(fs, e.uuid));
+              delete d._id; delete d.folder; delete d.sort; delete d.ownership;
+              d._stats = { ...(d._stats || {}), compendiumSource: e.uuid };
+              if (e.quantity != null && d.system) d.system.quantity = e.quantity;
+              if (e.equipped != null && d.system) d.system.equipped = e.equipped;
+              for (const [k, v] of Object.entries(e.overrides || {})) setPath(d, k, v);
+              (byType[d.items || d.prototypeToken ? "Actor" : "Item"] ??= []).push(d);
+              continue;
+            }
             const pack = packs.find(p => p.id === e.pack);
             if (!pack) throw new Error(`Compendium inconnu : ${e.pack}`);
             if (!e.id && e.name) {
