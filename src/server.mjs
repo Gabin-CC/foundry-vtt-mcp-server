@@ -488,7 +488,9 @@ export async function handleTool(fs, params) {
           else throw new Error("Précise 'source' (import) ou 'item' (classe à faire monter)");
           const isClass = root.type === "class";
           const current = isNew ? 0 : Number(root.system?.levels) || 0;
-          const target = isClass ? (a.level ?? current + 1) : 0;
+          const charLevel = classes.reduce((t, c) => t + (Number(c.system?.levels) || 0), 0);
+          // espèce / historique / don : paliers jusqu'au niveau de personnage actuel (min. 1)
+          const target = isClass ? (a.level ?? current + 1) : Math.max(1, charLevel);
           if (isClass && target <= current) return out(`${root.name} est déjà niveau ${current}`);
           const isFirstClass = isClass && (isNew ? classes.length === 0 : (actor.system?.details?.originalClass ? actor.system.details.originalClass === root._id : classes[0]?._id === root._id));
           const from = isClass ? current + 1 : 0;
