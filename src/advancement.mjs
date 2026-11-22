@@ -19,6 +19,8 @@ function parseUuid(uuid) {
 export async function fetchUuid(fs, uuid) {
   const p = parseUuid(uuid);
   if (!p) throw new Error(`UUID de compendium invalide : ${uuid}`);
+  fs._packIds ??= new Set(((await fs.worldData()).packs || []).map(x => x.id));
+  if (!fs._packIds.has(p.pack)) throw new Error(`Compendium non installé : ${p.pack} (${uuid})`);
   const d = (await fs.doc("get", p.type, { pack: p.pack, query: { _id: p.id } })).find(x => x._id === p.id);
   if (!d) throw new Error(`Introuvable : ${uuid}`);
   return translateDoc(p.pack, d);
@@ -69,7 +71,7 @@ const matchPool = (k, pool) => pool.some(p => p === k || (p.endsWith("*") && k.s
  * @returns {steps, pending} — pending = choix manquants à demander.
  */
 export async function plan(fs, actor, item, { fromLevel, toLevel, choices = {}, isFirstClass, depth = 0 }) {
-  const steps = [], pending = [];
+  const steps = [], pending = [], warnings = [];
   const isClass = item.type === "class", isSub = item.type === "subclass";
   const lvlOk = adv => {
     const l = Number(adv.level ?? 0);
@@ -96,11 +98,12 @@ export async function plan(fs, actor, item, { fromLevel, toLevel, choices = {}, 
           const uuid = typeof it === "string" ? it : it.uuid;
           const skip = it.optional && Array.isArray(choice(adv, l)) && !choice(adv, l).includes(uuid);
           if (skip) continue;
-          const d = await fetchUuid(fs, uuid);
+          let d;
+          try { d = await fetchUuid(fs, uuid); } catch (e) { warnings.push(`${item.name} niv. ${l} — ignoré : ${e.message}`); continue; }
           docs.push({ uuid, doc: d });
           if (depth < 3 && advList(d).length) {
             const sub = await plan(fs, actor, d, { fromLevel: 0, toLevel: 0, choices, isFirstClass, depth: depth + 1 });
-            subSteps.push(...sub.steps); pending.push(...sub.pending);
+            subSteps.push(...sub.steps); pending.push(...sub.pending); warnings.push(...sub.warnings);
           }
         }
         steps.push({ kind: "grant", item, adv, level: l, docs, spell: c.spell }, ...subSteps);
@@ -141,7 +144,7 @@ export async function plan(fs, actor, item, { fromLevel, toLevel, choices = {}, 
             throw new Error(`Répartition invalide pour « ${adv.title || "ASI"} » : ${JSON.stringify(val)} (points ${c.points ?? 2}, max +${c.cap ?? 2}, verrouillées ${(c.locked || []).join(",") || "aucune"})`);
         }
         steps.push({ kind: "asi", item, adv, level: l, assignments: val?.feat ? {} : { ...(c.fixed || {}), ...(val || {}) }, featDoc, featUuid: val?.feat });
-        if (featSub) { steps.push(...featSub.steps); pending.push(...featSub.pending); }
+        if (featSub) { steps.push(...featSub.steps); pending.push(...featSub.pending); warnings.push(...featSub.warnings); }
         break;
       }
       case "ItemChoice": {
@@ -170,14 +173,15 @@ export async function plan(fs, actor, item, { fromLevel, toLevel, choices = {}, 
             }
           }
           const labels = [];
-          for (const u of options.slice(0, 120)) { try { const d = await fetchUuid(fs, u); labels.push(`${d.name} — ${u}`); } catch { labels.push(u); } }
+          for (const u of options.slice(0, 150)) { try { const d = await fetchUuid(fs, u); labels.push(`${d.name} — ${u}`); } catch { /* compendium absent */ } }
+          if (!labels.length && options.length) labels.push(`(options dans des compendiums non installés — fournis l'UUID de ton choix)`);
           pending.push({ id: key(adv, l), objet: item.name, niveau: l, type: "ItemChoice", titre: adv.title || "Choix",
             aide: strip(adv.hint) || (c.restriction?.list ? `Listes : ${c.restriction.list.join(", ")}, niveau ${c.restriction.level}` : ""),
             nombre: count, options: labels });
           break;
         }
         const docs = [];
-        for (const u of val.slice(0, count)) docs.push({ uuid: u, doc: await fetchUuid(fs, u) });
+        for (const u of val.slice(0, count)) { try { docs.push({ uuid: u, doc: await fetchUuid(fs, u) }); } catch (e) { warnings.push(e.message); } }
         steps.push({ kind: "grant", item, adv, level: l, docs, spell: c.spell, choiceStore: true, spellAbility: choices[`${key(adv, l)}:ability`] });
         break;
       }
@@ -191,7 +195,7 @@ export async function plan(fs, actor, item, { fromLevel, toLevel, choices = {}, 
         const sub = await fetchUuid(fs, val);
         steps.push({ kind: "subclass", item, adv, level: l, doc: sub, uuid: val });
         const p = await plan(fs, actor, sub, { fromLevel: 0, toLevel, choices, isFirstClass, depth: depth + 1 });
-        steps.push(...p.steps.map(s => ({ ...s, ofSubclass: true }))); pending.push(...p.pending);
+        steps.push(...p.steps.map(s => ({ ...s, ofSubclass: true }))); pending.push(...p.pending); warnings.push(...p.warnings);
         break;
       }
       case "Size": {
@@ -203,7 +207,7 @@ export async function plan(fs, actor, item, { fromLevel, toLevel, choices = {}, 
       default: break; // ScaleValue & co : calculés par Foundry, rien à appliquer
     }
   }
-  return { steps, pending };
+  return { steps, pending, warnings };
 }
 const strip = h => String(h || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 300);
 
