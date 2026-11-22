@@ -17,6 +17,11 @@ function parseUuid(uuid) {
   return m ? { pack: `${m[1]}.${m[2]}`, type: m[3] || "Item", id: m[4] } : null;
 }
 export async function fetchUuid(fs, uuid) {
+  // objets du monde : "Item.<id>" ou "Actor.<id>.Item.<id>"
+  let m = /^Item\.([A-Za-z0-9]{16})$/.exec(uuid || "");
+  if (m) { const d = (await fs.doc("get", "Item", { query: { _id: m[1] } })).find(x => x._id === m[1]); if (d) return d; throw new Error(`Introuvable : ${uuid}`); }
+  m = /^Actor\.([A-Za-z0-9]{16})\.Item\.([A-Za-z0-9]{16})$/.exec(uuid || "");
+  if (m) { const d = (await fs.doc("get", "Item", { parentUuid: `Actor.${m[1]}`, query: {} })).find(x => x._id === m[2]); if (d) return d; throw new Error(`Introuvable : ${uuid}`); }
   const p = parseUuid(uuid);
   if (!p) throw new Error(`UUID de compendium invalide : ${uuid}`);
   fs._packIds ??= new Set(((await fs.worldData()).packs || []).map(x => x.id));
