@@ -134,8 +134,8 @@ const TOOLS = [
   { name: "add_from_compendium", description: "Ajoute des entrées de compendium à un acteur (sorts, objets, butin, classe, espèce, historique, dons...) ou les importe dans le monde si 'actor' est absent (ex. un monstre). Traduit en FR. Pour une classe, 'levels' fixe le niveau et remplit les PV (max au niv. 1, puis moyenne).",
     inputSchema: { type: "object", required: ["entries"], properties: {
       actor: { type: "string", description: "Acteur destinataire (nom ou _id). Absent = import dans le monde." },
-      entries: { type: "array", items: { type: "object", required: ["pack", "id"], properties: {
-        pack: { type: "string" }, id: { type: "string" }, quantity: { type: "number" }, levels: { type: "number" },
+      entries: { type: "array", items: { type: "object", required: ["pack"], properties: {
+        pack: { type: "string" }, id: { type: "string" }, name: { type: "string", description: "Alternative à id : nom exact (FR ou EN)" }, item_type: { type: "string" }, quantity: { type: "number" }, levels: { type: "number" },
         equipped: { type: "boolean" }, overrides: { type: "object", description: "Champs à surcharger (notation pointée)" } } } },
       folder: { type: "string", description: "Dossier (_id) pour un import dans le monde" } } } },
   { name: "give_loot", description: "Ajoute du butin à un acteur : pièces (pp, po, pe, pa, pc) et/ou objets créés à la volée (nom, type, description, valeur, quantité).",
@@ -361,9 +361,16 @@ export async function handleTool(fs, params) {
           const actor = a.actor ? await findActor(fs, a.actor) : null;
           const packs = await packsOf(fs);
           const byType = {};
+          const missing = [];
           for (const e of a.entries) {
             const pack = packs.find(p => p.id === e.pack);
             if (!pack) throw new Error(`Compendium inconnu : ${e.pack}`);
+            if (!e.id && e.name) {
+              const q = norm(e.name);
+              const hit = (await packIndex(fs, pack)).find(x => (norm(x.name) === q || norm(x.name_fr) === q) && (!e.item_type || x.type === e.item_type));
+              if (!hit) { missing.push(e.name); continue; }
+              e.id = hit._id;
+            }
             const src = (await fs.doc("get", pack.type, { pack: pack.id, query: { _id: e.id } })).find(x => x._id === e.id);
             if (!src) throw new Error(`Entrée ${e.id} introuvable dans ${e.pack}`);
             const d = await translateDoc(pack.id, src);
@@ -398,6 +405,7 @@ export async function handleTool(fs, params) {
           }
           const notes = a.entries.map(e => e._note).filter(Boolean);
           if (created.some(c => c.type === "class")) notes.push("Assistant de niveau non exécuté (headless) : ajoute aptitudes de classe, compétences et maîtrises au choix via search_compendium/add_from_compendium/update_documents.");
+          if (missing.length) notes.push(`Introuvables dans le compendium : ${missing.join(", ")}`);
           return out({ ajoutes: created, a: actor ? actor.name : "monde", notes });
         }
         case "give_loot": {
