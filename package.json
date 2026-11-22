@@ -1,0 +1,20 @@
+{
+  "name": "foundry-vtt-mcp-server",
+  "version": "1.0.0",
+  "description": "Headless MCP server for Foundry VTT (v13/v14, dnd5e): each user logs in with their own Foundry account via HTTP Basic auth — no browser, no module.",
+  "type": "module",
+  "main": "src/server.mjs",
+  "bin": { "foundry-vtt-mcp-server": "src/server.mjs" },
+  "scripts": {
+    "start": "node src/server.mjs",
+    "check": "node --check src/server.mjs && node --check src/foundry.mjs && node --check src/dnd5e.mjs"
+  },
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "socket.io-client": "4.8.3"
+  },
+  "keywords": ["foundry-vtt", "foundryvtt", "mcp", "model-context-protocol", "dnd5e", "claude"],
+  "license": "MIT",
+  "repository": { "type": "git", "url": "https://github.com/Gabin-CC/foundry-vtt-mcp-server.git" }
+}

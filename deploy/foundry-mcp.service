@@ -1,0 +1,20 @@
+[Unit]
+Description=Foundry VTT MCP server (headless)
+After=network.target foundry.service
+
+[Service]
+User=foundrymcp
+WorkingDirectory=/opt/foundry-vtt-mcp-server
+# URL locale de Foundry (pas besoin de passer par le reverse proxy)
+Environment=FOUNDRY_URL=http://127.0.0.1:30000
+Environment=PORT=8808
+# IP du reverse proxy (pour lire X-Forwarded-For dans l'anti brute-force)
+Environment=TRUSTED_PROXY=
+# URL publique de Foundry, utilisée pour renvoyer l'URL des fichiers envoyés
+Environment=PUBLIC_URL=
+ExecStart=/usr/bin/node /opt/foundry-vtt-mcp-server/src/server.mjs
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
