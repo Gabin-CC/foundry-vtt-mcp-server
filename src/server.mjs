@@ -158,7 +158,7 @@ const TOOLS = [
   { name: "advance", description: "Montée de niveau / import avec l'assistant d'avancement de dnd5e (comme dans Foundry) : importe une classe, sous-classe, espèce, historique ou don depuis un compendium (source) ou fait monter une classe déjà présente (item) jusqu'à 'level'. Applique automatiquement aptitudes accordées, maîtrises, PV, sorts de domaine, sous-classe… Si des choix sont nécessaires, renvoie 'choix_requis' (id + options) : rappelle l'outil avec choices = { \"<id>\": valeur }. Valeurs : Trait → [\"skills:ins\", ...] ; AbilityScoreImprovement → {\"wis\":2} ou {\"feat\":\"<uuid>\"} ; ItemChoice → [\"<uuid>\", ...] (+ \"<id>:ability\": \"wis\" pour les sorts) ; Subclass → \"<uuid>\" ; Size → \"med\".",
     inputSchema: { type: "object", required: ["actor"], properties: {
       actor: { type: "string" },
-      source: { type: "object", description: "Objet à importer : {pack, id} ou {pack, name}", properties: { pack: { type: "string" }, id: { type: "string" }, name: { type: "string" } } },
+      source: { type: "object", description: "Objet à importer : {pack, id}, {pack, name} ou {uuid} (y compris objets du monde \"Item.<id>\")", properties: { pack: { type: "string" }, id: { type: "string" }, name: { type: "string" }, uuid: { type: "string" } } },
       item: { type: "string", description: "Classe déjà présente sur l'acteur (nom ou _id) à faire monter" },
       level: { type: "number", description: "Niveau de classe visé (défaut : niveau actuel + 1, ou 1 pour un import)" },
       choices: { type: "object" }, hp: { type: "string", enum: ["avg", "max"], default: "avg" } } } },
@@ -464,7 +464,9 @@ export async function handleTool(fs, params) {
           let actor = await findActor(fs, a.actor);
           const classes = (actor.items || []).filter(i => i.type === "class");
           let root, isNew = false;
-          if (a.source) {
+          if (a.source?.uuid) {
+            root = await fetchUuid(fs, a.source.uuid); root.__src = a.source.uuid; isNew = true;
+          } else if (a.source) {
             const pack = (await packsOf(fs)).find(p => p.id === a.source.pack);
             if (!pack) throw new Error(`Compendium inconnu : ${a.source.pack}`);
             let id = a.source.id;
