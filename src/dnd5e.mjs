@@ -388,14 +388,25 @@ export function useItem(rawActor, item, { activityId, slotLevel, advantage, disa
 
 // ====================== COMPENDIUMS + TRADUCTION FR ======================
 const trCache = new Map(); // packId -> {entries} | null
+// Sources de traduction Babele, par ordre de priorité : "module/dossier,module/dossier"
+// (défaut : le module FR officiel du système). Chaque dossier contient <packId>.json.
+const TR_SOURCES = (process.env.TRANSLATION_SOURCES
+  || `${process.env.TRANSLATION_MODULE || "dnd5e_fr-FR"}/${process.env.TRANSLATION_DIR || "compendium_fr"}`)
+  .split(",").map(s => s.trim()).filter(Boolean);
+const TR_TTL = 10 * 60 * 1000;
 export async function translations(packId) {
-  if (trCache.has(packId)) return trCache.get(packId);
+  const c = trCache.get(packId);
+  if (c && Date.now() - c.at < TR_TTL) return c.t;
   let t = null;
-  try {
-    const r = await fetch(`${FOUNDRY}/modules/${process.env.TRANSLATION_MODULE || "dnd5e_fr-FR"}/${process.env.TRANSLATION_DIR || "compendium_fr"}/${packId}.json`);
-    if (r.ok) t = (await r.json()).entries || null;
-  } catch { /* pas de traduction */ }
-  trCache.set(packId, t);
+  for (const src of TR_SOURCES) {
+    try {
+      const r = await fetch(`${FOUNDRY}/modules/${src}/${encodeURIComponent(packId)}.json`);
+      if (!r.ok) continue;
+      const e = (await r.json()).entries || {};
+      t = { ...e, ...(t || {}) }; // la première source gagne
+    } catch { /* source absente */ }
+  }
+  trCache.set(packId, { t, at: Date.now() });
   return t;
 }
 export async function translateDoc(packId, doc) {

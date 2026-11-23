@@ -67,7 +67,7 @@ Variables d'environnement :
 | `PORT` / `HOST` | `8808` / `0.0.0.0` | Écoute HTTP (endpoint `/mcp`, santé `/mcp-health`) |
 | `TRUSTED_PROXY` | *(vide)* | IP du reverse proxy dont on croit `X-Forwarded-For` |
 | `PUBLIC_URL` | *(vide)* | URL publique de Foundry, pour renvoyer l'URL des fichiers envoyés |
-| `TRANSLATION_MODULE` / `TRANSLATION_DIR` | `dnd5e_fr-FR` / `compendium_fr` | Fichiers de traduction Babele des compendiums |
+| `TRANSLATION_SOURCES` | `dnd5e_fr-FR/compendium_fr` | Dossiers de traductions Babele (`module/dossier`, séparés par des virgules, par priorité). Chaque dossier contient `<id du compendium>.json`, ex. `world.sors.json` |
 
 ### Reverse proxy (HTTPS obligatoire)
 
