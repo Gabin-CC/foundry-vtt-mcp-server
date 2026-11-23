@@ -27,12 +27,12 @@ export async function fetchUuid(fs, uuid) {
   const packs = (fs._packs2 ??= ((await fs.worldData()).packs || []));
   if (packs.some(x => x.id === p.pack)) {
     const d = (await fs.doc("get", p.type, { pack: p.pack, query: { _id: p.id } })).find(x => x._id === p.id);
-    if (d) return translateDoc(p.pack, d);
+    if (d) return Object.assign(await translateDoc(p.pack, d), { __pack: p.pack });
   }
   // Ressource absente de ce compendium (ou compendium non installé) : on cherche la même
   // ressource (même _id) dans tous les compendiums installés du même type.
   const found = await findById(fs, p.type, p.id);
-  if (found) return translateDoc(found.pack, found.doc);
+  if (found) return Object.assign(await translateDoc(found.pack, found.doc), { __pack: found.pack });
   throw new Error(`Ressource introuvable dans les compendiums installés : ${uuid}`);
 }
 
@@ -91,6 +91,73 @@ function expandPool(pool) {
   return out;
 }
 const matchPool = (k, pool) => pool.some(p => p === k || (p.endsWith("*") && k.startsWith(p.slice(0, -1))) || (p.endsWith(":*") && k.startsWith(p.slice(0, -2))));
+
+
+// ---------- équipement de départ (system.startingEquipment) ----------
+const idxCache = new Map();
+async function packIdx(fs, pack, fields) {
+  const k = pack + "|" + fields.join(",");
+  if (!idxCache.has(k)) { let r = []; try { r = await fs.doc("get", "Item", { pack, query: {}, index: true, indexFields: ["_id", "name", ...fields] }); } catch { /* */ } idxCache.set(k, r); }
+  return idxCache.get(k);
+}
+const FOCUS_NAMES = { holy: /holy symbol|symbole sacr|amulet|emblem|reliquar/i, arcane: /arcane focus|focaliseur arcan|crystal|orb|rod|staff|wand/i, druidic: /druidic focus|focaliseur druid|sprig|totem|yew|wooden staff/i };
+async function categoryOptions(fs, entry) {
+  const packs = ((fs._packs2 ??= ((await fs.worldData()).packs || []))).filter(p => p.type === "Item" && p.packageName === "dnd5e");
+  const out = [];
+  for (const pk of packs) {
+    const idx = await packIdx(fs, pk.id, ["type", "system.type.value", "system.type.baseItem", "system.rarity", "system.properties"]);
+    for (const e of idx) {
+      if (e.system?.rarity && e.system.rarity !== "common" && e.system.rarity !== "") continue;
+      const t = e.system?.type?.value;
+      let ok = false;
+      if (entry.type === "weapon" && e.type === "weapon") ok = entry.key === "sim" ? /^simple/.test(t) : entry.key === "mar" ? /^martial/.test(t) : (t === entry.key || e.system?.type?.baseItem === entry.key);
+      else if (entry.type === "armor" && e.type === "equipment") ok = ({ lgt: "light", med: "medium", hvy: "heavy", shl: "shield" }[entry.key] || entry.key) === t;
+      else if (entry.type === "tool" && e.type === "tool") ok = t === entry.key || e.system?.type?.baseItem === entry.key;
+      else if (entry.type === "focus") ok = FOCUS_NAMES[entry.key]?.test(e.name) && ["loot", "equipment", "weapon"].includes(e.type) && !/[+]\\d/.test(e.name);
+      if (ok) out.push(`${e.name} — Compendium.${pk.id}.Item.${e._id}`);
+    }
+  }
+  return [...new Set(out)];
+}
+async function describeEntry(fs, e, kids) {
+  if (e.type === "linked") { try { const d = await fetchUuid(fs, e.key); return `${e.count > 1 ? e.count + "× " : ""}${d.name}`; } catch { return e.key; } }
+  if (e.type === "currency") return `${e.count} ${e.key}`;
+  if (["AND", "OR"].includes(e.type)) { const parts = []; for (const k of kids(e._id)) parts.push(await describeEntry(fs, k, kids)); return parts.join(e.type === "AND" ? " + " : " OU "); }
+  return `${e.count > 1 ? e.count + "× " : ""}${e.type}:${e.key} (au choix)`;
+}
+export async function planStartingEquipment(fs, item, choices) {
+  const entries = item.system?.startingEquipment || [];
+  const pending = [], warnings = [], items = [], currency = {};
+  if (!entries.length) return { pending, warnings, step: null };
+  const kids = g => entries.filter(e => (e.group || "") === g).sort((a, b) => (a.sort || 0) - (b.sort || 0));
+  async function walk(e) {
+    const key = `equip:${e._id}`;
+    if (e.type === "AND") { for (const k of kids(e._id)) await walk(k); return; }
+    if (e.type === "OR") {
+      const opts = kids(e._id);
+      const val = choices[key];
+      const pick = opts.find(o => o._id === val);
+      if (!pick) {
+        const options = [];
+        for (const o of opts) options.push(`${await describeEntry(fs, o, kids)} — ${o._id}`);
+        pending.push({ id: key, objet: item.name, niveau: 1, type: "StartingEquipment", titre: "Équipement de départ (choix)", nombre: 1, options, aide: "Valeur = l'identifiant de l'option" });
+        return;
+      }
+      await walk(pick); return;
+    }
+    if (e.type === "linked") { items.push({ uuid: e.key, count: e.count || 1 }); return; }
+    if (e.type === "currency") { currency[e.key] = (currency[e.key] || 0) + Number(e.count || 0); return; }
+    // catégorie (arme, armure, outil, focaliseur) : choix d'un objet
+    const val = choices[key];
+    if (!val) {
+      pending.push({ id: key, objet: item.name, niveau: 1, type: "StartingEquipment", titre: `Équipement de départ : ${e.type} « ${e.key} »`, nombre: 1, options: (await categoryOptions(fs, e)).slice(0, 80), aide: "Valeur = l'UUID de l'objet" });
+      return;
+    }
+    items.push({ uuid: val, count: e.count || 1 });
+  }
+  for (const root of kids("")) await walk(root);
+  return { pending, warnings, step: { kind: "equipment", item, items, currency } };
+}
 
 // ---------- planification ----------
 /**
@@ -238,6 +305,12 @@ export async function plan(fs, actor, item, { fromLevel, toLevel, choices = {}, 
       default: break; // ScaleValue & co : calculés par Foundry, rien à appliquer
     }
   }
+  // équipement de départ : historique à l'import, classe au niveau 1 de la 1re classe
+  if (depth === 0 && ((item.type === "background" && fromLevel <= 0) || (isClass && isFirstClass && fromLevel <= 1 && toLevel >= 1))) {
+    const se = await planStartingEquipment(fs, item, choices);
+    pending.push(...se.pending); warnings.push(...se.warnings);
+    if (se.step && !se.pending.length) steps.push(se.step);
+  }
   return { steps, pending, warnings };
 }
 const strip = h => String(h || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 300);
@@ -259,9 +332,9 @@ export async function apply(fs, actor, rootItemId, steps, { hpMode = "avg", isFi
   async function createItems(docs, originId, advId, spellCfg, abilityPick) {
     const data = docs.map(({ uuid, doc }) => {
       const d = structuredClone(doc);
-      delete d._id; delete d.folder; delete d.sort; delete d.ownership;
+      delete d._id; delete d.folder; delete d.sort; delete d.ownership; delete d.__pack;
       d._stats = { ...(d._stats || {}), compendiumSource: uuid };
-      d.flags = { ...(d.flags || {}), dnd5e: { ...(d.flags?.dnd5e || {}), sourceId: uuid, advancementOrigin: `${originId}.${advId}` } };
+      d.flags = { ...(d.flags || {}), dnd5e: { ...(d.flags?.dnd5e || {}), sourceId: uuid, ...(advId === "startingEquipment" ? {} : { advancementOrigin: `${originId}.${advId}` }) } };
       if (spellCfg && d.type === "spell") {
         const ab = abilityPick || (Array.isArray(spellCfg.ability) ? spellCfg.ability.filter(Boolean)[0] : spellCfg.ability);
         if (ab) d.system.ability = ab;
@@ -331,6 +404,27 @@ export async function apply(fs, actor, rootItemId, steps, { hpMode = "avg", isFi
         created.set(s.uuid, res[0].id); s.doc._id = res[0].id;
         if (s.item._id) setAdv(s.item._id, s.adv._id, { "value.document": res[0].id, "value.uuid": s.uuid });
         log.push(`${s.item.name} niv. ${s.level} — Sous-classe : ${res[0].name}`);
+        break;
+      }
+      case "equipment": {
+        const names = [];
+        for (const { uuid, count } of s.items) {
+          let doc;
+          try { doc = await fetchUuid(fs, uuid); } catch (e) { log.push(`Équipement ignoré : ${e.message}`); continue; }
+          const res = await createItems([{ uuid, doc: count > 1 ? { ...doc, system: { ...doc.system, quantity: count } } : doc }], originOf(s), "startingEquipment");
+          names.push(`${count > 1 ? count + "× " : ""}${res[0]?.name}`);
+          // contenu d'un paquetage / conteneur : objets du même compendium rattachés à ce conteneur
+          if (doc.type === "container" && doc.__pack && res[0]) {
+            const idx = await packIdx(fs, doc.__pack, ["system.container"]);
+            const contents = idx.filter(x => x.system?.container === doc._id);
+            const cdocs = [];
+            for (const c of contents) { try { cdocs.push({ uuid: `Compendium.${doc.__pack}.Item.${c._id}`, doc: await fetchUuid(fs, `Compendium.${doc.__pack}.Item.${c._id}`) }); } catch { /* */ } }
+            for (const cd of cdocs) cd.doc = { ...cd.doc, system: { ...cd.doc.system, container: res[0].id } };
+            if (cdocs.length) { await createItems(cdocs, originOf(s), "startingEquipment"); names.push(`(contenu : ${cdocs.map(c => c.doc.name).join(", ")})`); }
+          }
+        }
+        for (const [k, v] of Object.entries(s.currency)) actorUpd[`system.currency.${k}`] = (Number(actor.system?.currency?.[k]) || 0) + v;
+        log.push(`${s.item.name} — Équipement de départ : ${names.join(", ")}${Object.keys(s.currency).length ? " ; " + Object.entries(s.currency).map(([k, v]) => `${v} ${k}`).join(", ") : ""}`);
         break;
       }
       case "size":
