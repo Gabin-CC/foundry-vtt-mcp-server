@@ -492,13 +492,20 @@ function applyTr(doc, t) {
   return c;
 }
 /** Traduction d'un objet d'acteur d'après sa source de compendium (comme la traduction à la demande de Babele). */
-export async function localizeItem(it) {
+export async function localizeItem(it, fs) {
   const src = it._stats?.compendiumSource || it.flags?.core?.sourceId || it.flags?.dnd5e?.sourceId;
   const m = /^Compendium\.([^.]+\.[^.]+)\.(?:Item\.)?([A-Za-z0-9]{16})$/.exec(src || "");
   const up = {};
   if (m) {
     const tr = await translations(m[1]);
-    const t = tr?.[m[2]] ?? tr?.[it.name];
+    let t = tr?.[m[2]] ?? tr?.[it.name];
+    if (!t && tr && fs) {   // traductions indexées par le nom anglais : nom d'origine lu dans le compendium source
+      try {
+        const idx = await fs.doc("get", "Item", { pack: m[1], query: { _id: m[2] }, index: true, indexFields: ["_id", "name"] });
+        const src = idx.find(x => x._id === m[2]);
+        if (src) t = tr[src.name];
+      } catch { /* compendium absent */ }
+    }
     if (t?.name && t.name !== it.name) up.name = t.name;
     const same = (x, y) => String(x || "").replace(/&amp;/g, "&").replace(/\s+/g, " ").trim() === String(y || "").replace(/&amp;/g, "&").replace(/\s+/g, " ").trim();
     if (t?.description && it.system?.description && !same(t.description, it.system.description.value)) up["system.description.value"] = t.description;

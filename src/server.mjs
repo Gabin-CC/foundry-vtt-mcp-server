@@ -377,7 +377,7 @@ export async function handleTool(fs, params) {
           const items = await fs.doc("get", "Item", { parentUuid: `Actor.${act._id}`, query: {} });
           const updates = [], noms = [];
           for (const it of items) {
-            const up = await localizeItem(it);
+            const up = await localizeItem(it, fs);
             if (Object.keys(up).length) { updates.push({ _id: it._id, ...up }); noms.push(up.name ? `${it.name} → ${up.name}` : `${it.name} (${up["system.description.value"] ? "description" : "unités"})`); }
           }
           const aup = actorMetricUpdates(act);
