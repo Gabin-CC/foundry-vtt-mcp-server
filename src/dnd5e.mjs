@@ -489,6 +489,9 @@ function applyTr(doc, t) {
   if (t.name) c.name = t.name;
   if (t.description && c.system?.description) c.system.description.value = t.description;
   if (t.description && c.text) c.text.content = t.description; // pages de journal
+  if (t.materials && c.system?.materials) c.system.materials.value = t.materials;   // composantes matérielles
+  if (t.effects && Array.isArray(c.effects))   // effets : clé = nom anglais de l'effet (comme Babele)
+    for (const e of c.effects) { const te = t.effects[e._id] ?? t.effects[e.name]; if (te?.name) e.name = te.name; if (te?.description) e.description = te.description; }
   return c;
 }
 /** Traduction d'un objet d'acteur d'après sa source de compendium (comme la traduction à la demande de Babele). */
@@ -509,6 +512,23 @@ export async function localizeItem(it, fs) {
     if (t?.name && t.name !== it.name) up.name = t.name;
     const same = (x, y) => String(x || "").replace(/&amp;/g, "&").replace(/\s+/g, " ").trim() === String(y || "").replace(/&amp;/g, "&").replace(/\s+/g, " ").trim();
     if (t?.description && it.system?.description && !same(t.description, it.system.description.value)) up["system.description.value"] = t.description;
+    if (t?.materials && it.system?.materials && !same(t.materials, it.system.materials.value)) up["system.materials.value"] = t.materials;
+    // effets de l'objet : nom anglais retrouvé dans le compendium source (l'effet sur la fiche peut déjà être renommé)
+    if (t?.effects && (it.effects || []).length) {
+      let srcEff = null;
+      try { srcEff = (await fs.doc("get", "Item", { pack: m[1], query: { _id: m[2] } })).find(x => x._id === m[2])?.effects || []; } catch { srcEff = []; }
+      const effUp = [];
+      for (const e of it.effects) {
+        const se = srcEff.find(x => x._id === e._id) || srcEff.find(x => x.name === e.name);
+        const te = t.effects[se?.name ?? e.name] ?? t.effects[e.name];
+        if (!te) continue;
+        const u = { _id: e._id };
+        if (te.name && te.name !== e.name) u.name = te.name;
+        if (te.description && !same(te.description, e.description)) u.description = te.description;
+        if (Object.keys(u).length > 1) effUp.push(u);
+      }
+      if (effUp.length) Object.defineProperty(up, "__effects", { value: effUp, enumerable: false });
+    }
   }
   return Object.assign(up, itemMetricUpdates(it));
 }

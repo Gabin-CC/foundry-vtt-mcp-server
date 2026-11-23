@@ -375,17 +375,20 @@ export async function handleTool(fs, params) {
           const act = await findActor(fs, a.actor);
           await refreshUnits(fs);
           const items = await fs.doc("get", "Item", { parentUuid: `Actor.${act._id}`, query: {} });
-          const updates = [], noms = [];
+          const updates = [], noms = [], effUps = [];
           for (const it of items) {
             const up = await localizeItem(it, fs);
-            if (Object.keys(up).length) { updates.push({ _id: it._id, ...up }); noms.push(up.name ? `${it.name} → ${up.name}` : `${it.name} (${up["system.description.value"] ? "description" : "unités"})`); }
+            if (up.__effects) { effUps.push([it._id, up.__effects]); noms.push(`${up.name || it.name} : ${up.__effects.length} effet(s)`); }
+            if (Object.keys(up).length) { updates.push({ _id: it._id, ...up }); noms.push(up.name ? `${it.name} → ${up.name}` : `${it.name} (${up["system.description.value"] ? "description" : up["system.materials.value"] ? "composantes" : "unités"})`); }
           }
           const aup = actorMetricUpdates(act);
           if (!a.dry_run) {
             for (let i = 0; i < updates.length; i += 50) await fs.doc("update", "Item", { parentUuid: `Actor.${act._id}`, updates: updates.slice(i, i + 50), diff: true, recursive: true, modifiedTime: Date.now(), render: true });
             if (Object.keys(aup).length) await fs.doc("update", "Actor", { updates: [{ _id: act._id, ...aup }], diff: true, recursive: true, modifiedTime: Date.now(), render: true });
+            for (const [iid, eu] of effUps)
+              await fs.doc("update", "ActiveEffect", { parentUuid: `Actor.${act._id}.Item.${iid}`, updates: eu, diff: true, recursive: true, modifiedTime: Date.now(), render: true });
           }
-          return out({ acteur: act.name, objets_modifies: updates.length, acteur_modifie: Object.keys(aup), detail: noms, simulation: !!a.dry_run });
+          return out({ acteur: act.name, objets_modifies: updates.length, effets_modifies: effUps.reduce((n, [, e]) => n + e.length, 0), acteur_modifie: Object.keys(aup), detail: noms, simulation: !!a.dry_run });
         }
         case "add_from_compendium": {
           const actor = a.actor ? await findActor(fs, a.actor) : null;
