@@ -445,7 +445,8 @@ export function toMetric(value) {
   if (out.template) { for (const k of ["size", "height", "width"]) if (out.template[k]) out.template[k] = f(out.template[k]); out.template.units = unit; }
   for (const grp of ["ranges", "paces", "speeds"]) if (out[grp]) for (const k of Object.keys(out[grp])) if (typeof out[grp][k] !== "object") out[grp][k] = f(out[grp][k]);
   for (const k of ["walk", "fly", "swim", "climb", "burrow", "darkvision", "blindsight", "tremorsense", "truesight"]) if (typeof out[k] === "number" || (typeof out[k] === "string" && out[k])) out[k] = f(out[k]);
-  return out;
+  if (out.template && !value.template?.units && !["size", "height", "width"].some(k => value.template?.[k])) out.template.units = value.template.units;
+  return JSON.stringify(out) === JSON.stringify(value) ? null : out;   // rien à convertir
 }
 /** Champs d'unités d'un objet (et de ses activités), convertis ; renvoie un objet d'updates en notation pointée. */
 export function itemMetricUpdates(it) {
