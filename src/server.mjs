@@ -18,8 +18,9 @@ const PORT = Number(process.env.PORT || 8808);
 const HOST = process.env.HOST || "0.0.0.0";
 const TRUSTED_PROXY = process.env.TRUSTED_PROXY || ""; // IP du reverse proxy dont on accepte X-Forwarded-For
 const PUBLIC_URL = (process.env.PUBLIC_URL || "").replace(/\/+$/, ""); // ex. https://foundry.example.com
-// Foundry n'accepte qu'une session par compte : la connexion du MCP est relâchée quelques secondes après le
-// dernier appel, pour que le joueur puisse se connecter dans son navigateur (IDLE_SECONDS, défaut 10 s).
+// L'écran de connexion de Foundry grise les comptes déjà actifs : tant que le MCP garde sa session, le joueur ne
+// peut pas (re)venir dans son navigateur. La connexion du MCP est donc relâchée quelques secondes après le dernier
+// appel (IDLE_SECONDS, défaut 10 s). Le MCP, lui, fonctionne même si le joueur est connecté.
 const IDLE_MS = (Number(process.env.IDLE_SECONDS) || 10) * 1000;
 const MAX_OUT = 60000;
 const ROLES = { 0: "aucun", 1: "joueur", 2: "joueur de confiance", 3: "MJ assistant", 4: "MJ" };
@@ -630,10 +631,7 @@ if (process.env.NO_LISTEN !== "1") http.createServer(async (req, res) => {
   const user = dec.slice(0, i), pass = dec.slice(i + 1);
   let fs;
   try { fs = i > 0 && pass ? await getSession(user, pass) : null; }
-  catch (e) {
-    if (e.code === "USER_ACTIVE") return deny(res, 409, `${e.message} (navigateur) : une seule session par compte. Utilise un compte dédié au MCP, ou déconnecte-toi de Foundry.`);
-    return deny(res, 503, `Foundry indisponible : ${e.message}`);
-  }
+  catch (e) { return deny(res, 503, `Foundry indisponible : ${e.message}`); }
   const ent = sessions.get(keyOf(user, pass));
   if (ent) { ent.busy = (ent.busy || 0) + 1; res.on("close", () => { ent.busy--; ent.last = Date.now(); }); }
   if (!fs) {

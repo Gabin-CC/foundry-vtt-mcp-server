@@ -48,9 +48,9 @@ Claude (CLI / Desktop) ──HTTPS + Basic auth──▶ foundry-vtt-mcp-server 
 | `gm_combat` | démarrer un combat avec les jetons de la scène, tour suivant / précédent, état, fin |
 | `gm_pause` | mettre la partie en pause / la reprendre |
 
-**Une session par compte** : Foundry n'accepte qu'une connexion par compte. Le serveur relâche sa connexion
-10 s après le dernier appel (`IDLE_SECONDS`) ; si le compte est déjà connecté dans un navigateur, l'appel renvoie
-une erreur 409 explicite. Pour utiliser le MCP pendant une partie, utiliser un compte Foundry dédié au MCP.
+**Connexion** : l'écran de connexion de Foundry grise les comptes déjà actifs. Le serveur relâche donc sa connexion
+10 s après le dernier appel (`IDLE_SECONDS`) pour que le joueur puisse revenir dans son navigateur. Le MCP fonctionne
+même quand le joueur est connecté.
 
 
 Les jets peuvent être publics, `mj`, `aveugle` ou `prive`.
