@@ -474,7 +474,9 @@ export async function handleTool(fs, params) {
             if (!eff) throw new Error(`Enchantement « ${en.effect} » introuvable dans ${en.uuid} (disponibles : ${pool.map(x => x.name).join(", ")})`);
             const act = acts.find(ac => (ac.effects || []).some(r => r._id === eff._id));
             const ed = structuredClone(eff); delete ed._id; delete ed._stats; delete ed.folder;
-            Object.assign(ed, { disabled: false, origin: `${en.uuid}.Activity.${act._id}` });
+            // dnd5e 6 / Foundry v14 : l'origine d'un enchantement appliqué est system.origin.activity
+            ed.disabled = false;
+            ed.system = { ...(ed.system || {}), origin: { ...(ed.system?.origin || {}), activity: `${en.uuid}.Activity.${act._id}` } };
             const parentUuid = actor ? `Actor.${actor._id}.Item.${target._id}` : `Item.${target._id}`;
             await fs.doc("create", "ActiveEffect", { parentUuid, data: [ed], modifiedTime: Date.now() });
             const c = created.find(x => x._id === target._id); if (c) c.enchantement = eff.name;
