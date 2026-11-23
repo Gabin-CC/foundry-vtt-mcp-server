@@ -146,7 +146,9 @@ export const TOOLS = [
       actor: { type: "string", description: "Acteur destinataire (nom ou _id). Absent = import dans le monde." },
       entries: { type: "array", items: { type: "object", properties: {
         pack: { type: "string" }, id: { type: "string" }, name: { type: "string", description: "Alternative à id : nom exact (FR ou EN)" }, uuid: { type: "string", description: "Alternative à pack+id : UUID (Compendium.x.y.Item.id, Item.id, Actor.id.Item.id)" }, item_type: { type: "string" }, quantity: { type: "number" }, levels: { type: "number" },
-        equipped: { type: "boolean" }, overrides: { type: "object", description: "Champs à surcharger (notation pointée)" } } } },
+        equipped: { type: "boolean" }, overrides: { type: "object", description: "Champs à surcharger (notation pointée)" },
+        enchant: { type: "object", description: "Applique un enchantement (activité « Enchanter » de dnd5e, ex. objets magiques 2024 « Armure +1, +2 ou +3 » sur une Cuirasse) : {uuid: objet source de l'enchantement, effect: nom ou _id de l'enchantement (ex. \"Armure +2\" ou \"+2\")}",
+          properties: { uuid: { type: "string" }, effect: { type: "string" } } } } } },
       folder: { type: "string", description: "Dossier (_id) pour un import dans le monde" } } } },
   { name: "give_loot", description: "Ajoute du butin à un acteur : pièces (pp, po, pe, pa, pc) et/ou objets créés à la volée (nom, type, description, valeur, quantité).",
     inputSchema: { type: "object", required: ["actor"], properties: {
@@ -401,7 +403,7 @@ export async function handleTool(fs, params) {
           const actor = a.actor ? await findActor(fs, a.actor) : null;
           const packs = await packsOf(fs);
           const byType = {};
-          const missing = [];
+          const missing = [], enchants = [];
           for (const e of a.entries) {
             if (e.uuid) {
               const d = structuredClone(await fetchUuid(fs, e.uuid));
@@ -409,8 +411,11 @@ export async function handleTool(fs, params) {
               d._stats = { ...(d._stats || {}), compendiumSource: e.uuid };
               if (e.quantity != null && d.system) d.system.quantity = e.quantity;
               if (e.equipped != null && d.system) d.system.equipped = e.equipped;
+              delete d.__pack;
               for (const [k, v] of Object.entries(e.overrides || {})) setPath(d, k, v);
-              (byType[d.items || d.prototypeToken ? "Actor" : "Item"] ??= []).push(d);
+              const t = d.items || d.prototypeToken ? "Actor" : "Item";
+              (byType[t] ??= []).push(d);
+              if (e.enchant) enchants.push({ type: t, idx: byType[t].length - 1, ...e.enchant });
               continue;
             }
             const pack = packs.find(p => p.id === e.pack);
@@ -445,13 +450,34 @@ export async function handleTool(fs, params) {
             }
             for (const [k, v] of Object.entries(e.overrides || {})) setPath(d, k, v);
             (byType[pack.type] ??= []).push(d);
+            if (e.enchant) enchants.push({ type: pack.type, idx: byType[pack.type].length - 1, ...e.enchant });
           }
-          const created = [];
+          const created = [], createdBy = {};
           for (const [type, data] of Object.entries(byType)) {
             if (actor && type !== "Item") throw new Error(`Impossible d'ajouter un ${type} à un acteur`);
             if (!actor && a.folder) data.forEach(d => d.folder = a.folder);
             const r = await fs.doc("create", type, { data, modifiedTime: Date.now(), ...(actor ? { parentUuid: `Actor.${actor._id}` } : {}) });
+            createdBy[type] = r;
             created.push(...r.map(x => ({ _id: x._id, nom: x.name, type: x.type })));
+          }
+          // Enchantements : équivalent d'EnchantActivity#applyEnchantment de dnd5e (copie de l'effet
+          // d'enchantement sur l'objet cible, activé, origin = l'activité source).
+          for (const en of enchants) {
+            const target = createdBy[en.type]?.[en.idx];
+            if (!target || en.type !== "Item") continue;
+            const src = await fetchUuid(fs, en.uuid);
+            const acts = Object.values(src.system?.activities || {}).filter(x => x.type === "enchant");
+            const q = norm(String(en.effect || ""));
+            const pool = (src.effects || []).filter(x => x.type === "enchantment" && acts.some(ac => (ac.effects || []).some(r => r._id === x._id)));
+            const eff = pool.find(x => x._id === en.effect) || pool.find(x => norm(x.name) === q) || pool.find(x => q && norm(x.name).endsWith(q))
+              || (pool.length === 1 ? pool[0] : null);
+            if (!eff) throw new Error(`Enchantement « ${en.effect} » introuvable dans ${en.uuid} (disponibles : ${pool.map(x => x.name).join(", ")})`);
+            const act = acts.find(ac => (ac.effects || []).some(r => r._id === eff._id));
+            const ed = structuredClone(eff); delete ed._id; delete ed._stats; delete ed.folder;
+            Object.assign(ed, { disabled: false, origin: `${en.uuid}.Activity.${act._id}` });
+            const parentUuid = actor ? `Actor.${actor._id}.Item.${target._id}` : `Item.${target._id}`;
+            await fs.doc("create", "ActiveEffect", { parentUuid, data: [ed], modifiedTime: Date.now() });
+            const c = created.find(x => x._id === target._id); if (c) c.enchantement = eff.name;
           }
           const notes = a.entries.map(e => e._note).filter(Boolean);
           if (created.some(c => c.type === "class")) notes.push("Assistant de niveau non exécuté (headless) : ajoute aptitudes de classe, compétences et maîtrises au choix via search_compendium/add_from_compendium/update_documents.");
