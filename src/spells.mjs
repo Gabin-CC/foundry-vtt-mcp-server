@@ -93,13 +93,19 @@ export async function planClassSpells(fs, actor, cls, level, choices) {
     if (needP && !choices["spells:prepared"]) pending.push({ id: "spells:prepared", objet: cls.name, type: "Spells", titre: `Sorts préparés (${needP} max)`, nombre: needP, options: leveled.map(s => `niv.${s.level} ${s.name} — ${s.uuid}`) });
     if (prepared.length > needP) throw new Error(`Trop de sorts préparés : ${prepared.length} > ${needP}`);
   }
-  return { pending, step: { cls, cantrips: cantrips.slice(0, needC), leveled, prepared: new Set(prepared.map(s => s.key)), maxLvl } };
+  // la limite exacte est recalculée à l'application (les aptitudes accordées au même passage,
+  // ex. Thaumaturge +1 sort mineur, n'existent pas encore sur la fiche au moment du plan)
+  return { pending, step: { cls, level, cantrips, leveled, prepared: new Set(prepared.map(s => s.key)), maxLvl } };
 }
 
 export async function applyClassSpells(fs, actor, step, classItemId) {
   const data = [];
   // l'acteur est relu après l'avancement : on saute ce qui a été accordé entre-temps (ex. sorts de domaine)
   const have = new Set((actor.items || []).filter(i => i.type === "spell").map(i => i.system?.identifier || norm(i.name)));
+  const id = step.cls.system?.identifier;
+  const cMax = (scaleAt(step.cls, "cantrips-known", step.level) ?? 0) + scaleBonus(actor, id, "cantrips-known");
+  const cOwn = (actor.items || []).filter(i => i.type === "spell" && Number(i.system?.level) === 0 && i.system?.sourceClass === id).length;
+  step.cantrips = step.cantrips.filter(c => !have.has(c.key)).slice(0, Math.max(0, cMax - cOwn));
   for (const s of [...step.cantrips, ...step.leveled]) {
     if (have.has(s.key)) continue;
     let d;
