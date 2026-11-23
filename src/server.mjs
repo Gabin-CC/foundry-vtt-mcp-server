@@ -524,7 +524,9 @@ export async function handleTool(fs, params) {
           const charLevel = classes.reduce((t, c) => t + (Number(c.system?.levels) || 0), 0);
           // espèce / historique / don : paliers jusqu'au niveau de personnage actuel (min. 1)
           const target = isClass ? (a.level ?? current + 1) : Math.max(1, charLevel);
-          const onlySpells = isClass && target <= current && a.spells === "all";
+          // le paramètre spells n'est pas exposé par tous les clients : des choix « spells:… » valent spells:"all"
+          const wantSpells = a.spells === "all" || Object.keys(a.choices || {}).some(k => k.startsWith("spells:"));
+          const onlySpells = isClass && target <= current && wantSpells;
           if (isClass && target <= current && !onlySpells) return out(`${root.name} est déjà niveau ${current}`);
           const isFirstClass = isClass && (isNew ? classes.length === 0 : (actor.system?.details?.originalClass ? actor.system.details.originalClass === root._id : classes[0]?._id === root._id));
           const from = isClass ? current + 1 : 0;
@@ -550,7 +552,7 @@ export async function handleTool(fs, params) {
             for (const it of leveled) { const p2 = await advPlan(fs, actor, it, { fromLevel: from, toLevel: target, choices: a.choices || {}, isFirstClass }); steps.push(...p2.steps); pending.push(...p2.pending); warnings.push(...p2.warnings); }
           }
           let spellPlan = null;
-          if (a.spells === "all" && isClass && root.system?.spellcasting?.progression && root.system.spellcasting.progression !== "none") {
+          if (wantSpells && isClass && root.system?.spellcasting?.progression && root.system.spellcasting.progression !== "none") {
             spellPlan = await planClassSpells(fs, actor, root, Math.max(target, current), a.choices || {});
             pending.push(...spellPlan.pending);
           }

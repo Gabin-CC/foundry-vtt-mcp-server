@@ -42,10 +42,26 @@ function spellChanges(act) {
   return changes;
 }
 
-/** Crée les sorts manquants des activités « cast » des objets de l'acteur. Renvoie les noms créés. */
-export async function ensureCastSpells(fs, actorId) {
-  const items = await fs.doc("get", "Item", { parentUuid: `Actor.${actorId}`, query: {} });
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const castNeeds = items => {
   const cached = new Set(items.map(i => i.flags?.dnd5e?.cachedFor).filter(Boolean));
+  return items.filter(it => it.type !== "spell").flatMap(it => Object.entries(it.system?.activities || {})
+    .filter(([aid, act]) => act.type === "cast" && act.spell?.uuid && !cached.has(`.Item.${it._id}.Activity.${aid}`)));
+};
+
+/** Crée les sorts manquants des activités « cast » des objets de l'acteur. Renvoie les noms créés.
+ *  Si le joueur a Foundry ouvert, c'est son navigateur qui crée ces sorts (comme dans Foundry) : on lui laisse
+ *  quelques secondes, on ne crée que ce qui manque encore, et on supprime les doublons éventuels. */
+export async function ensureCastSpells(fs, actorId) {
+  let items = await fs.doc("get", "Item", { parentUuid: `Actor.${actorId}`, query: {} });
+  for (let i = 0; i < 4 && castNeeds(items).length; i++) { await sleep(2000); items = await fs.doc("get", "Item", { parentUuid: `Actor.${actorId}`, query: {} }); }
+  // doublons (navigateur + MCP) : on garde la copie la plus ancienne
+  const seen = new Map(), dup = [];
+  for (const i of items.filter(i => i.flags?.dnd5e?.cachedFor).sort((a, b) => (a._stats?.createdTime || 0) - (b._stats?.createdTime || 0))) {
+    if (seen.has(i.flags.dnd5e.cachedFor)) dup.push(i._id); else seen.set(i.flags.dnd5e.cachedFor, i._id);
+  }
+  if (dup.length) await fs.doc("delete", "Item", { parentUuid: `Actor.${actorId}`, ids: dup, modifiedTime: Date.now() });
+  const cached = new Set(seen.keys());
   const data = [];
   for (const it of items) {
     if (it.type === "spell") continue;
