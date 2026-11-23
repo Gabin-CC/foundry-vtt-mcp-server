@@ -494,12 +494,14 @@ export async function handleTool(fs, params) {
           const charLevel = classes.reduce((t, c) => t + (Number(c.system?.levels) || 0), 0);
           // espèce / historique / don : paliers jusqu'au niveau de personnage actuel (min. 1)
           const target = isClass ? (a.level ?? current + 1) : Math.max(1, charLevel);
-          if (isClass && target <= current) return out(`${root.name} est déjà niveau ${current}`);
+          const onlySpells = isClass && target <= current && a.spells === "all";
+          if (isClass && target <= current && !onlySpells) return out(`${root.name} est déjà niveau ${current}`);
           const isFirstClass = isClass && (isNew ? classes.length === 0 : (actor.system?.details?.originalClass ? actor.system.details.originalClass === root._id : classes[0]?._id === root._id));
           const from = isClass ? current + 1 : 0;
           // inclut les avancements de la sous-classe existante
-          const { steps, pending, warnings } = await advPlan(fs, actor, root, { fromLevel: from, toLevel: target, choices: a.choices || {}, isFirstClass });
-          if (isClass && !isNew) {
+          const { steps, pending, warnings } = onlySpells ? { steps: [], pending: [], warnings: [] }
+            : await advPlan(fs, actor, root, { fromLevel: from, toLevel: target, choices: a.choices || {}, isFirstClass });
+          if (isClass && !isNew && !onlySpells) {
             const sub = (actor.items || []).find(i => i.type === "subclass" && i.system?.classIdentifier === root.system?.identifier);
             // paliers liés au niveau de personnage : espèce, historique et ce qu'ils ont accordé (ex. lignage Haut-elfe aux niv. 3 et 5)
             const originItems = (actor.items || []).filter(i => ["race", "background"].includes(i.type));
@@ -519,7 +521,7 @@ export async function handleTool(fs, params) {
           }
           let spellPlan = null;
           if (a.spells === "all" && isClass && root.system?.spellcasting?.progression && root.system.spellcasting.progression !== "none") {
-            spellPlan = await planClassSpells(fs, actor, root, target, a.choices || {});
+            spellPlan = await planClassSpells(fs, actor, root, Math.max(target, current), a.choices || {});
             pending.push(...spellPlan.pending);
           }
           if (pending.length) return out({ choix_requis: pending, avertissements: warnings.length ? warnings : undefined, rappel: "Rappelle 'advance' avec les mêmes paramètres + choices { id: valeur }. Rien n'a encore été appliqué." });
