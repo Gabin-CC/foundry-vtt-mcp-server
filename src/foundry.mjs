@@ -38,6 +38,10 @@ export class FoundrySession {
     if (!join?.world) throw new Error("Aucun monde actif");
     const user = join.users.find(u => u.name.toLowerCase() === String(username).toLowerCase());
     if (!user) return null;
+    // Foundry n'accepte qu'une session par compte : si le joueur est déjà connecté (navigateur), on le signale
+    // clairement au lieu de compter un échec d'authentification.
+    const active = user.active || (join.activeUsers || []).includes(user._id);
+    if (active && !adminPassword) { const e = new Error(`Le compte « ${user.name} » est déjà connecté dans Foundry`); e.code = "USER_ACTIVE"; throw e; }
     if (adminPassword) { // chemin de test : session admin + loginAs
       await fetch(`${FOUNDRY}/setup`, { method: "POST", headers, body: JSON.stringify({ action: "noop", adminPassword }) });
       r = await fetch(`${FOUNDRY}/join`, { method: "POST", headers, body: JSON.stringify({ action: "loginAs", userId: user._id }) });
@@ -47,7 +51,10 @@ export class FoundrySession {
     }
     if (r.status !== 200) return null;
     const j = await r.json().catch(() => ({}));
-    if (j.status !== "success") return null;
+    if (j.status !== "success") {
+      if (/already|déjà|active/i.test(j.message || j.error || "")) { const e = new Error(`Le compte « ${user.name} » est déjà connecté dans Foundry`); e.code = "USER_ACTIVE"; throw e; }
+      return null;
+    }
     const { socket, info } = await connectSocket(session);
     if (!info?.userId) { socket.close(); return null; }
     const s = new FoundrySession();

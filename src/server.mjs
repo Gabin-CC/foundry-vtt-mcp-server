@@ -17,7 +17,9 @@ const PORT = Number(process.env.PORT || 8808);
 const HOST = process.env.HOST || "0.0.0.0";
 const TRUSTED_PROXY = process.env.TRUSTED_PROXY || ""; // IP du reverse proxy dont on accepte X-Forwarded-For
 const PUBLIC_URL = (process.env.PUBLIC_URL || "").replace(/\/+$/, ""); // ex. https://foundry.example.com
-const IDLE_MS = 30 * 60 * 1000;
+// Foundry n'accepte qu'une session par compte : la connexion du MCP est relâchée quelques secondes après le
+// dernier appel, pour que le joueur puisse se connecter dans son navigateur (IDLE_SECONDS, défaut 10 s).
+const IDLE_MS = (Number(process.env.IDLE_SECONDS) || 10) * 1000;
 const MAX_OUT = 60000;
 const ROLES = { 0: "aucun", 1: "joueur", 2: "joueur de confiance", 3: "MJ assistant", 4: "MJ" };
 const TYPES = ["Actor", "Item", "JournalEntry", "Scene", "Folder", "User", "Playlist", "RollTable", "Macro",
@@ -42,8 +44,8 @@ async function getSession(user, pass) {
   return pending;
 }
 if (process.env.NO_LISTEN !== "1") setInterval(() => {
-  for (const [k, e] of sessions) if (e.s && Date.now() - e.last > IDLE_MS) { e.s.close(); sessions.delete(k); }
-}, 60000).unref();
+  for (const [k, e] of sessions) if (e.s && !e.busy && Date.now() - e.last > IDLE_MS) { e.s.close(); sessions.delete(k); }
+}, 2000).unref();
 
 // ---------- anti brute-force ----------
 const fails = new Map(); // ip -> [timestamps]
@@ -550,6 +552,7 @@ export async function handleTool(fs, params) {
           }
           if (pending.length) return out({ choix_requis: pending, avertissements: warnings.length ? warnings : undefined, rappel: "Rappelle 'advance' avec les mêmes paramètres + choices { id: valeur }. Rien n'a encore été appliqué." });
           const hadClass = (actor.items || []).some(i => i.type === "class") || (await fs.doc("get", "Item", { parentUuid: `Actor.${actor._id}`, query: { type: "class" } })).some(i => i.type === "class");
+          const slotsBefore = hadClass ? slotMax(actor) : {};
           const hpBefore = hadClass ? sheet(actor).pv : { max: 0 };   // PV avant (0 sans classe) : les PV gagnés s'ajoutent aux PV courants
           if (isNew) {
             const d = structuredClone(root); delete d._id; delete d.folder; delete d.sort; delete d.ownership; delete d.__src;
@@ -571,11 +574,23 @@ export async function handleTool(fs, params) {
           if (spellPlan) log.push("Sorts — " + await applyClassSpells(fs, await findActor(fs, actor._id), spellPlan.step, root._id));
           const castNew = await ensureCastSpells(fs, actor._id);   // sorts des activités « Lancer un sort » (comme Foundry)
           if (castNew.length) log.push("Sorts d'aptitude : " + castNew.join(", "));
-          let after = sheet(await findActor(fs, actor._id));
+          const fresh = await findActor(fs, actor._id);
+          let after = sheet(fresh);
+          // PV et emplacements de sort gagnés : ajoutés aux valeurs courantes (comme une montée de niveau dans Foundry)
+          const upd = {};
           const gain = (after.pv.max || 0) - (hpBefore.max || 0);
           if (gain) {
             const cur = Number(actor.system?.attributes?.hp?.value) || 0;
-            await fs.doc("update", "Actor", { updates: [{ _id: actor._id, "system.attributes.hp.value": Math.min(after.pv.max, Math.max(0, cur + gain)) }], diff: true, modifiedTime: Date.now() });
+            upd["system.attributes.hp.value"] = Math.min(after.pv.max, Math.max(0, cur + gain));
+          }
+          const slotsAfter = slotMax(fresh);
+          for (const [k, m] of Object.entries(slotsAfter)) {
+            if (k === "pactLevel") continue;
+            const d = (Number(m) || 0) - (Number(slotsBefore[k]) || 0);
+            if (d > 0) upd[`system.spells.${k}.value`] = Math.min(Number(m), (Number(fresh.system?.spells?.[k]?.value) || 0) + d);
+          }
+          if (Object.keys(upd).length) {
+            await fs.doc("update", "Actor", { updates: [{ _id: actor._id, ...upd }], diff: true, modifiedTime: Date.now() });
             after = sheet(await findActor(fs, actor._id));
           }
           return out({ applique: log, avertissements: warnings.length ? warnings : undefined, niveau: after.niveau, pv_max: after.pv.max, caracs: after.caracs,
@@ -607,7 +622,12 @@ if (process.env.NO_LISTEN !== "1") http.createServer(async (req, res) => {
   const user = dec.slice(0, i), pass = dec.slice(i + 1);
   let fs;
   try { fs = i > 0 && pass ? await getSession(user, pass) : null; }
-  catch (e) { return deny(res, 503, `Foundry indisponible : ${e.message}`); }
+  catch (e) {
+    if (e.code === "USER_ACTIVE") return deny(res, 409, `${e.message} (navigateur) : une seule session par compte. Utilise un compte dédié au MCP, ou déconnecte-toi de Foundry.`);
+    return deny(res, 503, `Foundry indisponible : ${e.message}`);
+  }
+  const ent = sessions.get(keyOf(user, pass));
+  if (ent) { ent.busy = (ent.busy || 0) + 1; res.on("close", () => { ent.busy--; ent.last = Date.now(); }); }
   if (!fs) {
     fails.set(ip, [...recentFails(ip), Date.now()]);
     console.warn(`[auth] échec pour "${user}" depuis ${ip}`);
