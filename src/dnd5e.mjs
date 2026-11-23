@@ -510,7 +510,9 @@ export async function localizeItem(it, fs) {
       } catch { /* compendium absent */ }
     }
     if (t?.name && t.name !== it.name) up.name = t.name;
-    const same = (x, y) => String(x || "").replace(/&amp;/g, "&").replace(/\s+/g, " ").trim() === String(y || "").replace(/&amp;/g, "&").replace(/\s+/g, " ").trim();
+    // comparaison sur le texte seul : Foundry réécrit le HTML à l'enregistrement (guillemets, entités, attributs)
+    const txt = x => String(x || "").replace(/<[^>]+>/g, " ").replace(/&(amp|#x27|#39|quot|apos|nbsp);/g, "").replace(/['’"&]/g, "").replace(/\s+/g, " ").trim();
+    const same = (x, y) => txt(x) === txt(y);
     if (t?.description && it.system?.description && !same(t.description, it.system.description.value)) up["system.description.value"] = t.description;
     if (t?.materials && it.system?.materials && !same(t.materials, it.system.materials.value)) up["system.materials.value"] = t.materials;
     // effets de l'objet : nom anglais retrouvé dans le compendium source (l'effet sur la fiche peut déjà être renommé)
