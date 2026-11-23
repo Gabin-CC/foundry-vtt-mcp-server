@@ -412,12 +412,94 @@ export async function translations(packId) {
 /** Entrée de traduction d'un document : clé _id d'abord, puis nom (même ordre que Babele). */
 export const trFor = (tr, doc) => tr?.[doc?._id] ?? tr?.[doc?.name];
 
+// ---- unités métriques (réglages dnd5e « metric*Units ») : même conversion que le module dnd5e_fr-FR ----
+export const UNITS = { length: false, weight: false, volume: false, at: 0 };
+/** Relit les réglages métriques du monde (cache 1 min). */
+export async function refreshUnits(fs) {
+  if (Date.now() - UNITS.at < 60000) return UNITS;
+  try {
+    for (const [k, key] of [["length", "dnd5e.metricLengthUnits"], ["weight", "dnd5e.metricWeightUnits"], ["volume", "dnd5e.metricVolumeUnits"]]) {
+      const d = (await fs.doc("get", "Setting", { query: { key } })).find(x => x.key === key);
+      UNITS[k] = d ? JSON.parse(d.value) === true : false;
+    }
+    UNITS.at = Date.now();
+  } catch { /* réglages illisibles : on garde les précédents */ }
+  return UNITS;
+}
+const round2 = n => Math.round((n + Number.EPSILON) * 100) / 100;
+const ftToM = v => (!UNITS.length || !v || isNaN(parseInt(v))) ? v : round2(parseInt(v) * 0.3);
+const miToKm = v => (!UNITS.length || !v || isNaN(parseInt(v))) ? v : round2(parseInt(v) * 1.5);
+const lbToKg = v => (!UNITS.weight || !v) ? v : parseInt(v) / 2;
+const cfToL = v => (!UNITS.volume || !v) ? v : round2(parseFloat(v) * 28.3);
+const CONV = () => ({ ft: [ftToM, UNITS.length ? "m" : "ft"], mi: [miToKm, UNITS.length ? "km" : "mi"], mph: [miToKm, UNITS.length ? "kph" : "mph"],
+  lb: [lbToKg, UNITS.weight ? "kg" : "lb"], cubicFoot: [cfToL, UNITS.volume ? "liter" : "cubicFoot"] });
+/** Convertit un bloc d'unités dnd5e (portée, gabarit, vitesses, sens, poids…) ; renvoie null si rien à changer. */
+export function toMetric(value) {
+  if (!value || typeof value !== "object") return null;
+  const u = value.units ?? value.template?.units ?? "ft";
+  const c = CONV()[u];
+  if (!c || c[1] === u) return null;   // déjà converti, ou réglage métrique inactif
+  const [f, unit] = c, out = structuredClone(value);
+  for (const k of ["value", "long", "reach", "distance", "bright", "dim", "range"]) if (out[k]) out[k] = f(out[k]);
+  if (out.units !== undefined) out.units = unit;
+  if (out.template) { for (const k of ["size", "height", "width"]) if (out.template[k]) out.template[k] = f(out.template[k]); out.template.units = unit; }
+  for (const grp of ["ranges", "paces", "speeds"]) if (out[grp]) for (const k of Object.keys(out[grp])) if (typeof out[grp][k] !== "object") out[grp][k] = f(out[grp][k]);
+  for (const k of ["walk", "fly", "swim", "climb", "burrow", "darkvision", "blindsight", "tremorsense", "truesight"]) if (typeof out[k] === "number" || (typeof out[k] === "string" && out[k])) out[k] = f(out[k]);
+  return out;
+}
+/** Champs d'unités d'un objet (et de ses activités), convertis ; renvoie un objet d'updates en notation pointée. */
+export function itemMetricUpdates(it) {
+  const up = {};
+  for (const path of ["system.movement", "system.weight", "system.range", "system.capacity.weight", "system.senses", "system.target", "system.capacity.volume"]) {
+    const v = path.split(".").reduce((o, k) => o?.[k], it);
+    const c = toMetric(v); if (c) up[path] = c;
+  }
+  for (const [id, act] of Object.entries(it.system?.activities || {})) for (const k of ["range", "target"]) {
+    const c = toMetric(act?.[k]); if (c) up[`system.activities.${id}.${k}`] = c;
+  }
+  return up;
+}
+/** Champs d'unités d'un acteur (déplacement, sens, vision du jeton). */
+export function actorMetricUpdates(a) {
+  const up = {};
+  for (const path of ["system.attributes.movement", "system.attributes.senses", "system.attributes.travel", "system.traits.languages.communication.telepathy"]) {
+    const v = path.split(".").reduce((o, k) => o?.[k], a);
+    const c = toMetric(v); if (c) up[path] = c;
+  }
+  const sight = a.prototypeToken?.sight;
+  if (sight?.range && UNITS.length && !a.flags?.dnd5e?.metricToken) { up["prototypeToken.sight.range"] = ftToM(sight.range); up["flags.dnd5e.metricToken"] = true; }
+  return up;
+}
+
 export async function translateDoc(packId, doc) {
   const t = trFor(await translations(packId), doc);
-  if (!t) return doc;
+  if (!t) return withMetric(doc);
+  return withMetric(applyTr(doc, t));
+}
+function withMetric(doc) {
+  const up = doc?.system ? itemMetricUpdates(doc) : {};
+  if (!Object.keys(up).length) return doc;
+  const c = structuredClone(doc);
+  for (const [p, v] of Object.entries(up)) { const ks = p.split("."); let o = c; ks.slice(0, -1).forEach(k => { o = o[k] ??= {}; }); o[ks.at(-1)] = v; }
+  return c;
+}
+function applyTr(doc, t) {
   const c = structuredClone(doc);
   if (t.name) c.name = t.name;
   if (t.description && c.system?.description) c.system.description.value = t.description;
   if (t.description && c.text) c.text.content = t.description; // pages de journal
   return c;
+}
+/** Traduction d'un objet d'acteur d'après sa source de compendium (comme la traduction à la demande de Babele). */
+export async function localizeItem(it) {
+  const src = it._stats?.compendiumSource || it.flags?.core?.sourceId || it.flags?.dnd5e?.sourceId;
+  const m = /^Compendium\.([^.]+\.[^.]+)\.(?:Item\.)?([A-Za-z0-9]{16})$/.exec(src || "");
+  const up = {};
+  if (m) {
+    const tr = await translations(m[1]);
+    const t = tr?.[m[2]] ?? tr?.[it.name];
+    if (t?.name && t.name !== it.name) up.name = t.name;
+    if (t?.description && it.system?.description && t.description !== it.system.description.value) up["system.description.value"] = t.description;
+  }
+  return Object.assign(up, itemMetricUpdates(it));
 }

@@ -10,7 +10,7 @@ import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprot
 import { FoundrySession } from "./foundry.mjs";
 import { plan as advPlan, apply as advApply, fetchUuid } from "./advancement.mjs";
 import { planClassSpells, applyClassSpells } from "./spells.mjs";
-import { rollFormula, derive, checkBonus, sheet, slotMax, useItem, translations, translateDoc, trFor, ABIL, SKILLS } from "./dnd5e.mjs";
+import { rollFormula, derive, checkBonus, sheet, slotMax, useItem, translations, translateDoc, trFor, refreshUnits, localizeItem, actorMetricUpdates, ABIL, SKILLS } from "./dnd5e.mjs";
 
 const PORT = Number(process.env.PORT || 8808);
 const HOST = process.env.HOST || "0.0.0.0";
@@ -134,6 +134,8 @@ export const TOOLS = [
       level: { type: "number", description: "Niveau de sort" }, limit: { type: "number", default: 25 } } } },
   { name: "get_compendium_entry", description: "Lit une entrée de compendium (traduite en FR si possible).",
     inputSchema: { type: "object", required: ["pack", "id"], properties: { pack: { type: "string" }, id: { type: "string" }, path: { type: "string" } } } },
+  { name: "localize_actor", description: "Traduit en FR les objets d'un acteur d'après leur compendium d'origine (comme la traduction d'acteur de Babele) et convertit les unités en mètres/kg si l'option métrique de dnd5e est active. Sans effet sur ce qui est déjà traduit/converti.",
+    inputSchema: { type: "object", properties: { actor: { type: "string", description: "Nom ou _id de l'acteur" }, dry_run: { type: "boolean", description: "Liste les changements sans les appliquer" } }, required: ["actor"] } },
   { name: "add_from_compendium", description: "Ajoute des entrées de compendium à un acteur (sorts, objets, butin, classe, espèce, historique, dons...) ou les importe dans le monde si 'actor' est absent (ex. un monstre). Traduit en FR. Pour une classe, 'levels' fixe le niveau et remplit les PV (max au niv. 1, puis moyenne).",
     inputSchema: { type: "object", required: ["entries"], properties: {
       actor: { type: "string", description: "Acteur destinataire (nom ou _id). Absent = import dans le monde." },
@@ -240,6 +242,7 @@ function makeServer(fs) {
 }
 
 export async function handleTool(fs, params) {
+  try { await refreshUnits(fs); } catch { /* pas bloquant */ }
     const a = params.arguments || {};
     try {
       switch (params.name) {
@@ -367,6 +370,22 @@ export async function handleTool(fs, params) {
           const d = (await fs.doc("get", pack.type, { pack: pack.id, query: { _id: a.id } })).find(x => x._id === a.id);
           if (!d) return out("Entrée introuvable");
           return out(getPath(await translateDoc(pack.id, d), a.path));
+        }
+        case "localize_actor": {
+          const act = await findActor(fs, a.actor);
+          await refreshUnits(fs);
+          const items = await fs.doc("get", "Item", { parentUuid: `Actor.${act._id}`, query: {} });
+          const updates = [], noms = [];
+          for (const it of items) {
+            const up = await localizeItem(it);
+            if (Object.keys(up).length) { updates.push({ _id: it._id, ...up }); noms.push(up.name ? `${it.name} → ${up.name}` : `${it.name} (unités)`); }
+          }
+          const aup = actorMetricUpdates(act);
+          if (!a.dry_run) {
+            for (let i = 0; i < updates.length; i += 50) await fs.doc("update", "Item", { parentUuid: `Actor.${act._id}`, updates: updates.slice(i, i + 50), diff: true, recursive: true, modifiedTime: Date.now(), render: true });
+            if (Object.keys(aup).length) await fs.doc("update", "Actor", { updates: [{ _id: act._id, ...aup }], diff: true, recursive: true, modifiedTime: Date.now(), render: true });
+          }
+          return out({ acteur: act.name, objets_modifies: updates.length, acteur_modifie: Object.keys(aup), detail: noms, simulation: !!a.dry_run });
         }
         case "add_from_compendium": {
           const actor = a.actor ? await findActor(fs, a.actor) : null;
