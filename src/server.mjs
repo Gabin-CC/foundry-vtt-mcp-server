@@ -547,6 +547,7 @@ export async function handleTool(fs, params) {
             pending.push(...spellPlan.pending);
           }
           if (pending.length) return out({ choix_requis: pending, avertissements: warnings.length ? warnings : undefined, rappel: "Rappelle 'advance' avec les mêmes paramètres + choices { id: valeur }. Rien n'a encore été appliqué." });
+          const hpBefore = sheet(actor).pv;   // PV avant : les PV gagnés s'ajoutent aux PV courants (comme l'avancement de Foundry)
           if (isNew) {
             const d = structuredClone(root); delete d._id; delete d.folder; delete d.sort; delete d.ownership; delete d.__src;
             d._stats = { ...(d._stats || {}), compendiumSource: root.__src };
@@ -565,7 +566,13 @@ export async function handleTool(fs, params) {
           }
           const log = await advApply(fs, actor, root._id, steps, { hpMode: a.hp || "avg", isFirstClass });
           if (spellPlan) log.push("Sorts — " + await applyClassSpells(fs, await findActor(fs, actor._id), spellPlan.step, root._id));
-          const after = sheet(await findActor(fs, actor._id));
+          let after = sheet(await findActor(fs, actor._id));
+          const gain = (after.pv.max || 0) - (hpBefore.max || 0);
+          if (gain) {
+            const cur = Number(actor.system?.attributes?.hp?.value) || 0;
+            await fs.doc("update", "Actor", { updates: [{ _id: actor._id, "system.attributes.hp.value": Math.min(after.pv.max, Math.max(0, cur + gain)) }], diff: true, modifiedTime: Date.now() });
+            after = sheet(await findActor(fs, actor._id));
+          }
           return out({ applique: log, avertissements: warnings.length ? warnings : undefined, niveau: after.niveau, pv_max: after.pv.max, caracs: after.caracs,
             rappel_sorts: isClass && root.system?.spellcasting?.progression && root.system.spellcasting.progression !== "none" ? "Les sorts préparés/connus se choisissent ensuite (search_compendium + add_from_compendium), comme dans Foundry." : undefined });
         }
