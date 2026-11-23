@@ -31,6 +31,7 @@ Claude (CLI / Desktop) ──HTTPS + Basic auth──▶ foundry-vtt-mcp-server 
 | `rest` | Repos court / long |
 | `list_packs` / `search_compendium` / `get_compendium_entry` | Compendiums, recherche en **français ou anglais** |
 | `add_from_compendium` | Ajoute sorts, objets, classe (avec niveaux et PV), espèce, historique… à un acteur, ou importe dans le monde |
+| `localize_actor` | Traduit les objets d'un acteur d'après leur compendium d'origine (comme la traduction d'acteur de Babele) et convertit pieds/livres en mètres/kg si l'option métrique de dnd5e est active |
 | `give_loot` | Pièces et objets créés à la volée |
 | `upload_file` | Envoie une image / un son (URL ou base64) |
 | `send_chat` | Message dans le chat, au nom d'un personnage, chuchotements |
@@ -137,7 +138,7 @@ ADMIN_PASSWORD='mdp admin Foundry' node scripts/test-tools.mjs MonPseudo '[["act
 
 Headless [MCP](https://modelcontextprotocol.io) server for Foundry VTT v13/v14 (dnd5e-focused). **No browser and no Foundry module needed**: the server logs in to Foundry like a web client (`/join` + socket.io). Each user authenticates with **their own Foundry username and password** via HTTP Basic auth and acts with their own Foundry permissions.
 
-Tools: generic document CRUD (incl. embedded documents), computed character sheet, dice rolls and checks posted to chat, `use_item` (spell/weapon/consumable: attack, damage incl. crits/upcasting/cantrip scaling, healing, save DC, slot/uses/quantity consumption, chat card), short/long rest, compendium search (French or English names when the `dnd5e_fr-FR` Babele translations are installed), `add_from_compendium` (spells, items, class with levels/HP, species, background…), loot, file upload, chat messages.
+Tools: generic document CRUD (incl. embedded documents), computed character sheet, dice rolls and checks posted to chat, `use_item` (spell/weapon/consumable: attack, damage incl. crits/upcasting/cantrip scaling, healing, save DC, slot/uses/quantity consumption, chat card), short/long rest, compendium search (French or English names when the `dnd5e_fr-FR` Babele translations are installed), `add_from_compendium` (spells, items, class with levels/HP, species, background…), `localize_actor` (re-apply Babele translations and metric units to an existing actor), loot, file upload, chat messages.
 
 Limitations: the dnd5e advancement workflow runs client-side and is not executed; derived values are recomputed server-side (good for common cases); relies on Foundry's internal client protocol, so major Foundry updates may require changes; users without a password are rejected.
 
