@@ -409,8 +409,11 @@ export async function translations(packId) {
   trCache.set(packId, { t, at: Date.now() });
   return t;
 }
+/** Entrée de traduction d'un document : clé _id d'abord, puis nom (même ordre que Babele). */
+export const trFor = (tr, doc) => tr?.[doc?._id] ?? tr?.[doc?.name];
+
 export async function translateDoc(packId, doc) {
-  const t = (await translations(packId))?.[doc.name];
+  const t = trFor(await translations(packId), doc);
   if (!t) return doc;
   const c = structuredClone(doc);
   if (t.name) c.name = t.name;

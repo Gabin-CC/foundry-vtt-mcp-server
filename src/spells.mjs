@@ -1,7 +1,7 @@
 // Sorts de classe : construit la liste de sorts d'une classe à partir de TOUT ce qui est installé
 // dans Foundry (listes de sorts officielles + classes déclarées par chaque sort), puis ajoute
 // sorts mineurs / sorts de classe / sorts préparés selon les compteurs de la classe.
-import { translations, slotMax } from "./dnd5e.mjs";
+import { translations, trFor, slotMax } from "./dnd5e.mjs";
 import { spellLists, fetchUuid } from "./advancement.mjs";
 
 const norm = t => String(t || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]+/g, " ").trim();
@@ -47,7 +47,7 @@ export async function classSpellList(fs, cls) {
       const declared = e.flags?.plutonium?.spellClassNames || [];
       if (!(official.has(uuid) || declared.includes(className) || e.system?.sourceClass === id)) continue;
       const k = e.system?.identifier || norm(e.name);
-      const cand = { uuid, name: tr?.[e.name]?.name || e.name, name_en: e.name, level: Number(e.system?.level) || 0, key: k, rank: rank(pk) };
+      const cand = { uuid, name: trFor(tr, e)?.name || e.name, name_en: e.name, level: Number(e.system?.level) || 0, key: k, rank: rank(pk) };
       const cur = best.get(k);
       if (!cur || cand.rank < cur.rank) best.set(k, cand);
     }

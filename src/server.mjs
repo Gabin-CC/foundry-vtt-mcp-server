@@ -10,7 +10,7 @@ import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprot
 import { FoundrySession } from "./foundry.mjs";
 import { plan as advPlan, apply as advApply, fetchUuid } from "./advancement.mjs";
 import { planClassSpells, applyClassSpells } from "./spells.mjs";
-import { rollFormula, derive, checkBonus, sheet, slotMax, useItem, translations, translateDoc, ABIL, SKILLS } from "./dnd5e.mjs";
+import { rollFormula, derive, checkBonus, sheet, slotMax, useItem, translations, translateDoc, trFor, ABIL, SKILLS } from "./dnd5e.mjs";
 
 const PORT = Number(process.env.PORT || 8808);
 const HOST = process.env.HOST || "0.0.0.0";
@@ -225,7 +225,7 @@ async function packIndex(fs, pack) {
     let idx = [];
     try { idx = await fs.doc("get", pack.type, { pack: pack.id, query: {}, index: true, indexFields: fields }); } catch { idx = []; }
     const tr = await translations(pack.id);
-    fs._idx.set(pack.id, idx.map(e => ({ ...e, name_fr: tr?.[e.name]?.name || null })));
+    fs._idx.set(pack.id, idx.map(e => ({ ...e, name_fr: trFor(tr, e)?.name || null })));
   }
   return fs._idx.get(pack.id);
 }
