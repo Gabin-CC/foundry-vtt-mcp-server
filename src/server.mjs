@@ -10,6 +10,7 @@ import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprot
 import { FoundrySession } from "./foundry.mjs";
 import { plan as advPlan, apply as advApply, fetchUuid } from "./advancement.mjs";
 import { planClassSpells, applyClassSpells } from "./spells.mjs";
+import { ensureCastSpells } from "./cast.mjs";
 import { rollFormula, derive, checkBonus, sheet, slotMax, useItem, translations, translateDoc, trFor, refreshUnits, localizeItem, actorMetricUpdates, ABIL, SKILLS } from "./dnd5e.mjs";
 
 const PORT = Number(process.env.PORT || 8808);
@@ -449,6 +450,7 @@ export async function handleTool(fs, params) {
           const notes = a.entries.map(e => e._note).filter(Boolean);
           if (created.some(c => c.type === "class")) notes.push("Assistant de niveau non exécuté (headless) : ajoute aptitudes de classe, compétences et maîtrises au choix via search_compendium/add_from_compendium/update_documents.");
           if (missing.length) notes.push(`Introuvables dans le compendium : ${missing.join(", ")}`);
+          if (actor) { const cn = await ensureCastSpells(fs, actor._id); if (cn.length) notes.push("Sorts d'aptitude ajoutés : " + cn.join(", ")); }
           return out({ ajoutes: created, a: actor ? actor.name : "monde", notes });
         }
         case "give_loot": {
@@ -547,7 +549,8 @@ export async function handleTool(fs, params) {
             pending.push(...spellPlan.pending);
           }
           if (pending.length) return out({ choix_requis: pending, avertissements: warnings.length ? warnings : undefined, rappel: "Rappelle 'advance' avec les mêmes paramètres + choices { id: valeur }. Rien n'a encore été appliqué." });
-          const hpBefore = sheet(actor).pv;   // PV avant : les PV gagnés s'ajoutent aux PV courants (comme l'avancement de Foundry)
+          const hadClass = (actor.items || []).some(i => i.type === "class") || (await fs.doc("get", "Item", { parentUuid: `Actor.${actor._id}`, query: { type: "class" } })).some(i => i.type === "class");
+          const hpBefore = hadClass ? sheet(actor).pv : { max: 0 };   // PV avant (0 sans classe) : les PV gagnés s'ajoutent aux PV courants
           if (isNew) {
             const d = structuredClone(root); delete d._id; delete d.folder; delete d.sort; delete d.ownership; delete d.__src;
             d._stats = { ...(d._stats || {}), compendiumSource: root.__src };
@@ -566,6 +569,8 @@ export async function handleTool(fs, params) {
           }
           const log = await advApply(fs, actor, root._id, steps, { hpMode: a.hp || "avg", isFirstClass });
           if (spellPlan) log.push("Sorts — " + await applyClassSpells(fs, await findActor(fs, actor._id), spellPlan.step, root._id));
+          const castNew = await ensureCastSpells(fs, actor._id);   // sorts des activités « Lancer un sort » (comme Foundry)
+          if (castNew.length) log.push("Sorts d'aptitude : " + castNew.join(", "));
           let after = sheet(await findActor(fs, actor._id));
           const gain = (after.pv.max || 0) - (hpBefore.max || 0);
           if (gain) {
