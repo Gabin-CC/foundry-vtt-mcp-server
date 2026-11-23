@@ -55,7 +55,7 @@ async function findById(fs, type, id) {
 
 // ---------- listes de sorts de classe (pages de journal de type "spells") ----------
 const spellListCache = new Map(); // "class:cleric" -> Set(uuid)
-async function spellLists(fs) {
+export async function spellLists(fs) {
   if (spellListCache.size) return spellListCache;
   const w = await fs.worldData();
   for (const p of (w.packs || []).filter(p => p.type === "JournalEntry" && p.packageName === "dnd5e")) {

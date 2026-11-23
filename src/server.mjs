@@ -9,6 +9,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { FoundrySession } from "./foundry.mjs";
 import { plan as advPlan, apply as advApply, fetchUuid } from "./advancement.mjs";
+import { planClassSpells, applyClassSpells } from "./spells.mjs";
 import { rollFormula, derive, checkBonus, sheet, slotMax, useItem, translations, translateDoc, ABIL, SKILLS } from "./dnd5e.mjs";
 
 const PORT = Number(process.env.PORT || 8808);
@@ -56,7 +57,7 @@ const recentFails = ip => (fails.get(ip) || []).filter(t => Date.now() - t < 15 
 const num0 = v => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
 const getPath = (o, p) => p ? p.split(".").reduce((a, k) => a?.[k], o) : o;
 const out = v => {
-  let t = typeof v === "string" ? v : JSON.stringify(v, null, 1);
+  let t = typeof v === "string" ? v : (JSON.stringify(v, null, 1) ?? "(vide)");
   if (t.length > MAX_OUT) t = t.slice(0, MAX_OUT) + `\n… [tronqué : ${t.length} caractères au total. Utilise 'fields', 'path' ou 'limit' pour réduire.]`;
   return { content: [{ type: "text", text: t }] };
 };
@@ -162,7 +163,8 @@ export const TOOLS = [
       source: { type: "object", description: "Objet à importer : {pack, id}, {pack, name} ou {uuid} (y compris objets du monde \"Item.<id>\")", properties: { pack: { type: "string" }, id: { type: "string" }, name: { type: "string" }, uuid: { type: "string" } } },
       item: { type: "string", description: "Classe déjà présente sur l'acteur (nom ou _id) à faire monter" },
       level: { type: "number", description: "Niveau de classe visé (défaut : niveau actuel + 1, ou 1 pour un import)" },
-      choices: { type: "object" }, hp: { type: "string", enum: ["avg", "max"], default: "avg" } } } },
+      choices: { type: "object" }, hp: { type: "string", enum: ["avg", "max"], default: "avg" },
+      spells: { type: "string", enum: ["none", "all"], default: "none", description: "'all' : ajoute tous les sorts de la classe accessibles (liste construite depuis tous les compendiums installés) et demande sorts mineurs (choices['spells:cantrips']) et sorts préparés (choices['spells:prepared'])" } } } },
 ];
 
 // ---------- helpers D&D / Foundry ----------
@@ -515,6 +517,11 @@ export async function handleTool(fs, params) {
               && Object.values(i.system?.advancement || {}).some(x => Number(x.level) > 0));
             for (const it of leveled) { const p2 = await advPlan(fs, actor, it, { fromLevel: from, toLevel: target, choices: a.choices || {}, isFirstClass }); steps.push(...p2.steps); pending.push(...p2.pending); warnings.push(...p2.warnings); }
           }
+          let spellPlan = null;
+          if (a.spells === "all" && isClass && root.system?.spellcasting?.progression && root.system.spellcasting.progression !== "none") {
+            spellPlan = await planClassSpells(fs, actor, root, target, a.choices || {});
+            pending.push(...spellPlan.pending);
+          }
           if (pending.length) return out({ choix_requis: pending, avertissements: warnings.length ? warnings : undefined, rappel: "Rappelle 'advance' avec les mêmes paramètres + choices { id: valeur }. Rien n'a encore été appliqué." });
           if (isNew) {
             const d = structuredClone(root); delete d._id; delete d.folder; delete d.sort; delete d.ownership; delete d.__src;
@@ -533,6 +540,7 @@ export async function handleTool(fs, params) {
             await fs.doc("update", "Item", { parentUuid: `Actor.${actor._id}`, updates: [{ _id: root._id, "system.levels": target }], modifiedTime: Date.now() });
           }
           const log = await advApply(fs, actor, root._id, steps, { hpMode: a.hp || "avg", isFirstClass });
+          if (spellPlan) log.push("Sorts — " + await applyClassSpells(fs, await findActor(fs, actor._id), spellPlan.step, root._id));
           const after = sheet(await findActor(fs, actor._id));
           return out({ applique: log, avertissements: warnings.length ? warnings : undefined, niveau: after.niveau, pv_max: after.pv.max, caracs: after.caracs,
             rappel_sorts: isClass && root.system?.spellcasting?.progression && root.system.spellcasting.progression !== "none" ? "Les sorts préparés/connus se choisissent ensuite (search_compendium + add_from_compendium), comme dans Foundry." : undefined });
