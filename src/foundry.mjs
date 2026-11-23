@@ -62,6 +62,13 @@ export class FoundrySession {
     return s;
   }
   get alive() { return this.socket?.connected; }
+  /** Événement socket relayé par le serveur Foundry aux autres clients (shareImage, showEntry, pause, pullToScene…). */
+  broadcast(ev, ...args) {
+    return new Promise(resolve => {
+      const t = setTimeout(() => resolve(null), 3000);
+      this.socket.emit(ev, ...args, r => { clearTimeout(t); resolve(r ?? true); });
+    });
+  }
   close() { this.socket?.close(); }
   async doc(action, type, operation = {}) {
     const r = await emit(this.socket, "modifyDocument", { type, action, operation });

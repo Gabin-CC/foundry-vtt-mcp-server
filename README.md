@@ -36,6 +36,23 @@ Claude (CLI / Desktop) ──HTTPS + Basic auth──▶ foundry-vtt-mcp-server 
 | `upload_file` | Envoie une image / un son (URL ou base64) |
 | `send_chat` | Message dans le chat, au nom d'un personnage, chuchotements |
 
+### Outils de MJ (comptes MJ et assistant MJ uniquement)
+
+| Outil | Rôle |
+|---|---|
+| `gm_scene` | lister les scènes, activer une scène, amener les joueurs sur une scène, régler l'obscurité |
+| `gm_music` | lister les playlists, lancer / arrêter une playlist ou un morceau, régler le volume, tout arrêter |
+| `gm_show` | montrer une image (fenêtre chez les joueurs) ou un journal / une page de journal |
+| `gm_tile` | poser une image sur le plateau (tuile) |
+| `gm_token` | lister, poser, déplacer, cacher, montrer, retirer des jetons |
+| `gm_combat` | démarrer un combat avec les jetons de la scène, tour suivant / précédent, état, fin |
+| `gm_pause` | mettre la partie en pause / la reprendre |
+
+**Une session par compte** : Foundry n'accepte qu'une connexion par compte. Le serveur relâche sa connexion
+10 s après le dernier appel (`IDLE_SECONDS`) ; si le compte est déjà connecté dans un navigateur, l'appel renvoie
+une erreur 409 explicite. Pour utiliser le MCP pendant une partie, utiliser un compte Foundry dédié au MCP.
+
+
 Les jets peuvent être publics, `mj`, `aveugle` ou `prive`.
 
 **Traduction FR** : si le module [`dnd5e_fr-FR`](https://foundryvtt.com/packages/dnd5e_fr-FR) est installé, les noms et descriptions des compendiums sont traduits (recherche et import).

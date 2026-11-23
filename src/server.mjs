@@ -11,6 +11,7 @@ import { FoundrySession } from "./foundry.mjs";
 import { plan as advPlan, apply as advApply, fetchUuid } from "./advancement.mjs";
 import { planClassSpells, applyClassSpells } from "./spells.mjs";
 import { ensureCastSpells } from "./cast.mjs";
+import { GM_TOOLS, GM_ROLE, handleGm } from "./gm.mjs";
 import { rollFormula, derive, checkBonus, sheet, slotMax, useItem, translations, translateDoc, trFor, refreshUnits, localizeItem, actorMetricUpdates, ABIL, SKILLS } from "./dnd5e.mjs";
 
 const PORT = Number(process.env.PORT || 8808);
@@ -170,6 +171,7 @@ export const TOOLS = [
       level: { type: "number", description: "Niveau de classe visé (défaut : niveau actuel + 1, ou 1 pour un import)" },
       choices: { type: "object" }, hp: { type: "string", enum: ["avg", "max"], default: "avg" },
       spells: { type: "string", enum: ["none", "all"], default: "none", description: "'all' : ajoute tous les sorts de la classe accessibles (liste construite depuis tous les compendiums installés) et demande sorts mineurs (choices['spells:cantrips']) et sorts préparés (choices['spells:prepared'])" } } } },
+  ...GM_TOOLS,   // outils de MJ : listés seulement pour les comptes MJ / assistant MJ
 ];
 
 // ---------- helpers D&D / Foundry ----------
@@ -239,7 +241,8 @@ function setPath(o, p, v) { const ks = p.split("."); let x = o; ks.slice(0, -1).
 
 function makeServer(fs) {
   const server = new Server({ name: "foundry-vtt", version: "1.0.0" }, { capabilities: { tools: {} } });
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
+  const isGM = (Number(fs.user?.role) || 0) >= GM_ROLE;
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS.filter(t => !t.gm || isGM).map(({ gm, ...t }) => t) }));
   server.setRequestHandler(CallToolRequestSchema, async ({ params }) => handleTool(fs, params));
   return server;
 }
@@ -596,7 +599,12 @@ export async function handleTool(fs, params) {
           return out({ applique: log, avertissements: warnings.length ? warnings : undefined, niveau: after.niveau, pv_max: after.pv.max, caracs: after.caracs,
             rappel_sorts: isClass && root.system?.spellcasting?.progression && root.system.spellcasting.progression !== "none" ? "Les sorts préparés/connus se choisissent ensuite (search_compendium + add_from_compendium), comme dans Foundry." : undefined });
         }
-        default: return out(`Outil inconnu : ${params.name}`);
+        default:
+          if (params.name.startsWith("gm_")) {
+            if ((Number(fs.user?.role) || 0) < GM_ROLE) return out("Outil réservé aux comptes MJ ou assistant MJ.");
+            return out(await handleGm(fs, params.name, a));
+          }
+          return out(`Outil inconnu : ${params.name}`);
       }
     } catch (e) {
       return { isError: true, content: [{ type: "text", text: `Erreur Foundry : ${e.message}` }] };
