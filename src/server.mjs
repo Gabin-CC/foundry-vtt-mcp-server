@@ -378,7 +378,7 @@ export async function handleTool(fs, params) {
           const updates = [], noms = [];
           for (const it of items) {
             const up = await localizeItem(it);
-            if (Object.keys(up).length) { updates.push({ _id: it._id, ...up }); noms.push(up.name ? `${it.name} → ${up.name}` : `${it.name} (unités)`); }
+            if (Object.keys(up).length) { updates.push({ _id: it._id, ...up }); noms.push(up.name ? `${it.name} → ${up.name}` : `${it.name} (${up["system.description.value"] ? "description" : "unités"})`); }
           }
           const aup = actorMetricUpdates(act);
           if (!a.dry_run) {

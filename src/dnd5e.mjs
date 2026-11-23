@@ -500,7 +500,8 @@ export async function localizeItem(it) {
     const tr = await translations(m[1]);
     const t = tr?.[m[2]] ?? tr?.[it.name];
     if (t?.name && t.name !== it.name) up.name = t.name;
-    if (t?.description && it.system?.description && t.description !== it.system.description.value) up["system.description.value"] = t.description;
+    const same = (x, y) => String(x || "").replace(/&amp;/g, "&").replace(/\s+/g, " ").trim() === String(y || "").replace(/&amp;/g, "&").replace(/\s+/g, " ").trim();
+    if (t?.description && it.system?.description && !same(t.description, it.system.description.value)) up["system.description.value"] = t.description;
   }
   return Object.assign(up, itemMetricUpdates(it));
 }
