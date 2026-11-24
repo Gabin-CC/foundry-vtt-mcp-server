@@ -495,8 +495,33 @@ function applyTr(doc, t) {
   return c;
 }
 /** Traduction d'un objet d'acteur d'après sa source de compendium (comme la traduction à la demande de Babele). */
+// Objets importés par Plutonium sans lien de compendium : Plutonium garde sa propre référence
+// (flags.plutonium.hash + source, ex. « bless_xphb » / « XPHB »), présente aussi sur les entrées des
+// compendiums importés par Plutonium. Index hash|source -> UUID de compendium (cache 30 min).
+const PLUT = { map: new Map(), at: 0 };
+async function plutoniumSource(fs, it) {
+  const p = it.flags?.plutonium;
+  if (!p?.hash || !fs) return null;
+  if (!PLUT.map.size || Date.now() - PLUT.at > 30 * 60 * 1000) {
+    const map = new Map();
+    const packs = ((await fs.worldData()).packs || []).filter(x => x.type === "Item");
+    for (const pk of packs) {
+      let idx = [];
+      try { idx = await fs.doc("get", "Item", { pack: pk.id, query: {}, index: true, indexFields: ["_id", "name", "flags.plutonium.hash", "flags.plutonium.source"] }); } catch { /* */ }
+      for (const x of idx) {
+        const h = x.flags?.plutonium?.hash;
+        if (!h) continue;
+        const k = `${h}|${x.flags.plutonium.source || ""}`;
+        if (!map.has(k)) map.set(k, `Compendium.${pk.id}.Item.${x._id}`);
+      }
+    }
+    Object.assign(PLUT, { map, at: Date.now() });
+  }
+  return PLUT.map.get(`${p.hash}|${p.source || ""}`) || null;
+}
+
 export async function localizeItem(it, fs) {
-  const src = it._stats?.compendiumSource || it.flags?.core?.sourceId || it.flags?.dnd5e?.sourceId;
+  const src = it._stats?.compendiumSource || it.flags?.core?.sourceId || it.flags?.dnd5e?.sourceId || await plutoniumSource(fs, it);
   const m = /^Compendium\.([^.]+\.[^.]+)\.(?:Item\.)?([A-Za-z0-9]{16})$/.exec(src || "");
   const up = {};
   if (m) {
