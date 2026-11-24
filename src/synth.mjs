@@ -73,7 +73,7 @@ function abilitiesIn(s) {
 }
 /** Segment « Label: … » d'une liste 5etools (jusqu'au label suivant). */
 function segment(t, label) {
-  const m = new RegExp(`${label}\\s*:\\s*(.*?)(?=\\s(?:Ability Scores|Feat|Skill Proficiencies|Tool Proficiency|Equipment)\\s*:|$)`, "i").exec(t);
+  const m = new RegExp(`${label}\\s*:\\s*(.*?)(?=\\s(?:Ability Scores|Feats?|Skill Proficienc(?:y|ies)|Tool Proficienc(?:y|ies)|Equipment)\\s*:|$)`, "i").exec(t);
   return m ? m[1].trim() : "";
 }
 
@@ -94,9 +94,9 @@ async function background(fs, raw) {
   }
   // maîtrises : compétences + outil
   const grants = [];
-  for (const m of segment(t, "Skill Proficiencies").matchAll(/Reference\[skill=([^\]]+)\]/gi)) { const k = SKILL_EN[norm(m[1])]; if (k) grants.push(`skills:${k}`); }
+  for (const m of segment(t, "Skill Proficienc(?:y|ies)").matchAll(/Reference\[skill=([^\]]+)\]/gi)) { const k = SKILL_EN[norm(m[1])]; if (k) grants.push(`skills:${k}`); }
   const choices = [];
-  const toolSeg = segment(t, "Tool Proficiency");
+  const toolSeg = segment(t, "Tool Proficienc(?:y|ies)");
   for (const r of refs(toolSeg, "item")) {
     const cat = { "gaming set": "game", "musical instrument": "music", "artisan's tools": "art" }[norm(r.name)];
     if (cat) { choices.push({ count: 1, pool: [`tool:${cat}:*`] }); continue; }
