@@ -476,7 +476,10 @@ export async function handleTool(fs, params) {
             const ed = structuredClone(eff); delete ed._id; delete ed._stats; delete ed.folder;
             // dnd5e 6 / Foundry v14 : l'origine d'un enchantement appliqué est system.origin.activity
             ed.disabled = false;
-            ed.system = { ...(ed.system || {}), origin: { ...(ed.system?.origin || {}), activity: `${en.uuid}.Activity.${act._id}` } };
+            // DAE (si actif) rattache la clé « name » à « token.name » (phase finale) et écarte alors le
+            // changement de nom de l'objet (« {} +2 ») : phaseStamped lui fait respecter la phase de dnd5e.
+            ed.flags = { ...(ed.flags || {}), dnd5e: { ...(ed.flags?.dnd5e || {}), enchantmentProfile: eff._id }, dae: { ...(ed.flags?.dae || {}), phaseStamped: true } };
+            ed.system = { ...(ed.system || {}), origin: { ...(ed.system?.origin || {}), activity: `${en.uuid}.Activity.${act._id}`, profile: eff._id } };
             const parentUuid = actor ? `Actor.${actor._id}.Item.${target._id}` : `Item.${target._id}`;
             await fs.doc("create", "ActiveEffect", { parentUuid, data: [ed], modifiedTime: Date.now() });
             const c = created.find(x => x._id === target._id); if (c) c.enchantement = eff.name;
