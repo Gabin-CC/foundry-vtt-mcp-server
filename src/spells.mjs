@@ -70,6 +70,21 @@ export async function planClassSpells(fs, actor, cls, level, choices) {
   const have = new Set((actor.items || []).filter(i => i.type === "spell").map(i => i.system?.identifier || norm(i.name)));
   const pending = [];
   const pick = (val, pool) => (Array.isArray(val) ? val : []).map(v => pool.find(s => s.uuid === v || norm(s.name) === norm(v) || norm(s.name_en) === norm(v))).filter(Boolean);
+  // sort donné par UUID hors de la liste construite (ex. sort de Xanathar absent des listes de classe) : accepté tel quel
+  const pickAny = async (val, pool, lvlOk) => {
+    const out = [];
+    for (const v of Array.isArray(val) ? val : []) {
+      const hit = pool.find(s => s.uuid === v || norm(s.name) === norm(v) || norm(s.name_en) === norm(v));
+      if (hit) { out.push(hit); continue; }
+      if (!/^Compendium\./.test(String(v))) continue;
+      try {
+        const d = await fetchUuid(fs, v);
+        const k = d.system?.identifier || norm(d.name);
+        if (d.type === "spell" && lvlOk(Number(d.system?.level) || 0) && !have.has(k)) out.push({ uuid: v, name: d.name, name_en: d.name, level: Number(d.system?.level) || 0, key: k, rank: 9 });
+      } catch { /* introuvable */ }
+    }
+    return out;
+  };
 
   // sorts mineurs
   const cantripMax = (scaleAt(cls, "cantrips-known", level) ?? 0) + scaleBonus(actor, id, "cantrips-known");
@@ -78,8 +93,10 @@ export async function planClassSpells(fs, actor, cls, level, choices) {
   const needC = Math.max(0, cantripMax - ownCantrips);
   let cantrips = [];
   if (needC) {
-    cantrips = pick(choices["spells:cantrips"], cantripPool);
-    if (cantrips.length < needC) pending.push({ id: "spells:cantrips", objet: cls.name, type: "Spells", titre: `Sorts mineurs de ${cls.name}`, nombre: needC, options: cantripPool.map(s => `${s.name} — ${s.uuid}`) });
+    cantrips = await pickAny(choices["spells:cantrips"], cantripPool, l => l === 0);
+    if (cantrips.length > needC) throw new Error(`Trop de sorts mineurs : ${cantrips.length} > ${needC}`);
+    // comme pour les sorts préparés : une liste fournie peut être plus courte que le maximum
+    if (!choices["spells:cantrips"]) pending.push({ id: "spells:cantrips", objet: cls.name, type: "Spells", titre: `Sorts mineurs de ${cls.name}`, nombre: needC, options: cantripPool.map(s => `${s.name} — ${s.uuid}`) });
   }
   // sorts de classe accessibles
   const leveled = list.filter(s => s.level >= 1 && s.level <= maxLvl && !have.has(s.key));
@@ -89,7 +106,7 @@ export async function planClassSpells(fs, actor, cls, level, choices) {
   let prepared = [];
   if (prepMax) {
     const needP = Math.max(0, prepMax - alreadyPrep);
-    prepared = pick(choices["spells:prepared"], [...leveled, ...list.filter(s => s.level >= 1 && have.has(s.key))]);
+    prepared = await pickAny(choices["spells:prepared"], [...leveled, ...list.filter(s => s.level >= 1 && have.has(s.key))], l => l >= 1 && l <= maxLvl);
     if (needP && !choices["spells:prepared"]) pending.push({ id: "spells:prepared", objet: cls.name, type: "Spells", titre: `Sorts préparés (${needP} max)`, nombre: needP, options: leveled.map(s => `niv.${s.level} ${s.name} — ${s.uuid}`) });
     if (prepared.length > needP) throw new Error(`Trop de sorts préparés : ${prepared.length} > ${needP}`);
   }
