@@ -463,7 +463,7 @@ export async function handleTool(fs, params) {
             (byType[pack.type] ??= []).push(d);
             if (e.enchant) { d._id = randomId(); enchants.push({ type: pack.type, id: d._id, ...e.enchant }); }
           }
-          for (const list of Object.values(byType)) for (const d of list) if (d.system) sanitizeItemData(d);
+          for (const list of Object.values(byType)) for (const d of list) if (d.system) { sanitizeItemData(d); if (actor && d.system.container) d.system.container = null; }
           const created = [], createdBy = {};
           for (const [type, data] of Object.entries(byType)) {
             if (actor && type !== "Item") throw new Error(`Impossible d'ajouter un ${type} à un acteur`);
@@ -487,6 +487,14 @@ export async function handleTool(fs, params) {
             if (!eff) throw new Error(`Enchantement « ${en.effect} » introuvable dans ${en.uuid} (disponibles : ${pool.map(x => x.name).join(", ")})`);
             const act = acts.find(ac => (ac.effects || []).some(r => r._id === eff._id));
             const ed = structuredClone(eff); delete ed._id; delete ed._stats; delete ed.folder;
+            // gabarit de nom en mots anglais (« {} of the War Mage, +1 ») : la traduction ne couvre pas les changements ;
+            // on prend le nom traduit de l'enchantement s'il commence par le nom de l'objet (« Baguette du mage de guerre +1 »).
+            for (const ch of ed.system?.changes || []) {
+              if (ch.key !== "name" || typeof ch.value !== "string" || !ch.value.includes("{}")) continue;
+              const words = ch.value.replace("{}", "").replace(/[+\d\s,()-]/g, "");
+              const base = String(target.name || "");
+              if (words && eff.name && base && eff.name.toLowerCase().startsWith(base.toLowerCase())) ch.value = "{}" + eff.name.slice(base.length);
+            }
             // dnd5e 6 / Foundry v14 : l'origine d'un enchantement appliqué est system.origin.activity
             ed.disabled = false;
             // DAE (si actif) rattache la clé « name » à « token.name » (phase finale) et écarte alors le

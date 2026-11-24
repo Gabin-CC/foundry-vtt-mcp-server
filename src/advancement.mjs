@@ -420,7 +420,9 @@ export async function apply(fs, actor, rootItemId, steps, { hpMode = "avg", isFi
         for (const { uuid, count } of s.items) {
           let doc;
           try { doc = await fetchUuid(fs, uuid); } catch (e) { log.push(`Équipement ignoré : ${e.message}`); continue; }
-          const res = await createItems([{ uuid, doc: count > 1 ? { ...doc, system: { ...doc.system, quantity: count } } : doc }], originOf(s), "startingEquipment");
+          // un objet pris seul dans le compendium ne garde pas son conteneur de compendium (ex. sac de couchage d'un paquetage)
+          const sys = { ...doc.system, container: null, ...(count > 1 ? { quantity: count } : {}) };
+          const res = await createItems([{ uuid, doc: { ...doc, system: sys } }], originOf(s), "startingEquipment");
           names.push(`${count > 1 ? count + "× " : ""}${res[0]?.name}`);
           // contenu d'un paquetage / conteneur : objets du même compendium rattachés à ce conteneur
           if (doc.type === "container" && doc.__pack && res[0]) {
