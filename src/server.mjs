@@ -12,6 +12,7 @@ import { plan as advPlan, apply as advApply, fetchUuid } from "./advancement.mjs
 import { planClassSpells, applyClassSpells } from "./spells.mjs";
 import { ensureCastSpells } from "./cast.mjs";
 import { GM_TOOLS, GM_ROLE, handleGm } from "./gm.mjs";
+import { sanitizeItemData } from "./repair.mjs";
 import { rollFormula, derive, checkBonus, sheet, slotMax, useItem, translations, translateDoc, trFor, refreshUnits, localizeItem, actorMetricUpdates, ABIL, SKILLS } from "./dnd5e.mjs";
 
 const PORT = Number(process.env.PORT || 8808);
@@ -452,6 +453,7 @@ export async function handleTool(fs, params) {
             (byType[pack.type] ??= []).push(d);
             if (e.enchant) enchants.push({ type: pack.type, idx: byType[pack.type].length - 1, ...e.enchant });
           }
+          for (const list of Object.values(byType)) for (const d of list) if (d.system) sanitizeItemData(d);
           const created = [], createdBy = {};
           for (const [type, data] of Object.entries(byType)) {
             if (actor && type !== "Item") throw new Error(`Impossible d'ajouter un ${type} à un acteur`);

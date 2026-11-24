@@ -47,6 +47,7 @@ Claude (CLI / Desktop) ──HTTPS + Basic auth──▶ foundry-vtt-mcp-server 
 | `gm_token` | lister, poser, déplacer, cacher, montrer, retirer des jetons |
 | `gm_combat` | démarrer un combat avec les jetons de la scène, tour suivant / précédent, état, fin |
 | `gm_pause` | mettre la partie en pause / la reprendre |
+- `gm_check_ids` : contrôle (et corrige avec `apply`) les identifiants invalides des objets — compendiums du monde, objets du monde, fiches. Foundry v14 rejette côté navigateur tout objet dont un avancement, une activité ou un effet n'a pas un identifiant de 16 caractères alphanumériques : l'objet disparaît alors de la fiche. Les objets importés ou ajoutés par le MCP sont corrigés automatiquement.
 
 **Connexion** : l'écran de connexion de Foundry grise les comptes déjà actifs. Le serveur relâche donc sa connexion
 10 s après le dernier appel (`IDLE_SECONDS`) pour que le joueur puisse revenir dans son navigateur. Le MCP fonctionne

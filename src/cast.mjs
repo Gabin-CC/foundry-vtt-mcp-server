@@ -5,6 +5,7 @@
  * tourne dans le navigateur ; le MCP, sans navigateur, le reproduit ici.
  */
 import { fetchUuid } from "./advancement.mjs";
+import { sanitizeItemData } from "./repair.mjs";
 
 const FOUNDRY = process.env.FOUNDRY_URL || "http://127.0.0.1:30000";
 const LANG_FILES = (process.env.LANG_FILES || "dnd5e_fr-FR/fr.json").split(",").map(s => s.trim()).filter(Boolean);
@@ -77,6 +78,7 @@ export async function ensureCastSpells(fs, actorId) {
       d.flags = { ...(d.flags || {}), dnd5e: { ...(d.flags?.dnd5e || {}), cachedFor: rel } };
       d.system = { ...(d.system || {}), sourceItem: `${it.type}:${it.system?.identifier || ""}` };
       d._stats = { ...(d._stats || {}), compendiumSource: act.spell.uuid };
+      sanitizeItemData(d);
       data.push(d);
     }
   }

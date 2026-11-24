@@ -3,6 +3,7 @@
  * Tout passe par les documents Foundry (modifyDocument) ou par les événements socket que le serveur Foundry relaie
  * aux joueurs connectés (shareImage, showEntry, pullToScene, pause) — les mêmes que ceux du client Foundry.
  */
+import { scanAndRepair } from "./repair.mjs";
 export const GM_ROLE = 3;   // 3 = assistant MJ, 4 = MJ
 
 const sceneProp = { type: "string", description: "Scène (nom ou _id). Défaut : la scène active." };
@@ -35,6 +36,8 @@ export const GM_TOOLS = [
     inputSchema: { type: "object", required: ["action"], properties: {
       action: { type: "string", enum: ["start", "next", "previous", "end", "status"] }, scene: sceneProp,
       tokens: { type: "array", items: { type: "string" }, description: "Jetons à inclure (noms ou _id) ; défaut : tous les jetons de la scène" } } } },
+  { name: "gm_check_ids", gm: true, description: "MJ : contrôle les identifiants des objets (compendiums d'objets du monde, objets du monde, fiches). Foundry v14 exige 16 caractères alphanumériques ; un seul identifiant invalide (avancement, activité, effet) fait disparaître l'objet de la fiche dans le navigateur. Par défaut simple contrôle ; apply=true corrige (identifiants déterministes, références des fiches mises à jour).",
+    inputSchema: { type: "object", properties: { apply: { type: "boolean", default: false }, packs: { type: "boolean", default: true }, items: { type: "boolean", default: true }, actors: { type: "boolean", default: true } } } },
   { name: "gm_pause", gm: true, description: "MJ : met la partie en pause ou la reprend pour tous les joueurs.",
     inputSchema: { type: "object", required: ["paused"], properties: { paused: { type: "boolean" } } } },
 ];
@@ -57,6 +60,7 @@ const now = () => Date.now();
 
 export async function handleGm(fs, name, a) {
   switch (name) {
+    case "gm_check_ids": return scanAndRepair(fs, { apply: !!a.apply, packs: a.packs !== false, items: a.items !== false, actors: a.actors !== false });
     case "gm_scene": {
       const scenes = await fs.doc("get", "Scene", { query: {} });
       if (a.action === "list") return { active: scenes.find(s => s.active)?.name || null, scenes: scenes.map(s => ({ _id: s._id, nom: s.name, active: !!s.active, navigation: !!s.navigation })) };

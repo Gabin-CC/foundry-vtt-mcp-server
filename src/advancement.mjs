@@ -2,6 +2,7 @@
 // de Foundry (AdvancementManager) à partir des "advancements" décrits dans les objets
 // (classe, sous-classe, espèce, historique, dons). Les choix sont demandés à l'appelant.
 import { translateDoc, SKILLS, ABIL } from "./dnd5e.mjs";
+import { fixId, sanitizeItemData } from "./repair.mjs";
 
 const advList = item => {
   const a = item?.system?.advancement;
@@ -321,7 +322,8 @@ export async function apply(fs, actor, rootItemId, steps, { hpMode = "avg", isFi
   const actorUpd = {};
   const advValues = {}; // itemId -> { advId -> value }
   const log = [];
-  const setAdv = (itemId, advId, patch) => { ((advValues[itemId] ??= {})[advId] ??= {}); Object.assign(advValues[itemId][advId], patch); };
+  // identifiant d'avancement corrigé comme à la création de l'objet (repair.mjs) : les deux restent alignés
+  const setAdv = (itemId, advId0, patch) => { const advId = fixId(advId0); ((advValues[itemId] ??= {})[advId] ??= {}); Object.assign(advValues[itemId][advId], patch); };
   const created = new Map(); // uuid du doc source (subclass/feat) -> id créé
   const abil = structuredClone(actor.system.abilities || {});
   const tr = structuredClone(actor.system.traits || {});
@@ -333,10 +335,11 @@ export async function apply(fs, actor, rootItemId, steps, { hpMode = "avg", isFi
   // d'avancements ; la fiche s'en sert pour ranger l'aptitude (ex. « Ordre divin : Thaumaturge » sous Clerc).
   const rootOf = new Map((actor.items || []).map(i => [i._id, i.flags?.dnd5e?.advancementRoot]));
   async function createItems(docs, originId, advId, spellCfg, abilityPick) {
-    const origin = `${originId}.${advId}`, root = rootOf.get(originId) ?? origin;
+    const origin = `${originId}.${fixId(advId)}`, root = rootOf.get(originId) ?? origin;
     const data = docs.map(({ uuid, doc }) => {
       const d = structuredClone(doc);
       delete d._id; delete d.folder; delete d.sort; delete d.ownership; delete d.__pack;
+      sanitizeItemData(d);
       d._stats = { ...(d._stats || {}), compendiumSource: uuid };
       d.flags = { ...(d.flags || {}), dnd5e: { ...(d.flags?.dnd5e || {}), sourceId: uuid, ...(advId === "startingEquipment" ? {} : { advancementOrigin: origin, advancementRoot: root }) } };
       if (spellCfg && d.type === "spell") {
