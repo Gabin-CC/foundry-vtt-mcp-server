@@ -640,7 +640,8 @@ export async function handleTool(fs, params) {
               }
             }
             const leveled = (actor.items || []).filter(i => i._id !== root._id && origins.has(i._id)
-              && Object.values(i.system?.advancement || {}).some(x => Number(x.level) > 0));
+              && Object.values(i.system?.advancement || {}).some(x => Number(x.level) > 0
+                || (x.type === "ItemChoice" && Object.entries(x.configuration?.choices || {}).some(([lv, v]) => Number(lv) > 0 && Number(v?.count ?? v) > 0))));
             for (const it of leveled) { const p2 = await advPlan(fs, actor, it, { fromLevel: from, toLevel: target, choices: a.choices || {}, isFirstClass }); steps.push(...p2.steps); pending.push(...p2.pending); warnings.push(...p2.warnings); }
           }
           let spellPlan = null;

@@ -173,6 +173,70 @@ export async function plan(fs, actor, item, { fromLevel, toLevel, choices = {}, 
   const key = (adv, l) => adv._id + (l > 0 ? `@${l}` : "");
   const choice = (adv, l) => choices[key(adv, l)] ?? choices[adv._id];
 
+  /** Un choix ItemChoice au niveau l (count objets). */
+  async function itemChoiceStep(adv, l, count) {
+    const c = adv.configuration || {};
+    const out = { steps: [], pending: [], warnings: [] };
+    const val = choice(adv, l);
+    if (!Array.isArray(val) || val.length < count) {
+      let options = (c.pool || []).map(p => (typeof p === "string" ? p : p.uuid));
+      if (!options.length && c.type === "spell" && c.restriction?.list?.length) {
+        const lists = await spellLists(fs);
+        const set = new Set();
+        for (const ln of c.restriction.list) for (const u of lists.get(ln) || []) set.add(u);
+        options = [...set];
+        if (c.restriction.level !== "" && c.restriction.level != null && options.length) {
+          const lv = Number(c.restriction.level);
+          const keep = [];
+          for (const u of options) { const p = parseUuid(u); if (p) keep.push({ u, p }); }
+          const byPack = {};
+          keep.forEach(k => (byPack[k.p.pack] ??= []).push(k));
+          options = [];
+          for (const [pk, arr] of Object.entries(byPack)) {
+            const idx = await fs.doc("get", "Item", { pack: pk, query: {}, index: true, indexFields: ["_id", "name", "system.level"] });
+            const ok = new Set(idx.filter(x => x.system?.level === lv).map(x => x._id));
+            options.push(...arr.filter(k => ok.has(k.p.id)).map(k => k.u));
+          }
+        }
+      }
+      // catégorie de dons (ex. manifestations occultes : type « class », sous-type « eldritchInvocation ») :
+      // tous les dons de cette catégorie des compendiums dnd5e, dont le niveau prérequis est atteint
+      if (!options.length && c.type === "feat" && c.restriction?.subtype) {
+        const packs = ((fs._packs2 ??= ((await fs.worldData()).packs || []))).filter(p => p.type === "Item" && p.packageName === "dnd5e");
+        const taken = new Set((actor.items || []).map(i => i.system?.identifier).filter(Boolean));
+        for (const pk of packs) {
+          const idx = await packIdx(fs, pk.id, ["type", "system.type.value", "system.type.subtype", "system.prerequisites.level", "system.prerequisites.repeatable", "system.identifier"]);
+          for (const e of idx) {
+            if (e.type !== "feat" || e.system?.type?.subtype !== c.restriction.subtype) continue;
+            if (c.restriction.type && e.system?.type?.value !== c.restriction.type) continue;
+            if (Number(e.system?.prerequisites?.level || 0) > l) continue;
+            if (taken.has(e.system?.identifier) && !e.system?.prerequisites?.repeatable) continue;
+            options.push(`Compendium.${pk.id}.Item.${e._id}`);
+          }
+        }
+      }
+      const labels = [];
+      for (const u of options.slice(0, 150)) { try { const d = await fetchUuid(fs, u); labels.push(`${d.name} — ${u}`); } catch { /* compendium absent */ } }
+      if (!labels.length && options.length) labels.push(`(options dans des compendiums non installés — fournis l'UUID de ton choix)`);
+      out.pending.push({ id: key(adv, l), objet: item.name, niveau: l, type: "ItemChoice", titre: adv.title || adv.name || "Choix",
+        aide: strip(adv.hint) || (c.restriction?.list?.length ? `Listes : ${c.restriction.list.join(", ")}, niveau ${c.restriction.level}` : ""),
+        nombre: count, options: labels });
+      return out;
+    }
+    const docs = [], subSteps = [];
+    for (const u of val.slice(0, count)) {
+      let d;
+      try { d = await fetchUuid(fs, u); } catch (e) { out.warnings.push(e.message); continue; }
+      docs.push({ uuid: u, doc: d });
+      if (depth < 3 && advList(d).length) {
+        const sub = await plan(fs, actor, d, { fromLevel: 0, toLevel: Math.max(toLevel, 0), choices, isFirstClass, depth: depth + 1 });
+        subSteps.push(...sub.steps); out.pending.push(...sub.pending); out.warnings.push(...sub.warnings);
+      }
+    }
+    out.steps.push({ kind: "grant", item, adv, level: l, docs, spell: c.spell, choiceStore: true, spellAbility: choices[`${key(adv, l)}:ability`] }, ...subSteps);
+    return out;
+  }
+
   // PHB 2024 (p. 38) : une espèce d'un ancien livre ne donne pas ses augmentations de caractéristique ;
   // seules celles de l'historique s'appliquent (monde en règles « modernes »).
   let legacySpecies = false;
@@ -181,6 +245,19 @@ export async function plan(fs, actor, item, { fromLevel, toLevel, choices = {}, 
     legacySpecies = fs._rulesVersion !== "legacy";
   }
   for (const adv of advList(item)) {
+    // ItemChoice à plusieurs niveaux (ex. manifestations occultes : 1 au niv. 1, +2 au niv. 2, +2 au niv. 5…) :
+    // un choix par niveau de configuration.choices compris dans [fromLevel, toLevel]
+    if (adv.type === "ItemChoice" && adv.level == null) {
+      const lv = Object.entries(adv.configuration?.choices || {}).map(([k, v]) => [Number(k), Number(v?.count ?? v) || 0]).filter(([, n]) => n > 0);
+      if (lv.length && lv.some(([k]) => k > 0)) {
+        for (const [L, n] of lv) {
+          if (L < fromLevel || L > toLevel) continue;
+          const r = await itemChoiceStep(adv, L, n);
+          steps.push(...r.steps); pending.push(...r.pending); warnings.push(...r.warnings);
+        }
+        continue;
+      }
+    }
     if (legacySpecies && adv.type === "AbilityScoreImprovement") {
       warnings.push(`${item.name} : espèce d'un ancien livre — augmentations de caractéristique ignorées (PHB 2024, p. 38)`);
       continue;
@@ -251,8 +328,14 @@ export async function plan(fs, actor, item, { fromLevel, toLevel, choices = {}, 
         break;
       }
       case "ItemChoice": {
-        const val = choice(adv, l);
         const count = Object.entries(c.choices || {}).filter(([lv]) => Number(lv) === l || (Number(lv) === 0 && l === 0)).reduce((a, [, v]) => a + Number(v.count ?? v), 0) || 1;
+        const r = await itemChoiceStep(adv, l, count);
+        steps.push(...r.steps); pending.push(...r.pending); warnings.push(...r.warnings);
+        break;
+      }
+      case "ItemChoice__legacy": {
+        const val = choice(adv, l);
+        const count = 1;
         if (!Array.isArray(val) || val.length < count) {
           let options = (c.pool || []).map(p => (typeof p === "string" ? p : p.uuid));
           if (!options.length && c.type === "spell" && c.restriction?.list?.length) {
