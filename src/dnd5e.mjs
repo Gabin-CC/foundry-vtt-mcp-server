@@ -511,7 +511,9 @@ export async function localizeItem(it, fs) {
     }
     if (t?.name && t.name !== it.name) up.name = t.name;
     // comparaison sur le texte seul : Foundry réécrit le HTML à l'enregistrement (guillemets, entités, attributs)
-    const txt = x => String(x || "").replace(/<[^>]+>/g, " ").replace(/&(amp|#x27|#39|quot|apos|nbsp);/g, "").replace(/['’"&]/g, "").replace(/\s+/g, " ").trim();
+    // un « < » littéral (ex. jet [[/r 1d100cs<26]]) n'est pas une balise : Foundry l'enregistre en &lt;
+    const txt = x => String(x || "").replace(/<(?![A-Za-z\/!])/g, "&lt;").replace(/<[^>]+>/g, " ")
+      .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&(amp|#x27|#39|quot|apos|nbsp);/g, "").replace(/['’"&]/g, "").replace(/\s+/g, " ").trim();
     const same = (x, y) => txt(x) === txt(y);
     if (t?.description && it.system?.description && !same(t.description, it.system.description.value)) up["system.description.value"] = t.description;
     if (t?.materials && it.system?.materials && !same(t.materials, it.system.materials.value)) up["system.materials.value"] = t.materials;
