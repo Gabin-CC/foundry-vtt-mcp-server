@@ -173,7 +173,18 @@ export async function plan(fs, actor, item, { fromLevel, toLevel, choices = {}, 
   const key = (adv, l) => adv._id + (l > 0 ? `@${l}` : "");
   const choice = (adv, l) => choices[key(adv, l)] ?? choices[adv._id];
 
+  // PHB 2024 (p. 38) : une espèce d'un ancien livre ne donne pas ses augmentations de caractéristique ;
+  // seules celles de l'historique s'appliquent (monde en règles « modernes »).
+  let legacySpecies = false;
+  if (item.type === "race" && String(item.system?.source?.rules || "") !== "2024") {
+    fs._rulesVersion ??= await fs.doc("get", "Setting", { query: { key: "dnd5e.rulesVersion" } }).then(r => { try { return JSON.parse(r?.[0]?.value ?? '"modern"'); } catch { return r?.[0]?.value || "modern"; } }).catch(() => "modern");
+    legacySpecies = fs._rulesVersion !== "legacy";
+  }
   for (const adv of advList(item)) {
+    if (legacySpecies && adv.type === "AbilityScoreImprovement") {
+      warnings.push(`${item.name} : espèce d'un ancien livre — augmentations de caractéristique ignorées (PHB 2024, p. 38)`);
+      continue;
+    }
     if (adv.type === "HitPoints" && isClass) {
       for (let l = Math.max(1, fromLevel); l <= toLevel; l++) steps.push({ kind: "hp", item, adv, level: l });
       continue;

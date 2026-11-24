@@ -51,7 +51,7 @@ async function findByName(fs, name, packs, type) {
 }
 const SPELL_PACKS = ["dnd5e.spells24", "world.sors", "dnd5e.spells"];
 const ITEM_PACKS = ["dnd5e.equipment24", "world.objets", "dnd5e.items"];
-const FEAT_PACKS = ["world.dons", "dnd5e.feats24"];
+const FEAT_PACKS = ["dnd5e.feats24", "world.dons"]; // version officielle (avec avancements) en priorité
 
 // ---- briques d'avancement ----
 const asi = (id, { points, cap, allowed, title = "" }) => ({
