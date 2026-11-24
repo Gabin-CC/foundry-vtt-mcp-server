@@ -494,7 +494,31 @@ export async function handleTool(fs, params) {
             ed.flags = { ...(ed.flags || {}), dnd5e: { ...(ed.flags?.dnd5e || {}), enchantmentProfile: eff._id }, dae: { ...(ed.flags?.dae || {}), phaseStamped: true } };
             ed.system = { ...(ed.system || {}), origin: { ...(ed.system?.origin || {}), activity: `${en.uuid}.Activity.${act._id}`, profile: eff._id } };
             const parentUuid = actor ? `Actor.${actor._id}.Item.${target._id}` : `Item.${target._id}`;
-            await fs.doc("create", "ActiveEffect", { parentUuid, data: [ed], modifiedTime: Date.now() });
+            const [ench] = await fs.doc("create", "ActiveEffect", { parentUuid, data: [ed], modifiedTime: Date.now() });
+            // « riders » du profil d'enchantement (dnd5e : EnchantmentData, à la création de l'enchantement, côté
+            // navigateur) : effets et activités de l'objet source recopiés sur l'objet enchanté, dépendants de l'enchantement.
+            const profile = (act.effects || []).find(r => r._id === eff._id) || {};
+            const riderEffects = [];
+            for (const id of profile.riders?.effect || []) {
+              const se = (src.effects || []).find(x => x._id === id);
+              if (!se || (se.type && se.type !== "base")) continue;
+              const r = structuredClone(se); delete r._id; delete r._stats; delete r.folder;
+              if (r.flags?.dnd5e) delete r.flags.dnd5e.rider;
+              r.system = { ...(r.system || {}), origin: { ...(ed.system?.origin || {}) } };
+              r.flags = { ...(r.flags || {}), dnd5e: { ...(r.flags?.dnd5e || {}), dependentOn: ench?._id } };
+              riderEffects.push(r);
+            }
+            if (riderEffects.length) await fs.doc("create", "ActiveEffect", { parentUuid, data: riderEffects, modifiedTime: Date.now() });
+            const riderActs = {};
+            for (const id of profile.riders?.activity || []) {
+              const sa = src.system?.activities?.[id];
+              if (!sa) continue;
+              const na = structuredClone(sa); na._id = randomId();
+              na.flags = { ...(na.flags || {}), dnd5e: { ...(na.flags?.dnd5e || {}), dependentOn: ench?._id } };
+              riderActs[na._id] = na;
+            }
+            if (Object.keys(riderActs).length) await fs.doc("update", "Item", { parentUuid: actor ? `Actor.${actor._id}` : undefined,
+              updates: [{ _id: target._id, ...Object.fromEntries(Object.entries(riderActs).map(([k, v]) => [`system.activities.${k}`, v])) }], diff: true, modifiedTime: Date.now() });
             const c = created.find(x => x._id === target._id); if (c) c.enchantement = eff.name;
           }
           const notes = a.entries.map(e => e._note).filter(Boolean);
