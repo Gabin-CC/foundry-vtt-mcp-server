@@ -240,6 +240,7 @@ async function packIndex(fs, pack) {
   }
   return fs._idx.get(pack.id);
 }
+const randomId = () => { const c = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"; return Array.from(crypto.randomBytes(16), b => c[b % c.length]).join(""); };
 const norm = t => String(t || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
 function setPath(o, p, v) { const ks = p.split("."); let x = o; ks.slice(0, -1).forEach(k => { x = x[k] ??= {}; }); x[ks.at(-1)] = v; }
 
@@ -416,7 +417,7 @@ export async function handleTool(fs, params) {
               for (const [k, v] of Object.entries(e.overrides || {})) setPath(d, k, v);
               const t = d.items || d.prototypeToken ? "Actor" : "Item";
               (byType[t] ??= []).push(d);
-              if (e.enchant) enchants.push({ type: t, idx: byType[t].length - 1, ...e.enchant });
+              if (e.enchant) { d._id = randomId(); enchants.push({ type: t, id: d._id, ...e.enchant }); }
               continue;
             }
             const pack = packs.find(p => p.id === e.pack);
@@ -451,21 +452,22 @@ export async function handleTool(fs, params) {
             }
             for (const [k, v] of Object.entries(e.overrides || {})) setPath(d, k, v);
             (byType[pack.type] ??= []).push(d);
-            if (e.enchant) enchants.push({ type: pack.type, idx: byType[pack.type].length - 1, ...e.enchant });
+            if (e.enchant) { d._id = randomId(); enchants.push({ type: pack.type, id: d._id, ...e.enchant }); }
           }
           for (const list of Object.values(byType)) for (const d of list) if (d.system) sanitizeItemData(d);
           const created = [], createdBy = {};
           for (const [type, data] of Object.entries(byType)) {
             if (actor && type !== "Item") throw new Error(`Impossible d'ajouter un ${type} à un acteur`);
             if (!actor && a.folder) data.forEach(d => d.folder = a.folder);
-            const r = await fs.doc("create", type, { data, modifiedTime: Date.now(), ...(actor ? { parentUuid: `Actor.${actor._id}` } : {}) });
+            const r = await fs.doc("create", type, { data, keepId: data.some(d => d._id), modifiedTime: Date.now(), ...(actor ? { parentUuid: `Actor.${actor._id}` } : {}) });
             createdBy[type] = r;
             created.push(...r.map(x => ({ _id: x._id, nom: x.name, type: x.type })));
           }
           // Enchantements : équivalent d'EnchantActivity#applyEnchantment de dnd5e (copie de l'effet
           // d'enchantement sur l'objet cible, activé, origin = l'activité source).
           for (const en of enchants) {
-            const target = createdBy[en.type]?.[en.idx];
+            // Foundry ne renvoie pas forcément les documents créés dans l'ordre envoyé : on retrouve la cible par son _id
+            const target = (createdBy[en.type] || []).find(x => x._id === en.id);
             if (!target || en.type !== "Item") continue;
             const src = await fetchUuid(fs, en.uuid);
             const acts = Object.values(src.system?.activities || {}).filter(x => x.type === "enchant");
