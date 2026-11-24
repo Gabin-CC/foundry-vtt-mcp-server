@@ -66,7 +66,8 @@ export async function planClassSpells(fs, actor, cls, level, choices) {
   const list = await classSpellList(fs, cls);
   const fake = { items: [{ type: "class", system: { ...cls.system, levels: level } }], system: { spells: {} } };
   const slots = slotMax(fake);
-  const maxLvl = Math.max(0, ...Object.keys(slots).filter(k => /^spell\d$/.test(k)).map(k => Number(k.slice(5))));
+  // emplacements de sort ordinaires et, pour la magie de pacte, niveau des emplacements de pacte
+  const maxLvl = Math.max(0, Number(slots.pactLevel) || 0, ...Object.keys(slots).filter(k => /^spell\d$/.test(k)).map(k => Number(k.slice(5))));
   const have = new Set((actor.items || []).filter(i => i.type === "spell").map(i => i.system?.identifier || norm(i.name)));
   const pending = [];
   const pick = (val, pool) => (Array.isArray(val) ? val : []).map(v => pool.find(s => s.uuid === v || norm(s.name) === norm(v) || norm(s.name_en) === norm(v))).filter(Boolean);
