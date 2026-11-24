@@ -10,7 +10,7 @@ import { sanitizeItemData } from "./repair.mjs";
 const FOUNDRY = process.env.FOUNDRY_URL || "http://127.0.0.1:30000";
 const LANG_FILES = (process.env.LANG_FILES || "dnd5e_fr-FR/fr.json").split(",").map(s => s.trim()).filter(Boolean);
 let lang = null;
-async function loc(key, fallback) {
+export async function loc(key, fallback) {
   if (!lang) {
     lang = {};
     for (const f of LANG_FILES) { try { const r = await fetch(`${FOUNDRY}/modules/${f}`); if (r.ok) lang = { ...(await r.json()), ...lang }; } catch { /* absent */ } }

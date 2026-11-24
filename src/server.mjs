@@ -13,6 +13,7 @@ import { planClassSpells, applyClassSpells } from "./spells.mjs";
 import { ensureCastSpells } from "./cast.mjs";
 import { GM_TOOLS, GM_ROLE, handleGm } from "./gm.mjs";
 import { sanitizeItemData } from "./repair.mjs";
+import { scrollFromSpell } from "./scroll.mjs";
 import { rollFormula, derive, checkBonus, sheet, slotMax, useItem, translations, translateDoc, trFor, refreshUnits, localizeItem, actorMetricUpdates, ABIL, SKILLS } from "./dnd5e.mjs";
 
 const PORT = Number(process.env.PORT || 8808);
@@ -148,6 +149,7 @@ export const TOOLS = [
       entries: { type: "array", items: { type: "object", properties: {
         pack: { type: "string" }, id: { type: "string" }, name: { type: "string", description: "Alternative à id : nom exact (FR ou EN)" }, uuid: { type: "string", description: "Alternative à pack+id : UUID (Compendium.x.y.Item.id, Item.id, Actor.id.Item.id)" }, item_type: { type: "string" }, quantity: { type: "number" }, levels: { type: "number" },
         equipped: { type: "boolean" }, overrides: { type: "object", description: "Champs à surcharger (notation pointée)" },
+        scroll: { type: "string", description: "Parchemin de sort (comme « Créer un parchemin » de dnd5e) : UUID du sort à mettre sur le parchemin ; le parchemin de base du niveau du sort est pris dans le compendium. Remplace pack/id/uuid." },
         enchant: { type: "object", description: "Applique un enchantement (activité « Enchanter » de dnd5e, ex. objets magiques 2024 « Armure +1, +2 ou +3 » sur une Cuirasse) : {uuid: objet source de l'enchantement, effect: nom ou _id de l'enchantement (ex. \"Armure +2\" ou \"+2\")}",
           properties: { uuid: { type: "string" }, effect: { type: "string" } } } } } },
       folder: { type: "string", description: "Dossier (_id) pour un import dans le monde" } } } },
@@ -407,6 +409,13 @@ export async function handleTool(fs, params) {
           const byType = {};
           const missing = [], enchants = [];
           for (const e of a.entries) {
+            if (e.scroll) {
+              const d = await scrollFromSpell(fs, e.scroll);
+              if (e.quantity != null) d.system.quantity = e.quantity;
+              for (const [k, v] of Object.entries(e.overrides || {})) setPath(d, k, v);
+              (byType.Item ??= []).push(d);
+              continue;
+            }
             if (e.uuid) {
               const d = structuredClone(await fetchUuid(fs, e.uuid));
               delete d._id; delete d.folder; delete d.sort; delete d.ownership;
