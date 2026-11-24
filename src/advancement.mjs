@@ -3,6 +3,7 @@
 // (classe, sous-classe, espèce, historique, dons). Les choix sont demandés à l'appelant.
 import { translateDoc, SKILLS, ABIL } from "./dnd5e.mjs";
 import { fixId, sanitizeItemData } from "./repair.mjs";
+import { synthesize } from "./synth.mjs";
 
 const advList = item => {
   const a = item?.system?.advancement;
@@ -20,7 +21,7 @@ function parseUuid(uuid) {
 export async function fetchUuid(fs, uuid) {
   // objets du monde : "Item.<id>" ou "Actor.<id>.Item.<id>"
   let m = /^Item\.([A-Za-z0-9]{16})$/.exec(uuid || "");
-  if (m) { const d = (await fs.doc("get", "Item", { query: { _id: m[1] } })).find(x => x._id === m[1]); if (d) return d; throw new Error(`Introuvable : ${uuid}`); }
+  if (m) { const d = (await fs.doc("get", "Item", { query: { _id: m[1] } })).find(x => x._id === m[1]); if (d) return synthesize(fs, d, structuredClone(d)); throw new Error(`Introuvable : ${uuid}`); }
   m = /^Actor\.([A-Za-z0-9]{16})\.Item\.([A-Za-z0-9]{16})$/.exec(uuid || "");
   if (m) { const d = (await fs.doc("get", "Item", { parentUuid: `Actor.${m[1]}`, query: {} })).find(x => x._id === m[2]); if (d) return d; throw new Error(`Introuvable : ${uuid}`); }
   const p = parseUuid(uuid);
@@ -28,12 +29,12 @@ export async function fetchUuid(fs, uuid) {
   const packs = (fs._packs2 ??= ((await fs.worldData()).packs || []));
   if (packs.some(x => x.id === p.pack)) {
     const d = (await fs.doc("get", p.type, { pack: p.pack, query: { _id: p.id } })).find(x => x._id === p.id);
-    if (d) return Object.assign(await translateDoc(p.pack, d), { __pack: p.pack });
+    if (d) { const raw = structuredClone(d); return Object.assign(await synthesize(fs, await translateDoc(p.pack, d), raw), { __pack: p.pack }); }
   }
   // Ressource absente de ce compendium (ou compendium non installé) : on cherche la même
   // ressource (même _id) dans tous les compendiums installés du même type.
   const found = await findById(fs, p.type, p.id);
-  if (found) return Object.assign(await translateDoc(found.pack, found.doc), { __pack: found.pack });
+  if (found) { const raw = structuredClone(found.doc); return Object.assign(await synthesize(fs, await translateDoc(found.pack, found.doc), raw), { __pack: found.pack }); }
   throw new Error(`Ressource introuvable dans les compendiums installés : ${uuid}`);
 }
 
