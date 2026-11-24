@@ -536,6 +536,22 @@ export async function handleTool(fs, params) {
 
         case "advance": {
           let actor = await findActor(fs, a.actor);
+          // fiches créées avant que le MCP écrive advancementRoot : on le complète en remontant la chaîne d'origines
+          {
+            const byId = new Map((actor.items || []).map(i => [i._id, i]));
+            const rootFor = (it, seen = new Set()) => {
+              const f = it.flags?.dnd5e || {};
+              if (f.advancementRoot) return f.advancementRoot;
+              if (!f.advancementOrigin) return null;
+              const parent = byId.get(f.advancementOrigin.split(".")[0]);
+              if (!parent || seen.has(parent._id)) return f.advancementOrigin;
+              seen.add(parent._id);
+              return rootFor(parent, seen) ?? f.advancementOrigin;
+            };
+            const ups = (actor.items || []).filter(i => i.flags?.dnd5e?.advancementOrigin && !i.flags?.dnd5e?.advancementRoot)
+              .map(i => ({ _id: i._id, "flags.dnd5e.advancementRoot": rootFor(i) }));
+            if (ups.length) { await fs.doc("update", "Item", { parentUuid: `Actor.${actor._id}`, updates: ups, diff: true, modifiedTime: Date.now() }); actor = await findActor(fs, actor._id); }
+          }
           const classes = (actor.items || []).filter(i => i.type === "class");
           let root, isNew = false;
           if (a.source?.uuid) {

@@ -329,12 +329,16 @@ export async function apply(fs, actor, rootItemId, steps, { hpMode = "avg", isFi
   const tools = structuredClone(actor.system.tools || {});
   const addTo = (arr, v) => { if (!arr.includes(v)) arr.push(v); };
 
+  // advancementRoot (comme dnd5e : createItemData) : objet racine (classe, espèce, historique) de la chaîne
+  // d'avancements ; la fiche s'en sert pour ranger l'aptitude (ex. « Ordre divin : Thaumaturge » sous Clerc).
+  const rootOf = new Map((actor.items || []).map(i => [i._id, i.flags?.dnd5e?.advancementRoot]));
   async function createItems(docs, originId, advId, spellCfg, abilityPick) {
+    const origin = `${originId}.${advId}`, root = rootOf.get(originId) ?? origin;
     const data = docs.map(({ uuid, doc }) => {
       const d = structuredClone(doc);
       delete d._id; delete d.folder; delete d.sort; delete d.ownership; delete d.__pack;
       d._stats = { ...(d._stats || {}), compendiumSource: uuid };
-      d.flags = { ...(d.flags || {}), dnd5e: { ...(d.flags?.dnd5e || {}), sourceId: uuid, ...(advId === "startingEquipment" ? {} : { advancementOrigin: `${originId}.${advId}` }) } };
+      d.flags = { ...(d.flags || {}), dnd5e: { ...(d.flags?.dnd5e || {}), sourceId: uuid, ...(advId === "startingEquipment" ? {} : { advancementOrigin: origin, advancementRoot: root }) } };
       if (spellCfg && d.type === "spell") {
         const ab = abilityPick || (Array.isArray(spellCfg.ability) ? spellCfg.ability.filter(Boolean)[0] : spellCfg.ability);
         if (ab) d.system.ability = ab;
@@ -346,6 +350,7 @@ export async function apply(fs, actor, rootItemId, steps, { hpMode = "avg", isFi
     });
     if (!data.length) return [];
     const r = await fs.doc("create", "Item", { parentUuid: A, data, modifiedTime: Date.now() });
+    if (advId !== "startingEquipment") r.forEach(x => rootOf.set(x._id, root));
     return r.map((x, i) => ({ id: x._id, name: x.name, uuid: docs[i].uuid }));
   }
 
