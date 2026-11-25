@@ -19,3 +19,4 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts
       - run: npm run check
+      - run: MCP_LOCALE=en npm run check
