@@ -513,13 +513,14 @@ async function runTool(session, params) {
           if (res.deleteItem) await fs.doc("delete", "Item", { parentUuid: `Actor.${actor._id}`, ids: [item._id], modifiedTime: Date.now() });
           else if (Object.keys(res.itemUpdate).length) await fs.doc("update", "Item", { parentUuid: `Actor.${actor._id}`, updates: [{ _id: item._id, ...res.itemUpdate }], diff: true, modifiedTime: Date.now() });
           const desc = item.system?.description?.value || "";
-          const card = `<div class="dnd5e2 chat-card"><h3><img src="${esc(item.img)}" width="32" height="32" style="vertical-align:middle;border:none"> ${esc(item.name)}${a.slot_level ? ` (niv. ${a.slot_level})` : ""}</h3>`
-            + (a.target || tgts.length ? `<p><b>Cible :</b> ${esc([a.target, ...tgts.map(t => t.label)].filter(Boolean).join(", "))}</p>` : "")
+          const card = `<div class="dnd5e2 chat-card"><h3><img src="${esc(item.img)}" width="32" height="32" style="vertical-align:middle;border:none"> ${esc(item.name)}${a.slot_level ? message(` (lvl. ${a.slot_level})`, ` (niv. ${a.slot_level})`) : ""}</h3>`
+            + (a.target || tgts.length ? `<p><b>${message("Target:", "Cible :")}</b> ${esc([a.target, ...tgts.map(t => t.label)].filter(Boolean).join(", "))}</p>` : "")
             + `<ul>${res.lignes.map(l => `<li>${esc(l)}</li>`).join("")}</ul>`
-            + (desc ? `<details><summary>Description</summary>${desc}</details>` : "") + `</div>`;
+            + (desc ? `<details><summary>${message("Description", "Description")}</summary>${desc}</details>` : "") + `</div>`;
           await postChat(fs, { actor, flavor: item.name, content: card, rolls: res.rolls, mode: a.mode });
           return out({ objet: item.name, resultats: res.lignes, ...(prop ? { proposition: prop.id, cibles: prop.rows,
-            validation: "Rien n'est encore appliqué aux cibles : apply_damage {proposal: \"" + prop.id + "\"} (option targets pour un sous-ensemble, overrides pour corriger)." } : {}) });
+            validation: message(`Nothing has been applied to targets yet: apply_damage {proposal: "${prop.id}"} (use targets for a subset, overrides to adjust).`,
+              `Rien n'est encore appliqué aux cibles : apply_damage {proposal: "${prop.id}"} (option targets pour un sous-ensemble, overrides pour corriger).`) } : {}) });
         }
         case "rest": {
           const actor = await findActor(fs, a.actor);
@@ -528,9 +529,10 @@ async function runTool(session, params) {
           if (a.type === "long") {
             upd["system.attributes.hp.value"] = sh.pv.max; upd["system.attributes.hp.temp"] = 0;
             for (const [k, m] of Object.entries(slotMax(actor))) if (k !== "pactLevel") upd[`system.spells.${k}.value`] = m;
-            lines.push(`PV restaurés à ${sh.pv.max}`, "Emplacements de sort restaurés");
+            lines.push(message(`HP restored to ${sh.pv.max}`, `PV restaurés à ${sh.pv.max}`),
+              message("Spell slots restored", "Emplacements de sort restaurés"));
           } else {
-            const mx = slotMax(actor); if (mx.pact) { upd["system.spells.pact.value"] = mx.pact; lines.push("Emplacements de pacte restaurés"); }
+            const mx = slotMax(actor); if (mx.pact) { upd["system.spells.pact.value"] = mx.pact; lines.push(message("Pact slots restored", "Emplacements de pacte restaurés")); }
           }
           await fs.doc("update", "Actor", { updates: [{ _id: actor._id, ...upd }], diff: true, modifiedTime: Date.now() });
           const per = a.type === "long" ? ["lr", "sr", "day"] : ["sr"];
@@ -542,8 +544,11 @@ async function runTool(session, params) {
             for (const [aid, act] of Object.entries(i.system?.activities || {})) if (act.uses?.max && (act.uses.recovery || []).some(r => per.includes(r.period))) u[`system.activities.${aid}.uses.spent`] = 0;
             if (Object.keys(u).length) iu.push({ _id: i._id, ...u });
           }
-          if (iu.length) { await fs.doc("update", "Item", { parentUuid: `Actor.${actor._id}`, updates: iu, diff: true, modifiedTime: Date.now() }); lines.push(`${iu.length} objet(s)/aptitude(s) rechargé(s)`); }
-          await postChat(fs, { actor, flavor: `Repos ${a.type}`, content: `<p>${esc(actor.name)} prend un repos ${a.type}.</p><ul>${lines.map(l => `<li>${esc(l)}</li>`).join("")}</ul>`, mode: a.mode });
+          if (iu.length) { await fs.doc("update", "Item", { parentUuid: `Actor.${actor._id}`, updates: iu, diff: true, modifiedTime: Date.now() }); lines.push(message(`${iu.length} item(s)/feature(s) recharged`, `${iu.length} objet(s)/aptitude(s) rechargé(s)`)); }
+          const restEn = a.type === "long" ? "long" : "short";
+          await postChat(fs, { actor, flavor: message(`${restEn === "long" ? "Long" : "Short"} rest`, `Repos ${a.type}`),
+            content: message(`<p>${esc(actor.name)} takes a ${restEn} rest.</p>`, `<p>${esc(actor.name)} prend un repos ${a.type}.</p>`)
+              + `<ul>${lines.map(l => `<li>${esc(l)}</li>`).join("")}</ul>`, mode: a.mode });
           return out({ repos: a.type, effets: lines });
         }
         case "list_packs": {
@@ -570,15 +575,16 @@ async function runTool(session, params) {
             }
           }
           hits.sort((x, y) => y.score - x.score || x._r - y._r || x._p - y._p || x.nom.localeCompare(y.nom));
-          const rules = hits.length && hits[0]._r === 0 && hits.some(h => h._r === 1) ? "2024 privilégié (une version 2014 existe aussi)" : undefined;
+          const rules = hits.length && hits[0]._r === 0 && hits.some(h => h._r === 1)
+            ? message("2024 preferred (a 2014 version also exists)", "2024 privilégié (une version 2014 existe aussi)") : undefined;
           return out({ total: hits.length, ...(rules ? { note: rules } : {}),
             resultats: hits.slice(0, a.limit || 25).map(({ score, _r, _p, ...h }) => h) });
         }
         case "get_compendium_entry": {
           const pack = (await packsOf(fs)).find(p => p.id === a.pack);
-          if (!pack) return out(`Compendium inconnu : ${a.pack}`);
+          if (!pack) return out(message(`Unknown compendium: ${a.pack}`, `Compendium inconnu : ${a.pack}`));
           const d = (await fs.doc("get", pack.type, { pack: pack.id, query: { _id: a.id } })).find(x => x._id === a.id);
-          if (!d) return out("Entrée introuvable");
+          if (!d) return out(message("Entry not found", "Entrée introuvable"));
           if (isStub(d) && a.path && !(a.path.split(".")[0] in d)) throw limitedError(d.name);
           return out(getPath(await translateDoc(pack.id, d), a.path));
         }
@@ -741,9 +747,11 @@ async function runTool(session, params) {
             const c = created.find(x => x._id === target._id); if (c) c.enchantement = eff.name;
           }
           const notes = [...notes0, ...a.entries.map(e => e._note).filter(Boolean)];
-          if (created.some(c => c.type === "class")) notes.push("Assistant de niveau non exécuté (headless) : ajoute aptitudes de classe, compétences et maîtrises au choix via search_compendium/add_from_compendium/update_documents.");
-          if (missing.length) notes.push(`Introuvables dans le compendium : ${missing.join(", ")}`);
-          if (actor) { const cn = await ensureCastSpells(fs, actor._id); if (cn.length) notes.push("Sorts d'aptitude ajoutés : " + cn.join(", ")); }
+          if (created.some(c => c.type === "class")) notes.push(message(
+            "Level-up wizard not run (headless): add class features, chosen skills and proficiencies using search_compendium/add_from_compendium/update_documents.",
+            "Assistant de niveau non exécuté (headless) : ajoute aptitudes de classe, compétences et maîtrises au choix via search_compendium/add_from_compendium/update_documents."));
+          if (missing.length) notes.push(message(`Not found in compendium: ${missing.join(", ")}`, `Introuvables dans le compendium : ${missing.join(", ")}`));
+          if (actor) { const cn = await ensureCastSpells(fs, actor._id); if (cn.length) notes.push(message(`Feature spells added: ${cn.join(", ")}`, "Sorts d'aptitude ajoutés : " + cn.join(", "))); }
           return out({ ajoutes: created, a: actor ? actor.name : "monde", notes });
         }
         case "give_loot": {
@@ -765,7 +773,9 @@ async function runTool(session, params) {
             const r = await fs.doc("create", "Item", { parentUuid: `Actor.${actor._id}`, data, modifiedTime: Date.now() });
             lines.push(...r.map(x => `${x.name}${x.system?.quantity > 1 ? " ×" + x.system.quantity : ""}`));
           }
-          await postChat(fs, { actor, flavor: "Butin", content: `<p><b>${esc(actor.name)}</b> reçoit :</p><ul>${lines.map(l => `<li>${esc(l)}</li>`).join("")}</ul>`, mode: a.mode });
+          await postChat(fs, { actor, flavor: message("Loot", "Butin"),
+            content: message(`<p><b>${esc(actor.name)}</b> receives:</p>`, `<p><b>${esc(actor.name)}</b> reçoit :</p>`)
+              + `<ul>${lines.map(l => `<li>${esc(l)}</li>`).join("")}</ul>`, mode: a.mode });
           return out({ a: actor.name, recu: lines });
         }
         case "upload_file": {
@@ -909,7 +919,7 @@ async function runTool(session, params) {
             if ((Number(fs.user?.role) || 0) < GM_ROLE) return out(message("This tool is restricted to Gamemaster or Assistant Gamemaster accounts.", "Outil réservé aux comptes MJ ou assistant MJ."));
             return out(await handleGm(fs, params.name, a));
           }
-          return out(`Outil inconnu : ${params.name}`);
+          return out(message(`Unknown tool: ${params.name}`, `Outil inconnu : ${params.name}`));
       }
     } catch (e) {
       return { isError: true, content: [{ type: "text", text: message(`Foundry error: ${e.message}`, `Erreur Foundry : ${e.message}`) }] };
@@ -972,7 +982,7 @@ app.use(async (req, res) => {
   if (url.pathname === "/mcp-health") return res.writeHead(200).end("ok");
   if (url.pathname !== "/mcp") return deny(res, 404, "not found");
   const ip = clientIp(req);
-  if (recentFails(ip).length >= 10) return deny(res, 429, "Trop d'échecs d'authentification, réessaie dans 15 min");
+  if (recentFails(ip).length >= 10) return deny(res, 429, message("Too many authentication failures, try again in 15 minutes", "Trop d'échecs d'authentification, réessaie dans 15 min"));
   const authorization = req.headers.authorization || "";
   const basic = /^Basic\s+(.+)$/i.exec(authorization);
   const bearer = /^Bearer\s+(.+)$/i.exec(authorization);
@@ -985,21 +995,21 @@ app.use(async (req, res) => {
     pass = i > 0 ? dec.slice(i + 1) : "";
   } else if (bearer && oauth) {
     try { ({ username: user, password: pass } = await oauth.credentialsForToken(bearer[1])); }
-    catch { return deny(res, 401, "Jeton OAuth invalide ou expiré", bearerChallenge); }
+    catch { return deny(res, 401, message("Invalid or expired OAuth token", "Jeton OAuth invalide ou expiré"), bearerChallenge); }
   } else {
-    return deny(res, 401, "Authentification requise", bearerChallenge);
+    return deny(res, 401, message("Authentication required", "Authentification requise"), bearerChallenge);
   }
   let fs;
   try { fs = user && pass ? await getSession(user, pass) : null; }
-  catch (e) { return deny(res, 503, `Foundry indisponible : ${e.message}`); }
+  catch (e) { return deny(res, 503, message(`Foundry unavailable: ${e.message}`, `Foundry indisponible : ${e.message}`)); }
   const ent = sessions.get(keyOf(user, pass));
   if (ent) { ent.busy = (ent.busy || 0) + 1; res.on("close", () => { ent.busy--; ent.last = Date.now(); }); }
   if (!fs) {
     fails.set(ip, [...recentFails(ip), Date.now()]);
     console.warn(`[auth] échec pour "${user}" depuis ${ip}`);
-    return deny(res, 401, "Identifiants Foundry invalides", bearer ? bearerChallenge : undefined);
+    return deny(res, 401, message("Invalid Foundry credentials", "Identifiants Foundry invalides"), bearer ? bearerChallenge : undefined);
   }
-  if (req.method !== "POST") return deny(res, 405, "Serveur MCP sans état : POST uniquement");
+  if (req.method !== "POST") return deny(res, 405, message("Stateless MCP server: POST only", "Serveur MCP sans état : POST uniquement"));
   const server = makeServer(fs);
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
   res.on("close", () => { transport.close(); server.close(); });

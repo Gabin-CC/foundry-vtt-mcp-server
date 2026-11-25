@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { rollFormula, toRollFormula, useItem } from "../src/dnd5e.mjs";
 import { resolveImportEntry } from "../src/edition.mjs";
-import { currentLocale } from "../src/i18n.mjs";
+import { currentLocale, message } from "../src/i18n.mjs";
 
 test("dice arithmetic respects precedence, unary signs, and division rounding", () => {
   assert.equal(rollFormula("2+3*4").total, 14);
@@ -79,7 +79,7 @@ test("rules 2014 never imports a 2024 item just because the ID was supplied", as
 test("edition selection fails closed when the requested pack or rule-specific item is absent", async () => {
   await assert.rejects(resolveImportEntry(fakeSession, packs.slice(0, 1), {
     pack: "dnd5e.spells", name: "Fire Bolt", rules: "2024"
-  }, indexOf), /Cannot verify rules 2024/);
+  }, indexOf), new RegExp(message("Cannot verify rules 2024", "Impossible de vérifier les règles 2024")));
   const missing = await resolveImportEntry(fakeSession, packs, {
     pack: "dnd5e.spells", name: "Fire Bolt", rules: "2024", item_type: "2024"
   }, indexOf);

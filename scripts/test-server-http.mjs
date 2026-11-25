@@ -6,6 +6,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import { message } from "../src/i18n.mjs";
 
 async function unusedPort() {
   const socket = net.createServer();
@@ -54,9 +55,11 @@ test("HTTP : OAuth activé, challenge Bearer et endpoints de découverte", async
   const base = await launch(t, true);
   const unauthorized = await fetch(`${base}/mcp`);
   assert.equal(unauthorized.status, 401);
+  assert.equal((await unauthorized.json()).error, message("Authentication required", "Authentification requise"));
   assert.match(unauthorized.headers.get("www-authenticate"), /^Bearer resource_metadata="https:\/\/foundry\.example\.org\/\.well-known\/oauth-protected-resource\/mcp"$/);
   const invalidBearer = await fetch(`${base}/mcp`, { headers: { authorization: "Bearer invalide" } });
   assert.equal(invalidBearer.status, 401);
+  assert.equal((await invalidBearer.json()).error, message("Invalid or expired OAuth token", "Jeton OAuth invalide ou expiré"));
   const metadata = await fetch(`${base}/.well-known/oauth-protected-resource/mcp`);
   assert.equal(metadata.status, 200);
   assert.equal((await metadata.json()).resource, "https://foundry.example.org/mcp");
@@ -68,6 +71,7 @@ test("HTTP : mode Basic historique inchangé sans OAuth", async t => {
   const base = await launch(t, false);
   const unauthorized = await fetch(`${base}/mcp`);
   assert.equal(unauthorized.status, 401);
+  assert.equal((await unauthorized.json()).error, message("Authentication required", "Authentification requise"));
   assert.match(unauthorized.headers.get("www-authenticate"), /^Basic realm=/);
   const noOauth = await fetch(`${base}/.well-known/oauth-protected-resource/mcp`);
   assert.equal(noOauth.status, 404);

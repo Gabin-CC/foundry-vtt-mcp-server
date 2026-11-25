@@ -1,5 +1,6 @@
 // Client Foundry VTT "headless" : login comme un navigateur, puis socket.io
 import { createRequire } from "node:module";
+import { message } from "./i18n.mjs";
 const require = createRequire(import.meta.url);
 const { io } = require("socket.io-client");
 
@@ -14,7 +15,7 @@ function cookieFrom(res) {
 function connectSocket(session) {
   return new Promise((resolve, reject) => {
     const s = io(FOUNDRY, { path: "/socket.io", transports: ["websocket"], extraHeaders: { cookie: `session=${session}` }, reconnection: false, timeout: 10000 });
-    const t = setTimeout(() => { s.close(); reject(new Error("Timeout connexion socket Foundry")); }, 15000);
+    const t = setTimeout(() => { s.close(); reject(new Error(message("Foundry socket connection timed out", "Timeout connexion socket Foundry"))); }, 15000);
     s.once("session", info => { clearTimeout(t); resolve({ socket: s, info }); });
     s.once("connect_error", e => { clearTimeout(t); reject(e); });
   });
@@ -29,13 +30,13 @@ export class FoundrySession {
   static async login(username, password, { adminPassword } = {}) {
     let r = await fetch(`${FOUNDRY}/join`, { redirect: "manual" });
     const session = cookieFrom(r);
-    if (!session) throw new Error("Pas de cookie de session (aucun monde actif ?)");
+    if (!session) throw new Error(message("No session cookie (is a world active?)", "Pas de cookie de session (aucun monde actif ?)"));
     const headers = { cookie: `session=${session}`, "content-type": "application/json", "sec-fetch-site": "same-origin" };
     // Trouver l'ID du user depuis son nom
     const pre = await connectSocket(session);
     const join = await emit(pre.socket, "getJoinData");
     pre.socket.close();
-    if (!join?.world) throw new Error("Aucun monde actif");
+    if (!join?.world) throw new Error(message("No active world", "Aucun monde actif"));
     const user = join.users.find(u => u.name.toLowerCase() === String(username).toLowerCase());
     if (!user) return null;
     if (adminPassword) { // chemin de test : session admin + loginAs
@@ -81,7 +82,7 @@ export class FoundrySession {
     fd.append("upload", new Blob([buffer], { type: mime || "application/octet-stream" }), filename);
     const r = await fetch(`${FOUNDRY}/upload`, { method: "POST", headers: { cookie: `session=${this.session}`, "sec-fetch-site": "same-origin" }, body: fd });
     const j = await r.json().catch(() => ({}));
-    if (j.error || !j.path) throw new Error(j.error || j.message || `Upload échoué (${r.status})`);
+    if (j.error || !j.path) throw new Error(j.error || j.message || message(`Upload failed (${r.status})`, `Upload échoué (${r.status})`));
     return j.path;
   }
 }

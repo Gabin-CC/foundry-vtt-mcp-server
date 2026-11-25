@@ -202,7 +202,12 @@ export async function applyDamage(fs, a, { postChat }) {
       if (x.damage || x.healing || x.temp) {
         const hp = await applyHp(fs, t, x);
         Object.assign(r, { degats: x.damage || undefined, soins: x.healing || undefined, pv_temporaires: x.temp || undefined, pv: `${hp.avant.pv} → ${hp.apres.pv}/${hp.apres.max}${hp.apres.temp ? ` (+${hp.apres.temp} temp.)` : ""}` });
-        lines.push(`${t.label} : ${x.damage ? `${x.damage} dégâts` : ""}${x.healing ? `${x.healing} PV rendus` : ""}${x.temp ? `${x.temp} PV temporaires` : ""} (PV ${hp.avant.pv} → ${hp.apres.pv})`);
+        const amounts = [
+          x.damage ? message(`${x.damage} damage`, `${x.damage} dégâts`) : "",
+          x.healing ? message(`${x.healing} HP restored`, `${x.healing} PV rendus`) : "",
+          x.temp ? message(`${x.temp} temporary HP`, `${x.temp} PV temporaires`) : ""
+        ].filter(Boolean).join(" ");
+        lines.push(`${t.label} : ${amounts} (${message("HP", "PV")} ${hp.avant.pv} → ${hp.apres.pv})`);
       }
       if (x.effects && effects.length) {
         r.effets = await applyEffects(fs, t, effects, origin);
@@ -212,6 +217,9 @@ export async function applyDamage(fs, a, { postChat }) {
     } catch (e) { report.push({ cible: x.ref, erreur: e.message }); }
   }
   if (a.chat !== false && lines.length)
-    await postChat(fs, { flavor: label ? `${label} — effets appliqués` : "Dégâts / soins", content: `<ul>${lines.map(l => `<li>${l.replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]))}</li>`).join("")}</ul>`, mode: a.mode });
+    await postChat(fs, { flavor: label
+      ? message(`${label} — effects applied`, `${label} — effets appliqués`)
+      : message("Damage / healing", "Dégâts / soins"),
+      content: `<ul>${lines.map(l => `<li>${l.replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]))}</li>`).join("")}</ul>`, mode: a.mode });
   return { applique: report };
 }
