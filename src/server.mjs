@@ -14,6 +14,9 @@ import { ensureCastSpells } from "./cast.mjs";
 import { GM_TOOLS, GM_ROLE, handleGm } from "./gm.mjs";
 import { sanitizeItemData } from "./repair.mjs";
 import { scrollFromSpell } from "./scroll.mjs";
+import { render, nextPage, MAX_OUT } from "./paging.mjs";
+import { auditTranslation, searchText, findReferences } from "./corpus.mjs";
+import { diffUpdates, saveSnapshot, currentDocs, listSnapshots, showSnapshot, restoreSnapshot } from "./snapshots.mjs";
 import { rollFormula, derive, checkBonus, sheet, slotMax, useItem, translations, translateDoc, trFor, refreshUnits, localizeItem, actorMetricUpdates, ABIL, SKILLS } from "./dnd5e.mjs";
 
 const PORT = Number(process.env.PORT || 8808);
@@ -24,7 +27,6 @@ const PUBLIC_URL = (process.env.PUBLIC_URL || "").replace(/\/+$/, ""); // ex. ht
 // peut pas (re)venir dans son navigateur. La connexion du MCP est donc relâchée quelques secondes après le dernier
 // appel (IDLE_SECONDS, défaut 10 s). Le MCP, lui, fonctionne même si le joueur est connecté.
 const IDLE_MS = (Number(process.env.IDLE_SECONDS) || 10) * 1000;
-const MAX_OUT = 60000;
 const ROLES = { 0: "aucun", 1: "joueur", 2: "joueur de confiance", 3: "MJ assistant", 4: "MJ" };
 const TYPES = ["Actor", "Item", "JournalEntry", "Scene", "Folder", "User", "Playlist", "RollTable", "Macro",
   "ChatMessage", "Combat", "Cards", "Setting", "Adventure",
@@ -63,11 +65,9 @@ const recentFails = ip => (fails.get(ip) || []).filter(t => Date.now() - t < 15 
 // ---------- helpers ----------
 const num0 = v => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
 const getPath = (o, p) => p ? p.split(".").reduce((a, k) => a?.[k], o) : o;
-const out = v => {
-  let t = typeof v === "string" ? v : (JSON.stringify(v, null, 1) ?? "(vide)");
-  if (t.length > MAX_OUT) t = t.slice(0, MAX_OUT) + `\n… [tronqué : ${t.length} caractères au total. Utilise 'fields', 'path' ou 'limit' pour réduire.]`;
-  return { content: [{ type: "text", text: t }] };
-};
+// Réponse d'un outil : la mise en forme (et le découpage en pages si elle est trop grosse) se fait dans handleTool.
+const OUT = Symbol("out");
+const out = v => ({ [OUT]: true, value: v });
 const pick = (doc, fields) => {
   if (!fields?.length) return doc;
   const r = { _id: doc._id };
@@ -87,13 +87,17 @@ export const TOOLS = [
   { name: "world_info", description: "Infos du monde Foundry actif, du compte connecté et liste des utilisateurs.",
     inputSchema: { type: "object", properties: {} } },
   { name: "list_documents",
-    description: "Liste des documents d'un type (selon les droits du compte). Renvoie par défaut _id, name, type, folder. Filtres optionnels.",
+    description: "Liste des documents d'un type (selon les droits du compte). Renvoie par défaut _id, name, type, folder. Filtres optionnels. Paginé : total, next_cursor / next_offset (null = fin), ordre stable par _id.",
     inputSchema: { type: "object", required: ["type"], properties: {
       type: typeProp, pack: packProp, parent: parentProp,
       name_contains: { type: "string", description: "Filtre insensible à la casse sur le nom" },
       filter: { type: "object", description: "Égalités sur des chemins, ex. {\"type\":\"character\",\"folder\":\"id\"}" },
       fields: { type: "array", items: { type: "string" }, description: "Champs à renvoyer (chemins pointés), ex. [\"name\",\"system.attributes.hp.value\"]" },
-      limit: { type: "number", default: 200 } } } },
+      limit: { type: "number", default: 200, description: "Taille de page (max 5000 ; la page s'arrête plus tôt si la réponse devient trop grosse)" },
+      cursor: { type: "string", description: "Page suivante : valeur next_cursor de la réponse précédente (dernier _id renvoyé)" },
+      offset: { type: "number", description: "Alternative au curseur : position de départ (ordre par _id)" } } } },
+  { name: "next_page", description: "Suite d'une réponse trop grosse découpée en pages (champ curseur_suivant d'une réponse précédente).",
+    inputSchema: { type: "object", required: ["cursor"], properties: { cursor: { type: "string" } } } },
   { name: "get_document", description: "Lit un document complet (ou une sous-partie via 'path').",
     inputSchema: { type: "object", required: ["type", "id"], properties: {
       type: typeProp, pack: packProp, id: { type: "string" }, parent: parentProp,
@@ -102,12 +106,19 @@ export const TOOLS = [
     inputSchema: { type: "object", required: ["type", "data"], properties: {
       type: typeProp, pack: packProp, parent: parentProp, data: { type: "array", items: { type: "object" } } } } },
   { name: "update_documents",
-    description: "Modifie des documents. Chaque update contient _id + les champs à changer en notation pointée, ex. {\"_id\":\"abc\",\"system.abilities.str.value\":10}.",
+    description: "Modifie des documents. Chaque update contient _id + les champs à changer en notation pointée, ex. {\"_id\":\"abc\",\"system.abilities.str.value\":10}. dry_run = aperçu avant/après ; sinon un instantané des valeurs d'origine est gardé (outil snapshots pour restaurer).",
     inputSchema: { type: "object", required: ["type", "updates"], properties: {
-      type: typeProp, pack: packProp, parent: parentProp, updates: { type: "array", items: { type: "object" } } } } },
-  { name: "delete_documents", description: "Supprime des documents (irréversible).",
+      type: typeProp, pack: packProp, parent: parentProp, updates: { type: "array", items: { type: "object" } },
+      dry_run: { type: "boolean", description: "Aperçu avant/après de chaque champ, sans rien modifier" } } } },
+  { name: "delete_documents", description: "Supprime des documents. Un instantané complet est gardé côté serveur (restauration : outil snapshots).",
     inputSchema: { type: "object", required: ["type", "ids"], properties: {
-      type: typeProp, pack: packProp, parent: parentProp, ids: { type: "array", items: { type: "string" } } } } },
+      type: typeProp, pack: packProp, parent: parentProp, ids: { type: "array", items: { type: "string" } },
+      dry_run: { type: "boolean", description: "Liste ce qui serait supprimé, sans supprimer" } } } },
+  { name: "snapshots", description: "Instantanés de restauration pris automatiquement avant update_documents, delete_documents et localize_actor (valeurs d'origine des champs modifiés, documents supprimés). list (les plus récents), show (détail avant/après), restore (remet les valeurs d'origine ; dry_run pour un aperçu ; la restauration est elle-même annulable).",
+    inputSchema: { type: "object", properties: {
+      action: { type: "string", enum: ["list", "show", "restore"], default: "list" }, id: { type: "string", description: "Identifiant de l'instantané (show/restore)" },
+      dry_run: { type: "boolean", description: "restore : aperçu sans rien modifier" }, tool: { type: "string", description: "list : filtrer par outil d'origine" },
+      limit: { type: "number", default: 30 } } } },
   { name: "actor_sheet", description: "Fiche calculée d'un personnage/PNJ (niveau, maîtrise, caracs+mods, CA estimée, PV, compétences, DD/attaque de sort, emplacements, sorts, objets avec leurs _id).",
     inputSchema: { type: "object", required: ["actor"], properties: { actor: { type: "string", description: "Nom ou _id de l'acteur" } } } },
   { name: "roll", description: "Lance des dés et poste le résultat dans le chat Foundry. Formules : 1d20+5, 2d20kh1+3 (avantage), 2d20kl1 (désavantage), 8d6, 4d6kh3...",
@@ -142,7 +153,7 @@ export const TOOLS = [
   { name: "get_compendium_entry", description: "Lit une entrée de compendium (traduite en FR si possible).",
     inputSchema: { type: "object", required: ["pack", "id"], properties: { pack: { type: "string" }, id: { type: "string" }, path: { type: "string" } } } },
   { name: "localize_actor", description: "Traduit en FR les objets d'un acteur d'après leur compendium d'origine (comme la traduction d'acteur de Babele) et convertit les unités en mètres/kg si l'option métrique de dnd5e est active. Sans effet sur ce qui est déjà traduit/converti.",
-    inputSchema: { type: "object", properties: { actor: { type: "string", description: "Nom ou _id de l'acteur" }, dry_run: { type: "boolean", description: "Liste les changements sans les appliquer" } }, required: ["actor"] } },
+    inputSchema: { type: "object", properties: { actor: { type: "string", description: "Nom ou _id de l'acteur" }, dry_run: { type: "boolean", description: "Aperçu avant/après de chaque champ, sans rien appliquer (sinon instantané de restauration : outil snapshots)" } }, required: ["actor"] } },
   { name: "add_from_compendium", description: "Ajoute des entrées de compendium à un acteur (sorts, objets, butin, classe, espèce, historique, dons...) ou les importe dans le monde si 'actor' est absent (ex. un monstre). Traduit en FR. Pour une classe, 'levels' fixe le niveau et remplit les PV (max au niv. 1, puis moyenne).",
     inputSchema: { type: "object", required: ["entries"], properties: {
       actor: { type: "string", description: "Acteur destinataire (nom ou _id). Absent = import dans le monde." },
@@ -177,6 +188,27 @@ export const TOOLS = [
       level: { type: "number", description: "Niveau de classe visé (défaut : niveau actuel + 1, ou 1 pour un import)" },
       choices: { type: "object" }, hp: { type: "string", enum: ["avg", "max"], default: "avg" },
       spells: { type: "string", enum: ["none", "all"], default: "none", description: "'all' : ajoute tous les sorts de la classe accessibles (liste construite depuis tous les compendiums installés) et demande sorts mineurs (choices['spells:cantrips']) et sorts préparés (choices['spells:prepared'])" } } } },
+  { name: "audit_translation", description: "Audit de traduction FR du monde et/ou des compendiums : champs restés en anglais (nom, description, activités, pages de journal, faces de cartes, résultats de tables, effets, objets des acteurs) avec UUID, champ, extrait, statut (anglais / mixte / inconnu ; « traduit » = traduction Babele) et correctif disponible (localize_actor). mode=coverage : part des entrées traduites par compendium / type de document. Heuristique mots-outils FR/EN + noms connus des compendiums traduits. Les compendiums complets sont lourds (≈ 40 s pour tout) : préférer 'packs'.",
+    inputSchema: { type: "object", properties: {
+      scope: { type: "string", enum: ["world", "packs", "all"], default: "world" },
+      packs: { type: "array", items: { type: "string" }, description: "Compendiums à auditer (implique scope=packs)" },
+      types: { type: "array", items: { type: "string" }, description: "Types de documents (Actor, Item, JournalEntry, RollTable, Cards, Scene, Playlist)" },
+      categories: { type: "array", items: { type: "string", enum: ["nom", "description", "activite", "effet", "page", "carte", "resultat"] } },
+      mode: { type: "string", enum: ["issues", "coverage"], default: "issues" },
+      statuses: { type: "array", items: { type: "string", enum: ["anglais", "mixte", "inconnu", "fr", "traduit"] }, description: "Statuts à lister (défaut anglais + mixte)" },
+      check_fixes: { type: "boolean", default: true, description: "Indiquer si localize_actor peut corriger (objets issus d'un compendium traduit)" },
+      limit: { type: "number", default: 300 }, offset: { type: "number" } } } },
+  { name: "search_text", description: "Recherche plein texte (sans accents ni casse) dans le monde et les compendiums (noms, descriptions, pages, résultats de tables, cartes, effets, activités, objets des acteurs ; versions FR traduites et d'origine). Renvoie UUID, document, chemin de dossier, champ, extrait.",
+    inputSchema: { type: "object", required: ["query"], properties: {
+      query: { type: "string" }, scope: { type: "string", enum: ["world", "packs", "all"], default: "all" },
+      in: { type: "string", enum: ["all", "name", "text"], default: "all" },
+      packs: { type: "array", items: { type: "string" } }, types: { type: "array", items: { type: "string" } },
+      limit: { type: "number", default: 50 }, offset: { type: "number" } } } },
+  { name: "find_references", description: "Références inverses d'un document (UUID) : où il est utilisé — liens @UUID dans les textes (monde et compendiums), objets d'acteurs copiés depuis lui (compendiumSource), jetons de scène, notes de carte, résultats de tables, effets (origin).",
+    inputSchema: { type: "object", required: ["uuid"], properties: {
+      uuid: { type: "string", description: "Ex. Compendium.dnd5e.spells24.Item.xxx, JournalEntry.abc, Actor.abc" },
+      scope: { type: "string", enum: ["world", "packs", "all"], description: "Défaut : all pour un UUID de compendium, world sinon" },
+      packs: { type: "array", items: { type: "string" } }, limit: { type: "number", default: 100 }, offset: { type: "number" } } } },
   ...GM_TOOLS,   // outils de MJ : listés seulement pour les comptes MJ / assistant MJ
 ];
 
@@ -255,6 +287,12 @@ function makeServer(fs) {
 }
 
 export async function handleTool(fs, params) {
+  const r = await runTool(fs, params);
+  if (!r?.[OUT]) return r;
+  return { content: [{ type: "text", text: r.value === undefined ? "(vide)" : render(r.value, fs.userId) }] };
+}
+
+async function runTool(fs, params) {
   try { await refreshUnits(fs); } catch { /* pas bloquant */ }
     const a = params.arguments || {};
     try {
@@ -269,10 +307,26 @@ export async function handleTool(fs, params) {
           let docs = await fs.doc("get", a.type, { query: {}, ...parentOpt(a.parent, a.pack) });
           if (a.name_contains) docs = docs.filter(d => (d.name || "").toLowerCase().includes(a.name_contains.toLowerCase()));
           if (a.filter) docs = docs.filter(d => matches(d, a.filter));
+          // pagination stable : ordre par _id (ordre de Foundry), curseur = dernier _id renvoyé (insensible aux
+          // créations/suppressions entre deux pages) ou offset ; la page s'arrête avant de dépasser la taille max.
+          docs.sort((x, y) => (x._id < y._id ? -1 : x._id > y._id ? 1 : 0));
           const total = docs.length;
           const fields = a.fields?.length ? a.fields : ["name", "type", "folder"];
-          return out({ total, documents: docs.slice(0, a.limit || 200).map(d => pick(d, fields)) });
+          let start = Math.max(0, Number(a.offset) || 0);
+          if (a.cursor) { start = docs.findIndex(d => d._id > a.cursor); if (start < 0) start = total; }
+          const limit = Math.max(1, Math.min(Number(a.limit) || 200, 5000));
+          const page = [];
+          let size = 200;
+          for (let i = start; i < total && page.length < limit; i++) {
+            const p = pick(docs[i], fields), n = JSON.stringify(p, null, 1).length + 3;
+            if (page.length && size + n > MAX_OUT * 0.9) break;
+            page.push(p); size += n;
+          }
+          const end = start + page.length;
+          return out({ total, offset: start, count: page.length,
+            next_cursor: end < total ? page.at(-1)._id : null, next_offset: end < total ? end : null, documents: page });
         }
+        case "next_page": return out(nextPage(a.cursor, fs.userId));
         case "get_document": {
           // le filtre _id n'est pas appliqué par Foundry sur les collections embarquées : on filtre ici
           const d = (await fs.doc("get", a.type, { query: { _id: a.id }, ...parentOpt(a.parent, a.pack) })).find(x => x._id === a.id);
@@ -284,12 +338,34 @@ export async function handleTool(fs, params) {
           return out({ crees: r.map(d => ({ _id: d._id, name: d.name })) });
         }
         case "update_documents": {
+          const o = { type: a.type, pack: a.pack, parent: a.parent };
+          let diff = null, note;
+          try { diff = diffUpdates(await currentDocs(fs, o, a.updates.map(u => u._id)), a.updates); }
+          catch (e) { note = `Avant/après indisponible : ${e.message}`; }
+          if (a.dry_run) return out({ simulation: true, documents: diff?.preview, note });
           const r = await fs.doc("update", a.type, { updates: a.updates, diff: true, recursive: true, modifiedTime: Date.now(), render: true, ...parentOpt(a.parent, a.pack) });
-          return out({ modifies: r.length, resultat: r });
+          const snap = diff ? await saveSnapshot(fs, "update_documents", `${a.type} : ${diff.entries.map(e => e.nom || e._id).slice(0, 5).join(", ")}${diff.entries.length > 5 ? "…" : ""}`, [{ action: "update", ...o, entries: diff.entries }]) : null;
+          return out({ modifies: r.length, instantane: snap || undefined, resultat: r, note });
         }
         case "delete_documents": {
+          const o = { type: a.type, pack: a.pack, parent: a.parent };
+          let docs = [];
+          try { docs = await currentDocs(fs, o, a.ids); } catch { /* instantané impossible : suppression quand même */ }
+          if (a.dry_run) return out({ simulation: true, seraient_supprimes: docs.map(d => ({ _id: d._id, nom: d.name, type: d.type })), introuvables: a.ids.filter(id => !docs.some(d => d._id === id)) });
+          const snap = await saveSnapshot(fs, "delete_documents", `suppression ${a.type} : ${docs.map(d => d.name || d._id).slice(0, 5).join(", ")}`, [{ action: "delete", ...o, docs }]);
           const r = await fs.doc("delete", a.type, { ids: a.ids, modifiedTime: Date.now(), render: true, ...parentOpt(a.parent, a.pack) });
-          return out({ supprimes: r });
+          return out({ supprimes: r, instantane: snap || undefined });
+        }
+        case "audit_translation": return out(await auditTranslation(fs, a, { packsOf, packIndex }));
+        case "search_text": return out(await searchText(fs, a, { packsOf }));
+        case "find_references": return out(await findReferences(fs, a, { packsOf }));
+        case "snapshots": {
+          const isGM = (Number(fs.user?.role) || 0) >= GM_ROLE;
+          if (!a.action || a.action === "list") return out(await listSnapshots(fs, isGM, { limit: a.limit || 30, tool: a.tool }));
+          if (!a.id) throw new Error("Préciser 'id'");
+          if (a.action === "show") return out(await showSnapshot(fs, isGM, a.id));
+          if (a.action === "restore") return out(await restoreSnapshot(fs, isGM, a.id, { dryRun: !!a.dry_run }));
+          throw new Error(`Action inconnue : ${a.action}`);
         }
 
         case "actor_sheet": return out(sheet(await findActor(fs, a.actor)));
@@ -395,13 +471,24 @@ export async function handleTool(fs, params) {
             if (Object.keys(up).length) { updates.push({ _id: it._id, ...up }); noms.push(up.name ? `${it.name} → ${up.name}` : `${it.name} (${up["system.description.value"] ? "description" : up["system.materials.value"] ? "composantes" : "unités"})`); }
           }
           const aup = actorMetricUpdates(act);
+          // avant/après de chaque champ (aperçu en simulation, instantané de restauration sinon)
+          const itemDiff = diffUpdates(items, updates);
+          const actorDiff = diffUpdates([act], Object.keys(aup).length ? [{ _id: act._id, ...aup }] : []);
+          const effDiffs = effUps.map(([iid, eu]) => [iid, diffUpdates(items.find(i => i._id === iid)?.effects || [], eu)]);
+          if (a.dry_run) return out({ acteur: act.name, simulation: true, objets: itemDiff.preview, acteur_modifie: actorDiff.preview,
+            effets: effDiffs.flatMap(([iid, d]) => d.preview.map(p => ({ objet: iid, ...p }))) });
+          let snap = null;
           if (!a.dry_run) {
+            snap = await saveSnapshot(fs, "localize_actor", `traduction/unités de ${act.name}`, [
+              { action: "update", type: "Item", parent: `Actor.${act._id}`, entries: itemDiff.entries },
+              { action: "update", type: "Actor", entries: actorDiff.entries },
+              ...effDiffs.map(([iid, d]) => ({ action: "update", type: "ActiveEffect", parent: `Actor.${act._id}.Item.${iid}`, entries: d.entries }))]);
             for (let i = 0; i < updates.length; i += 50) await fs.doc("update", "Item", { parentUuid: `Actor.${act._id}`, updates: updates.slice(i, i + 50), diff: true, recursive: true, modifiedTime: Date.now(), render: true });
             if (Object.keys(aup).length) await fs.doc("update", "Actor", { updates: [{ _id: act._id, ...aup }], diff: true, recursive: true, modifiedTime: Date.now(), render: true });
             for (const [iid, eu] of effUps)
               await fs.doc("update", "ActiveEffect", { parentUuid: `Actor.${act._id}.Item.${iid}`, updates: eu, diff: true, recursive: true, modifiedTime: Date.now(), render: true });
           }
-          return out({ acteur: act.name, objets_modifies: updates.length, effets_modifies: effUps.reduce((n, [, e]) => n + e.length, 0), acteur_modifie: Object.keys(aup), detail: noms, simulation: !!a.dry_run });
+          return out({ acteur: act.name, objets_modifies: updates.length, effets_modifies: effUps.reduce((n, [, e]) => n + e.length, 0), acteur_modifie: Object.keys(aup), detail: noms, simulation: !!a.dry_run, instantane: snap || undefined });
         }
         case "add_from_compendium": {
           const actor = a.actor ? await findActor(fs, a.actor) : null;
