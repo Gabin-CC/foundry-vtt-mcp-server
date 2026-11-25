@@ -47,6 +47,8 @@ async function authorizePlayer({ base, client, username, password }) {
   const query = new URLSearchParams({ client_id: client.client_id, response_type: "code", redirect_uri: callback, code_challenge: challenge, code_challenge_method: "S256", resource, state: "csrf-check", scope: "foundry:access" });
   const page = await fetch(`${base}/authorize?${query}`);
   assert.equal(page.status, 200);
+  assert.match(page.headers.get("content-security-policy") || "", /form-action 'self' https:\/\/chatgpt\.com/,
+    "La CSP doit autoriser la redirection du formulaire vers l'origine OAuth");
   const form = await page.text();
   const requestId = form.match(/name="request_id" value="([\w-]+)"/)?.[1];
   assert.ok(requestId, "La page OAuth affiche un formulaire de connexion");
@@ -81,6 +83,8 @@ test("OAuth MCP : découverte, DCR, connexion distincte de deux joueurs, rafraî
 
   const player1 = await authorizePlayer({ base, client, username: "Gabin", password: "secret-gabin" });
   assert.equal(player1.approval.status, 302);
+  assert.match(player1.approval.headers.get("content-security-policy") || "", /form-action 'self' https:\/\/chatgpt\.com/,
+    "Le 302 doit autoriser la redirection vers ChatGPT");
   const redirect1 = new URL(player1.approval.headers.get("location"));
   assert.equal(redirect1.searchParams.get("state"), "csrf-check");
   const code1 = redirect1.searchParams.get("code");

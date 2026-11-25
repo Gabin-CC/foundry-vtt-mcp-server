@@ -96,12 +96,19 @@ ${warning}
 </main></body></html>`;
 }
 
-function setLoginHeaders(res) {
+function setLoginHeaders(res, extraFormOrigins = []) {
+  // form-action s'applique aussi à la cible des redirections d'un formulaire :
+  // sans l'origine de retour OAuth, le navigateur bloque le 302 vers ChatGPT.
+  const formAction = ["'self'", ...extraFormOrigins.filter(Boolean)].join(" ");
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("Referrer-Policy", "no-referrer");
   res.setHeader("X-Content-Type-Options", "nosniff");
-  res.setHeader("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'");
+  res.setHeader("Content-Security-Policy", `default-src 'none'; style-src 'unsafe-inline'; form-action ${formAction}; base-uri 'none'; frame-ancestors 'none'`);
 }
+
+const originOf = value => {
+  try { return new URL(value).origin; } catch { return null; }
+};
 
 /**
  * @param {object} options
@@ -166,7 +173,7 @@ export function createFoundryOAuth({ mcpUrl, key, stateFile = DEFAULT_STATE, log
       for (const [id, entry] of pending) if (entry.expiresAt <= now()) pending.delete(id);
       if (pending.size >= 1000) throw new InvalidGrantError("Trop de demandes de connexion en attente");
       pending.set(requestId, { clientId: client.client_id, clientName: client.client_name || "ChatGPT", params, expiresAt: now() + CODE_TTL });
-      setLoginHeaders(res);
+      setLoginHeaders(res, [originOf(params.redirectUri)]);
       res.status(200).type("html").send(loginPage({ requestId, clientName: client.client_name || "ChatGPT" }));
     },
 
@@ -215,6 +222,7 @@ export function createFoundryOAuth({ mcpUrl, key, stateFile = DEFAULT_STATE, log
     const { request_id: requestId, username, password } = req.body || {};
     const attempt = pending.get(requestId);
     if (!attempt || attempt.expiresAt <= now()) return res.status(400).send("Connexion expirée. Recommence depuis ChatGPT.");
+    setLoginHeaders(res, [originOf(attempt.params.redirectUri)]);
     if (typeof username !== "string" || typeof password !== "string" || !username || !password || username.length > 120 || password.length > 1024) {
       return res.status(400).type("html").send(loginPage({ requestId, clientName: attempt.clientName, error: "Saisis ton nom et ton mot de passe Foundry." }));
     }
@@ -238,6 +246,7 @@ export function createFoundryOAuth({ mcpUrl, key, stateFile = DEFAULT_STATE, log
     const callback = new URL(attempt.params.redirectUri);
     callback.searchParams.set("code", code);
     if (attempt.params.state) callback.searchParams.set("state", attempt.params.state);
+    setLoginHeaders(res, [callback.origin]);
     console.log(`[oauth] connexion validée pour "${username}" → ${callback.origin}${callback.pathname} (state ${attempt.params.state ? "renvoyé" : "ABSENT"}, code ${code.length} car.)`);
     res.redirect(302, callback.href);
   };

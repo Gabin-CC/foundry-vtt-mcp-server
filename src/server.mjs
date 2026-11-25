@@ -842,9 +842,10 @@ if (oauth) {
     "/.well-known/oauth-protected-resource/mcp", "/.well-known/oauth-authorization-server"]);
   const corsOrigins = new Set((process.env.OAUTH_REDIRECT_ORIGINS || "https://chatgpt.com").split(",").map(x => x.trim()).filter(Boolean));
   app.use((req, res, next) => {
-    if (!oauthPaths.has(req.path)) return next();
+    const path = req.path;
+    if (!oauthPaths.has(path)) return next();
     const start = Date.now();
-    res.on("finish", () => console.log(`[oauth] ${req.method} ${req.path} → ${res.statusCode} (${Date.now() - start} ms)`));
+    res.on("finish", () => console.log(`[oauth] ${req.method} ${path} → ${res.statusCode} (${Date.now() - start} ms)`));
     const origin = req.headers.origin;
     if (!origin || !corsOrigins.has(origin)) return next();
     res.setHeader("Access-Control-Allow-Origin", origin);
