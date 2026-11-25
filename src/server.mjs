@@ -15,7 +15,8 @@ import { plan as advPlan, apply as advApply, fetchUuid } from "./advancement.mjs
 import { planClassSpells, applyClassSpells } from "./spells.mjs";
 import { ensureCastSpells } from "./cast.mjs";
 import { GM_TOOLS, GM_ROLE, handleGm } from "./gm.mjs";
-import { sanitizeItemData } from "./repair.mjs";
+import { sanitizeItemData, itemWarnings } from "./repair.mjs";
+import { applyPatches } from "./patches.mjs";
 import { scrollFromSpell } from "./scroll.mjs";
 import { render, nextPage, MAX_OUT } from "./paging.mjs";
 import { auditTranslation, searchText, findReferences } from "./corpus.mjs";
@@ -111,7 +112,8 @@ export const TOOLS = [
       path: { type: "string", description: "Sous-partie à renvoyer, ex. 'system.abilities'" } } } },
   { name: "create_documents", description: "Crée un ou plusieurs documents.",
     inputSchema: { type: "object", required: ["type", "data"], properties: {
-      type: typeProp, pack: packProp, parent: parentProp, data: { type: "array", items: { type: "object" } } } } },
+      type: typeProp, pack: packProp, parent: parentProp, data: { type: "array", items: { type: "object" } },
+      warn_packs: { type: "array", items: { type: "string" }, description: "Compendiums où chercher une entrée de même nom quand un objet créé n'a ni activité ni effet (défaut : principaux compendiums du monde et de dnd5e 2024)" } } } },
   { name: "update_documents",
     description: "Modifie des documents. Chaque update contient _id + les champs à changer en notation pointée, ex. {\"_id\":\"abc\",\"system.abilities.str.value\":10}. dry_run = aperçu avant/après ; sinon un instantané des valeurs d'origine est gardé (outil snapshots pour restaurer).",
     inputSchema: { type: "object", required: ["type", "updates"], properties: {
@@ -175,7 +177,7 @@ export const TOOLS = [
     inputSchema: { type: "object", required: ["entries"], properties: {
       actor: { type: "string", description: "Acteur destinataire (nom ou _id). Absent = import dans le monde." },
       entries: { type: "array", items: { type: "object", properties: {
-        pack: { type: "string" }, id: { type: "string" }, name: { type: "string", description: "Alternative à id : nom exact (FR ou EN)" }, uuid: { type: "string", description: "Alternative à pack+id : UUID (Compendium.x.y.Item.id, Item.id, Actor.id.Item.id)" }, item_type: { type: "string" }, quantity: { type: "number" }, levels: { type: "number" },
+        pack: { type: "string" }, id: { type: "string" }, name: { type: "string", description: "Alternative à id : nom exact (FR ou EN)" }, uuid: { type: "string", description: "Alternative à pack+id : UUID (Compendium.x.y.Item.id, Item.id, Actor.id.Item.id)" }, item_type: { type: "string" }, rules: { type: "string", enum: ["2014", "2024"], description: "Version de règles voulue : si le compendium demandé n'est pas un « 24 », l'entrée 2024 équivalente est prise si elle existe" }, quantity: { type: "number" }, levels: { type: "number" },
         equipped: { type: "boolean" }, overrides: { type: "object", description: "Champs à surcharger (notation pointée)" },
         scroll: { type: "string", description: "Parchemin de sort (comme « Créer un parchemin » de dnd5e) : UUID du sort à mettre sur le parchemin ; le parchemin de base du niveau du sort est pris dans le compendium. Remplace pack/id/uuid." },
         enchant: { type: "object", description: "Applique un enchantement (activité « Enchanter » de dnd5e, ex. objets magiques 2024 « Armure +1, +2 ou +3 » sur une Cuirasse) : {uuid: objet source de l'enchantement, effect: nom ou _id de l'enchantement (ex. \"Armure +2\" ou \"+2\")}",
@@ -353,8 +355,45 @@ async function runTool(fs, params) {
           return out(getPath(d, a.path));
         }
         case "create_documents": {
+          // comme un import de compendium : identifiants d'avancement/activité/effet corrigés avant création
+          // (Foundry v14 exige 16 alphanumériques ; un seul identifiant invalide fait disparaître l'objet de la fiche).
+          const changed = [];
+          const seen = new Set();
+          const eachItem = (obj, fn) => {
+            if (!obj || typeof obj !== "object" || seen.has(obj)) return;
+            seen.add(obj);
+            if (obj.system) fn(obj);
+            for (const it of obj.items || []) eachItem(it, fn);
+            for (const e of obj.effects || []) eachItem(e, fn);
+            for (const p of obj.pages || []) eachItem(p, fn);
+          };
+          for (const d of a.data) eachItem(d, x => changed.push(...sanitizeItemData(x)));
           const r = await fs.doc("create", a.type, { data: a.data, modifiedTime: Date.now(), render: true, renderSheet: false, ...parentOpt(a.parent, a.pack) });
-          return out({ crees: r.map(d => ({ _id: d._id, name: d.name })) });
+          // objets créés sans activité ni effet (typiquement écrits à la main) : proposer une source de compendium
+          const warns = [];
+          if (a.type === "Item" || a.type === "Actor") {
+            const created = Array.isArray(r) ? r : [r];
+            const pools = {};
+            const fill = async p => { if (!pools[p]) { try { pools[p] = await fs.doc("get", "Item", { pack: p, query: {}, index: true, indexFields: ["name"] }); } catch { pools[p] = []; } } return pools[p]; };
+            for (const d of created) {
+              for (const it of (d.type === "Actor" ? (d.items || []) : [d])) {
+                const w0 = itemWarnings(it);
+                if (!w0.length) continue;
+                const byName = [];
+                for (const p of (a.warn_packs || ["world.capacites-de-classe", "world.sors", "world.objets", "world.dons", "world.classes-and-sous-classes", "dnd5e.classes24", "dnd5e.spells24", "dnd5e.equipment24"])) {
+                  if (byName.length) break;
+                  const hit = (await fill(p)).filter(x => norm(x.name) === norm(it.name));
+                  if (hit.length) byName.push({ pack: p, _id: hit[0]._id, name: it.name, type: hit[0].type });
+                }
+                const label = `${it.name} (${it.type}) : ${w0.join(", ")}`;
+                if (byName.length) warns.push(`${label} — source possible : ${byName.map(b => `${b.pack}.${b.type}.${b._id}`).join(", ")} (add_from_compendium {pack, id} ou gm_sync_items)`);
+                else if (w0.some(w => /aucune activité/.test(w))) warns.push(label);
+              }
+            }
+          }
+          return out({ crees: r.map(d => ({ _id: d._id, name: d.name })),
+            ...(changed.length ? { identifiants_corriges: [...new Set(changed)] } : {}),
+            ...(warns.length ? { a_verifier: warns } : {}) });
         }
         case "update_documents": {
           const o = { type: a.type, pack: a.pack, parent: a.parent };
@@ -467,6 +506,9 @@ async function runTool(fs, params) {
         case "search_compendium": {
           const q = norm(a.query);
           const packs = (await packsOf(fs)).filter(p => !a.pack || p.id === a.pack);
+          // priorité 2024 : à score égal, une entrée « 2024 » (monde ou dnd5e.*24) passe avant une version 2014
+          const rank = e => (String(e.system?.source?.rules || e.flags?.plutonium?.source || "") === "2024" ? 0 : 1);
+          const packRank = id => /24$/.test(String(id)) ? 0 : 1;
           const hits = [];
           for (const p of packs) {
             for (const e of await packIndex(fs, p)) {
@@ -474,11 +516,14 @@ async function runTool(fs, params) {
               if (a.level != null && e.system?.level !== a.level) continue;
               const nf = norm(e.name_fr), ne = norm(e.name);
               const score = nf === q || ne === q ? 3 : nf.startsWith(q) || ne.startsWith(q) ? 2 : nf.includes(q) || ne.includes(q) ? 1 : 0;
-              if (score) hits.push({ score, pack: p.id, _id: e._id, nom: e.name_fr || e.name, nom_en: e.name, type: e.type, niveau: e.system?.level, rarete: e.system?.rarity || undefined });
+              if (score) hits.push({ score, pack: p.id, _id: e._id, nom: e.name_fr || e.name, nom_en: e.name, type: e.type, niveau: e.system?.level, rarete: e.system?.rarity || undefined,
+                _r: rank(e), _p: packRank(p.id) });
             }
           }
-          hits.sort((x, y) => y.score - x.score || x.nom.localeCompare(y.nom));
-          return out({ total: hits.length, resultats: hits.slice(0, a.limit || 25).map(({ score, ...h }) => h) });
+          hits.sort((x, y) => y.score - x.score || x._r - y._r || x._p - y._p || x.nom.localeCompare(y.nom));
+          const rules = hits.length && hits[0]._r === 0 && hits.some(h => h._r === 1) ? "2024 privilégié (une version 2014 existe aussi)" : undefined;
+          return out({ total: hits.length, ...(rules ? { note: rules } : {}),
+            resultats: hits.slice(0, a.limit || 25).map(({ score, _r, _p, ...h }) => h) });
         }
         case "get_compendium_entry": {
           const pack = (await packsOf(fs)).find(p => p.id === a.pack);
@@ -521,7 +566,7 @@ async function runTool(fs, params) {
           const actor = a.actor ? await findActor(fs, a.actor) : null;
           const packs = await packsOf(fs);
           const byType = {};
-          const missing = [], enchants = [];
+          const missing = [], enchants = [], notes0 = [];
           for (const e of a.entries) {
             if (e.scroll) {
               const d = await scrollFromSpell(fs, e.scroll);
@@ -545,17 +590,30 @@ async function runTool(fs, params) {
             }
             const pack = packs.find(p => p.id === e.pack);
             if (!pack) throw new Error(`Compendium inconnu : ${e.pack}`);
+            // « rules: 2024 » (ou item_type 2024) : préférer l'entrée 2024 ; « 2014 » : refuser une entrée 2024
+            let packId = pack.id;
+            if (!/24$/.test(packId) && (e.rules === "2024" || e.item_type === "2024")) {
+              const alt = packs.find(p => p.id === `${packId}24` && p.type === pack.type);
+              if (alt) packId = alt.id;
+            }
+            const pool = e.rules === "2014" && /24$/.test(packId) ? packs.filter(p => p.id === packId.replace(/24$/, "")) : [packs.find(p => p.id === packId)];
             if (!e.id && e.name) {
               const q = norm(e.name);
-              const hit = (await packIndex(fs, pack)).find(x => (norm(x.name) === q || norm(x.name_fr) === q) && (!e.item_type || x.type === e.item_type));
+              const pools = pool.length ? pool : [pack];
+              let hit = null;
+              for (const p of pools) {
+                if (!p) continue;
+                hit = (await packIndex(fs, p)).find(x => (norm(x.name) === q || norm(x.name_fr) === q) && (!e.item_type || x.type === e.item_type));
+                if (hit) { packId = p.id; break; }
+              }
               if (!hit) { missing.push(e.name); continue; }
               e.id = hit._id;
             }
-            const src = (await fs.doc("get", pack.type, { pack: pack.id, query: { _id: e.id } })).find(x => x._id === e.id);
-            if (!src) throw new Error(`Entrée ${e.id} introuvable dans ${e.pack}`);
-            const d = await translateDoc(pack.id, src);
+            const src = (await fs.doc("get", pack.type, { pack: packId, query: { _id: e.id } })).find(x => x._id === e.id);
+            if (!src) throw new Error(`Entrée ${e.id} introuvable dans ${packId}`);
+            const d = await translateDoc(packId, src);
             delete d._id; delete d.folder; delete d.sort; delete d.ownership;
-            d._stats = { ...(d._stats || {}), compendiumSource: `Compendium.${pack.id}.${pack.type}.${e.id}` };
+            d._stats = { ...(d._stats || {}), compendiumSource: `Compendium.${packId}.${pack.type}.${e.id}` };
             if (e.quantity != null && d.system) d.system.quantity = e.quantity;
             if (e.equipped != null && d.system) d.system.equipped = e.equipped;
             if (d.type === "class" && e.levels) {
@@ -577,7 +635,13 @@ async function runTool(fs, params) {
             (byType[pack.type] ??= []).push(d);
             if (e.enchant) { d._id = randomId(); enchants.push({ type: pack.type, id: d._id, ...e.enchant }); }
           }
-          for (const list of Object.values(byType)) for (const d of list) if (d.system) { sanitizeItemData(d); if (actor && d.system.container) d.system.container = null; }
+          for (const list of Object.values(byType)) for (const d of list) if (d.system) {
+            const r = applyPatches(d);   // entrées de compendium à structure incomplète (cantrips d'arme…)
+            Object.keys(d).forEach(k => delete d[k]); Object.assign(d, r.doc);
+            sanitizeItemData(d);
+            if (actor && d.system.container) d.system.container = null;
+            if (r.appliques.length) notes0.push(`${d.name} : ${r.appliques.join(", ")}`);
+          }
           const created = [], createdBy = {};
           for (const [type, data] of Object.entries(byType)) {
             if (actor && type !== "Item") throw new Error(`Impossible d'ajouter un ${type} à un acteur`);
@@ -643,7 +707,7 @@ async function runTool(fs, params) {
               updates: [{ _id: target._id, ...Object.fromEntries(Object.entries(riderActs).map(([k, v]) => [`system.activities.${k}`, v])) }], diff: true, modifiedTime: Date.now() });
             const c = created.find(x => x._id === target._id); if (c) c.enchantement = eff.name;
           }
-          const notes = a.entries.map(e => e._note).filter(Boolean);
+          const notes = [...notes0, ...a.entries.map(e => e._note).filter(Boolean)];
           if (created.some(c => c.type === "class")) notes.push("Assistant de niveau non exécuté (headless) : ajoute aptitudes de classe, compétences et maîtrises au choix via search_compendium/add_from_compendium/update_documents.");
           if (missing.length) notes.push(`Introuvables dans le compendium : ${missing.join(", ")}`);
           if (actor) { const cn = await ensureCastSpells(fs, actor._id); if (cn.length) notes.push("Sorts d'aptitude ajoutés : " + cn.join(", ")); }

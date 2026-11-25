@@ -3,6 +3,7 @@
 // (classe, sous-classe, espèce, historique, dons). Les choix sont demandés à l'appelant.
 import { translateDoc, SKILLS, ABIL } from "./dnd5e.mjs";
 import { fixId, sanitizeItemData } from "./repair.mjs";
+import { applyPatches } from "./patches.mjs";
 import { synthesize } from "./synth.mjs";
 
 const advList = item => {
@@ -438,6 +439,8 @@ export async function apply(fs, actor, rootItemId, steps, { hpMode = "avg", isFi
     const data = docs.map(({ uuid, doc }) => {
       const d = structuredClone(doc);
       delete d._id; delete d.folder; delete d.sort; delete d.ownership; delete d.__pack;
+      const p = applyPatches(d);   // entrées de compendium à structure incomplète (cantrips d'arme…)
+      Object.keys(d).forEach(k => delete d[k]); Object.assign(d, p.doc);
       sanitizeItemData(d);
       d._stats = { ...(d._stats || {}), compendiumSource: uuid };
       d.flags = { ...(d.flags || {}), dnd5e: { ...(d.flags?.dnd5e || {}), sourceId: uuid, ...(advId === "startingEquipment" ? {} : { advancementOrigin: origin, advancementRoot: root }) } };

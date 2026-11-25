@@ -56,7 +56,16 @@ Claude (CLI / Desktop) ──HTTPS + Basic auth──▶ foundry-vtt-mcp-server 
 | `gm_token` | lister, poser, déplacer, cacher, montrer, retirer des jetons |
 | `gm_combat` | démarrer un combat avec les jetons de la scène, tour suivant / précédent, état, fin |
 | `gm_pause` | mettre la partie en pause / la reprendre |
-- `gm_check_ids` : contrôle (et corrige avec `apply`) les identifiants invalides des objets — compendiums du monde, objets du monde, fiches. Foundry v14 rejette côté navigateur tout objet dont un avancement, une activité ou un effet n'a pas un identifiant de 16 caractères alphanumériques : l'objet disparaît alors de la fiche. Les objets importés ou ajoutés par le MCP sont corrigés automatiquement.
+| `gm_check_ids` | contrôle (et corrige avec `apply`) les identifiants invalides des objets — compendiums du monde, objets du monde, fiches |
+| `gm_sync_items` | synchronise les objets d'une fiche avec leur compendium d'origine : ajoute les effets, activités et avancements manquants (simulation par défaut, `apply` écrit, instantané de restauration) |
+| `gm_patch_items` | applique les correctifs de données de compendium (Lame retentissante, Lame des flammes vertes : attaque d'arme) à un acteur ou à un compendium |
+- `gm_check_ids` : contrôle (et corrige avec `apply`) les identifiants invalides des objets — compendiums du monde, objets du monde, fiches. Foundry v14 rejette côté navigateur tout objet dont un avancement, une activité ou un effet n'a pas un identifiant de 16 caractères alphanumériques : l'objet disparaît alors de la fiche. Les objets importés ou ajoutés par le MCP sont corrigés automatiquement (`create_documents` inclus).
+- `gm_sync_items` : pour chaque objet d'une fiche, compare avec `_stats.compendiumSource` et signale (ou ajoute, `apply`) les effets, activités et avancements manquants. `item`, `only` et `pack` limitent la portée ; un instantané de restauration est gardé.
+- `gm_patch_items` : applique les correctifs de structure de `src/patches.mjs` (entrées de compendium incomplètes) à un acteur (`actor`), à tous, ou à un compendium du monde (`pack`). Les mêmes correctifs sont appliqués automatiquement à la création d'un objet (`create_documents`, `add_from_compendium`, `advance`).
+
+- Les objets créés par le MCP sont assainis (identifiants de 16 caractères, références d'effets re-pointées) et les entrées de compendium à structure incomplète sont corrigées (`src/patches.mjs`) : Lame retentissante et Lame des flammes vertes reçoivent leur attaque d'arme au lieu de dégâts « on hit » sans jet.
+- `use_item` gère les attaques classées « weapon » (True Strike, Shillelagh, cantrips d'arme) : bonus et dégâts de l'arme équipée, formules `max(…)`/`floor(…)`/divisions.
+- `search_compendium` et `add_from_compendium` privilégient les entrées 2024 (option `rules: "2024"` pour forcer la version 2024 d'un compendium).
 
 **Connexion** : l'écran de connexion de Foundry grise les comptes déjà actifs. Le serveur relâche donc sa connexion
 10 s après le dernier appel (`IDLE_SECONDS`) pour que le joueur puisse revenir dans son navigateur. Le MCP fonctionne

@@ -7,7 +7,8 @@ import { setSafePath } from "./security.mjs";
 // ====================== DÉS ======================
 // Formules : 2d6+3, 1d20+5, 2d20kh1+4 (avantage), 2d20kl1 (désavantage), 4d6kh3, d8, 3d6-1, 1d4+1d6+2
 export function rollFormula(formula, { flavor } = {}) {
-  const src = String(formula).replace(/\s+/g, "");
+  // les étiquettes de dégâts entre crochets (« 1d6[radiant] », « 2d8[on hit] ») ne font pas partie du jet
+  const src = String(formula).replace(/\[[^\]]*\]/g, "").replace(/\s+/g, "");
   if (!/^[0-9dDkhl+\-*]+$/.test(src)) throw new Error(`Formule non supportée : ${formula}`);
   const tokens = src.match(/[+\-*]|[^+\-*]+/g) || [];
   const terms = [];
@@ -249,10 +250,29 @@ function estimateHpMax(actor, d) {
 }
 
 // ====================== UTILISATION D'OBJETS / SORTS ======================
-function resolveFormulaVars(f, actor, d, item) {
+function resolveFormulaVars(f, actor, d, item, castLevel = null) {
   return String(f ?? "").replace(/@mod/g, item?.type === "spell" ? d.scMod : d.mods[weaponAbility(item, d)] ?? 0)
     .replace(/@prof/g, d.prof).replace(/@abilities\.(\w+)\.mod/g, (_, k) => d.mods[k] ?? 0)
-    .replace(/@details\.level|@classes\.\w+\.levels/g, d.level).replace(/\s+/g, "");
+    .replace(/@abilities\.(\w+)\.mod/g, (_, k) => d.mods[k] ?? 0)
+    .replace(/@details\.level|@classes\.\w+\.levels/g, d.level)
+    .replace(/@attributes\.spell\.level|@attributes\.spell\.dc/g, castLevel ?? spellLevel ?? 0);
+  const fn = (name, args) => {
+    const vals = args.map(v => Number(String(v).trim()));
+    if (vals.some(v => !Number.isFinite(v))) return 0;
+    if (name === "max") return Math.max(...vals);
+    if (name === "min") return Math.min(...vals);
+    if (name === "floor") return Math.floor(vals[0]);
+    if (name === "ceil") return Math.ceil(vals[0]);
+    if (name === "round") return Math.round(vals[0]);
+    return Math.abs(vals[0]);
+  };
+  let s = String(f ?? "");
+  for (let i = 0; i < 6 && /\b(max|min|floor|ceil|round|abs)\s*\(/.test(s); i++) {
+    const next = s.replace(/\b(max|min|floor|ceil|round|abs)\s*\(([^()]*)\)/g, (_, name, args) => String(fn(name, args.split(","))));
+    if (next === s) break;
+    s = next;
+  }
+  return s.replace(/\s+/g, "");
 }
 
 function weaponAbility(item, d) {
@@ -264,17 +284,92 @@ function weaponAbility(item, d) {
   return ranged && !props.has("thr") ? "dex" : "str";
 }
 
+/** Arme équipée qui servira de base à une attaque de sort classée « weapon » (True Strike, Shillelagh…). */
+function mainWeapon(actor, kind) {
+  const weapons = (actor.items || []).filter(i => i.type === "weapon" && i.system?.equipped !== false && i.system?.damage?.base);
+  if (!weapons.length) return null;
+  const wantRanged = kind === "ranged";
+  const score = w => {
+    const ranged = ["simpleR", "martialR"].includes(w.system?.type?.value) || !!w.system?.range?.long;
+    const off = w.system?.weaponType === "offhand" || w.system?.properties?.includes?.("off");
+    return (ranged === wantRanged ? 4 : 0) + (off ? 0 : 2) + (w.system?.type?.value === "martialM" ? 1 : 0);
+  };
+  return weapons.slice().sort((a, b) => score(b) - score(a))[0];
+}
+
+/** Formule de dégâts/soins utilisable par rollFormula : « max(…) », floor/ceil et divisions ramenés à ses termes. */
+export function toRollFormula(f) {
+  const nums = s => String(s).split(",").map(v => Number(String(v).trim()));
+  const fn = (name, args) => {
+    const vals = nums(args);
+    if (vals.some(v => !Number.isFinite(v))) return NaN;
+    if (name === "max") return Math.max(...vals);
+    if (name === "min") return Math.min(...vals);
+    if (name === "floor") return Math.floor(vals[0]);
+    if (name === "ceil") return Math.ceil(vals[0]);
+    if (name === "round") return Math.round(vals[0]);
+    return Math.abs(vals[0]);
+  };
+  // « 2d6/2 » → dés répartis
+  const diceDiv = txt => txt.replace(/(\d*)d(\d+)\/(\d+)/g, (_, n, faces, d) => {
+    const k = Number(d) || 1;
+    if (k <= 1) return `${n || 1}d${faces}`;
+    return (Number(n || 1) % k === 0) ? `${Number(n || 1) / k}d${faces}` : `${n || 1}d${faces}`;
+  });
+  const closeOf = (t, i) => { let d = 0; for (let j = i; j < t.length; j++) { if (t[j] === "(") d++; else if (t[j] === ")" && --d === 0) return j; } return -1; };
+  let s = diceDiv(String(f ?? "").trim().replace(/\s+/g, ""));
+  // la parenthèse la plus interne est évaluée (fonction appliquée), division « / n » incluse
+  for (let pass = 0; pass < 24 && s.includes("("); pass++) {
+    let hit = null;
+    for (let i = 0; i < s.length; i++) {
+      if (s[i] !== "(") continue;
+      const close = closeOf(s, i);
+      if (close < 0) break;
+      const fm = /(floor|ceil|round|abs|max|min)$/.exec(s.slice(0, i));
+      const start = fm ? i - fm[1].length : i;
+      const inner = s.slice(i + 1, close);            // sans parenthèses (la plus interne)
+      const rest = s.slice(close + 1);
+      const lead = rest.length - rest.replace(/^\s+/, "").length;
+      const div = /^\/(\d+)/.exec(rest.slice(lead)) || /^(\d+)/.exec(rest.slice(lead));
+      let v = fm ? fn(fm[1], inner) : NaN;
+      if (!Number.isFinite(v) && !fm) {
+        // parenthèse numérique : « (5+0) », « (5) »… (somme simple)
+        if (/^[\d\s+*/-]+$/.test(inner)) {
+          try { const r = Function(`"use strict";return (${inner})`)(); v = Number(r); } catch { v = NaN; }
+        }
+      }
+      if (!Number.isFinite(v)) continue;
+      if (div) v = Math.floor(v / (Number(div[1]) || 1));
+      hit = { start, end: close + 1 + lead + (div ? div[0].length : 0), rep: String(v) };
+      break;
+    }
+    if (!hit) break;
+    s = diceDiv(s.slice(0, hit.start) + hit.rep + s.slice(hit.end));
+  }
+  // divisions restantes : « 2d6/2 » → dés répartis ; « 8/2 » → entier
+  s = s.replace(/(\d*)d(\d+)\/(\d+)/g, (_, n, faces, d) => {
+    const k = Number(d) || 1;
+    if (k <= 1) return `${n || 1}d${faces}`;
+    return (Number(n || 1) % k === 0) ? `${Number(n || 1) / k}d${faces}` : `${n || 1}d${faces}`;
+  }).replace(/(\d+)\/(\d+)/g, (m, a, b) => {
+    const k = Number(b) || 1;
+    return k > 1 ? String(Math.floor(Number(a) / k)) : m;
+  });
+  return s.replace(/Math\.Math\./g, "Math.");
+}
+
 function partFormula(p, { actor, d, item, spellLevel, castLevel }) {
-  if (p.custom?.enabled && p.custom.formula) return resolveFormulaVars(p.custom.formula, actor, d, item);
+  const rv = v => resolveFormulaVars(v, actor, d, item, castLevel);
+  if (p.custom?.enabled && p.custom.formula) return rv(p.custom.formula);
   let n = num(p.number);
-  if (!n || !p.denomination) return resolveFormulaVars(p.bonus, actor, d, item) || "0";
+  if (!n || !p.denomination) return rv(p.bonus) || "0";
   if (item.type === "spell" && spellLevel === 0) n *= 1 + (d.level >= 5) + (d.level >= 11) + (d.level >= 17);
   if (item.type === "spell" && castLevel > spellLevel && p.scaling?.number) {
     const steps = p.scaling.mode === "half" ? Math.floor((castLevel - spellLevel) / 2) : castLevel - spellLevel;
     n += num(p.scaling.number) * steps;
   }
   let f = `${n}d${p.denomination}`;
-  const b = resolveFormulaVars(p.bonus, actor, d, item);
+  const b = rv(p.bonus);
   if (b && b !== "0") f += (/^[+-]/.test(b) ? "" : "+") + b;
   return f;
 }
@@ -326,9 +421,18 @@ export function useItem(rawActor, item, { activityId, slotLevel, advantage, disa
   const ctx = { actor, d, item, spellLevel, castLevel };
 
   // --- attaque ---
+  const weapon = act.type === "attack" && act.attack?.classification === "weapon" ? mainWeapon(actor, act.attack?.type?.value) : null;
   if (act.type === "attack") {
+    // classification « weapon » (dnd5e 5/6 : True Strike, Shillelagh, Booming Blade…) : jet et dégâts de l'arme
     let bonus;
-    if (item.type === "spell") bonus = d.prof + d.scMod + evalBonus(actor.system.bonuses?.[(act.attack?.type?.value === "melee" ? "m" : "r") + "sak"]?.attack, actor);
+    if (act.attack?.classification === "weapon") {
+      const ab = act.attack?.ability && act.attack.ability !== "none" ? act.attack.ability : (weapon ? weaponAbility(weapon, d) : (d.scAbility || "dex"));
+      const prof = weapon ? weapon.system?.proficient !== 0 : true;
+      bonus = d.mods[ab] + (prof ? d.prof : 0) + num(act.attack?.bonus)
+        + (weapon ? num(weapon.system?.magicalBonus) : 0)
+        + evalBonus(actor.system.bonuses?.[(act.attack?.type?.value === "ranged" ? "r" : "m") + "wak"]?.attack, actor);
+      if (weapon) out.lignes.push(`Arme : ${weapon.name}${num(weapon.system?.magicalBonus) ? ` (+${weapon.system.magicalBonus})` : ""}`);
+    } else if (item.type === "spell") bonus = d.prof + d.scMod + evalBonus(actor.system.bonuses?.[(act.attack?.type?.value === "melee" ? "m" : "r") + "sak"]?.attack, actor);
     else {
       const ab = act.attack?.ability && act.attack.ability !== "none" ? act.attack.ability : weaponAbility(item, d);
       const proficient = item.system?.proficient !== 0;
@@ -339,7 +443,7 @@ export function useItem(rawActor, item, { activityId, slotLevel, advantage, disa
     const r = rollFormula(`${dice}${sign(bonus)}`, { flavor: `${item.name} — attaque` });
     const nat = r.roll.terms[0].results.filter(x => x.active)[0].result;
     out.crit = nat >= num(act.attack?.critical?.threshold || 20);
-    out.attack = { total: r.total, nat, crit: out.crit };
+    out.attack = { total: r.total, nat, crit: out.crit, arme: weapon?.name || null };
     out.rolls.push(r);
     out.lignes.push(`Attaque : ${r.total} (d20=${nat}${sign(bonus)})${out.crit ? " — CRITIQUE !" : nat === 1 ? " — échec critique" : ""}`);
   }
@@ -355,15 +459,26 @@ export function useItem(rawActor, item, { activityId, slotLevel, advantage, disa
 
   // --- dégâts ---
   const parts = [...(act.damage?.parts || [])];
-  if (act.damage?.includeBase && item.system?.damage?.base) {
-    const base = { ...item.system.damage.base };
-    if (versatile && item.system.damage.versatile?.denomination) Object.assign(base, item.system.damage.versatile, { number: item.system.damage.versatile.number || base.number });
-    const ab = weaponAbility(item, d);
-    const extra = (item.type === "spell" ? 0 : d.mods[ab]) + num(item.system?.magicalBonus);
-    parts.unshift({ ...base, bonus: [base.bonus, extra ? String(extra) : ""].filter(Boolean).join("+") });
+  if (act.damage?.includeBase) {
+    // arme (dnd5e 5/6 : True Strike, Booming Blade) ou base de l'objet (arme/objet avec dégâts propres)
+    const holder = weapon || (item.system?.damage?.base ? item : null);
+    if (holder) {
+      const base = { ...holder.system.damage.base };
+      if (holder === item && versatile && item.system.damage.versatile?.denomination) Object.assign(base, item.system.damage.versatile, { number: item.system.damage.versatile.number || base.number });
+      const ab = weaponAbility(holder, d);
+      const extra = (holder.type === "spell" ? 0 : d.mods[ab]) + num(holder.system?.magicalBonus);
+      parts.unshift({ ...base, bonus: [base.bonus, extra ? String(extra) : ""].filter(Boolean).join("+") });
+    }
+  }
+  if (weapon && !parts.length) {
+    const base = { ...weapon.system.damage.base };
+    const ab = weaponAbility(weapon, d);
+    const extra = d.mods[ab] + num(weapon.system?.magicalBonus);
+    parts.push({ ...base, bonus: [base.bonus, extra ? String(extra) : ""].filter(Boolean).join("+") });
   }
   for (const p of parts) {
-    let f = partFormula(p, ctx);
+    let f = toRollFormula(partFormula(p, ctx));
+    f = toRollFormula(f.replace(/\[[^\]]*\]/g, ""));
     if (out.crit) f = f.replace(/(\d+)d(\d+)/g, (_, n, fa) => `${2 * n}d${fa}`);
     if (f === "0") continue;
     const types = (p.types || []).map(t => DMG_FR[t] || t).join("/");

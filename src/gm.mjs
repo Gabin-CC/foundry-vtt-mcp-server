@@ -4,6 +4,8 @@
  * aux joueurs connectés (shareImage, showEntry, pullToScene, pause) — les mêmes que ceux du client Foundry.
  */
 import { scanAndRepair } from "./repair.mjs";
+import { syncItems } from "./sync.mjs";
+import { patchActor, patchPack } from "./patchrun.mjs";
 export const GM_ROLE = 3;   // 3 = assistant MJ, 4 = MJ
 
 const sceneProp = { type: "string", description: "Scène (nom ou _id). Défaut : la scène active." };
@@ -43,6 +45,18 @@ export const GM_TOOLS = [
       tokens: { type: "array", items: { type: "string" }, description: "Jetons à inclure (noms ou _id) ; défaut : tous les jetons de la scène" } } } },
   { name: "gm_check_ids", gm: true, description: "MJ : contrôle les identifiants des objets (compendiums d'objets du monde, objets du monde, fiches). Foundry v14 exige 16 caractères alphanumériques ; un seul identifiant invalide (avancement, activité, effet) fait disparaître l'objet de la fiche dans le navigateur. Par défaut simple contrôle ; apply=true corrige (identifiants déterministes, références des fiches mises à jour).",
     inputSchema: { type: "object", properties: { apply: { type: "boolean", default: false }, packs: { type: "boolean", default: true }, items: { type: "boolean", default: true }, actors: { type: "boolean", default: true } } } },
+  { name: "gm_sync_items", gm: true, description: "MJ : synchronise les objets d'une fiche avec leur compendium d'origine (_stats.compendiumSource) : ajoute les effets, activités et avancements manquants (fiche créée à la main ou incomplète). Par défaut simulation (dry_run) ; apply=true écrit et un instantané de restauration est gardé (outil snapshots). 'item' limite à un objet, 'only' à une liste de noms, 'pack' à un compendium source.",
+    inputSchema: { type: "object", required: ["actor"], properties: {
+      actor: { type: "string", description: "Acteur (nom ou _id)" }, item: { type: "string", description: "Un seul objet (nom ou _id)" },
+      only: { type: "array", items: { type: "string" }, description: "Limiter à ces objets (noms)" },
+      pack: { type: "string", description: "Limiter aux objets venant de ce compendium" },
+      apply: { type: "boolean", default: false, description: "Écrire les ajouts (sinon simulation)" } } } },
+  { name: "gm_patch_items", gm: true, description: "MJ : applique les correctifs de données de compendium (entrées dont la structure ne correspond pas à dnd5e 5/6) à un acteur ou à un compendium du monde. Correctifs connus : Lame retentissante et Lame des flammes vertes (dégâts « on hit » sans jet d'attaque → attaque d'arme). Par défaut simulation ; apply=true écrit (instantané de restauration).",
+    inputSchema: { type: "object", properties: {
+      actor: { type: "string", description: "Acteur (nom ou _id) ; sans actor ni pack, tous les acteurs" },
+      item: { type: "string", description: "Un seul objet (nom ou _id)" },
+      pack: { type: "string", description: "Compendium du monde à corriger (ex. world.sors) au lieu d'un acteur" },
+      apply: { type: "boolean", default: false, description: "Écrire les corrections (sinon simulation)" } } } },
   { name: "gm_pause", gm: true, description: "MJ : met la partie en pause ou la reprend pour tous les joueurs.",
     inputSchema: { type: "object", required: ["paused"], properties: { paused: { type: "boolean" } } } },
 ];
@@ -126,6 +140,22 @@ async function permissionsOf(fs, uuid, userRef) {
 export async function handleGm(fs, name, a) {
   switch (name) {
     case "gm_check_ids": return scanAndRepair(fs, { apply: !!a.apply, packs: a.packs !== false, items: a.items !== false, actors: a.actors !== false });
+    case "gm_sync_items": {
+      const actors = await fs.doc("get", "Actor", { query: {} });
+      const actor = byRef(actors, a.actor, "Acteur");
+      return syncItems(fs, { actor, item: a.item, apply: !!a.apply, only: a.only, pack: a.pack });
+    }
+    case "gm_patch_items": {
+      if (a.pack) return patchPack(fs, a.pack, { item: a.item, apply: !!a.apply });
+      if (!a.actor) {
+        const actors = await fs.doc("get", "Actor", { query: {} });
+        const out = [];
+        for (const ac of actors) out.push(await patchActor(fs, ac, { apply: !!a.apply }));
+        return { acteurs: out.length, a_corriger: out.reduce((n, r) => n + r.a_corriger, 0), modifies: out.reduce((n, r) => n + r.modifies, 0), simulation: !a.apply, detail: out.filter(r => r.detail).map(r => ({ acteur: r.ou, objets: r.detail })) };
+      }
+      const actor = byRef(await fs.doc("get", "Actor", { query: {} }), a.actor, "Acteur");
+      return patchActor(fs, actor, { item: a.item, apply: !!a.apply });
+    }
     case "gm_scene": {
       const scenes = await fs.doc("get", "Scene", { query: {} });
       if (a.action === "list") return { active: scenes.find(s => s.active)?.name || null, scenes: scenes.map(s => ({ _id: s._id, nom: s.name, active: !!s.active, navigation: !!s.navigation })) };

@@ -31,6 +31,7 @@ export function idIssues(item) {
     }
   }
   for (const e of item.effects || []) if (e?._id && !VALID_ID.test(e._id)) out.push({ coll: "effects", id: e._id });
+  for (const p of item.pages || []) if (p?._id && !VALID_ID.test(p._id)) out.push({ coll: "pages", id: p._id });
   return out;
 }
 
@@ -50,16 +51,60 @@ export function sanitizeItemData(d) {
     }
     if (dirty) d.system[coll] = next;
   }
-  const effMap = {};
-  for (const e of d.effects || []) {
-    if (e?._id && !VALID_ID.test(e._id)) { const n = fixId(e._id); effMap[e._id] = n; changed.push(`effects:${e._id}→${n}`); e._id = n; }
-  }
+  const effMap = {};   // ancien identifiant -> nouvel identifiant (effets)
+  const remap = (v) => {
+    if (Array.isArray(v)) return v.map(remap);
+    if (!v || typeof v !== "object") return v;
+    const o = { ...v };
+    if (o._id && effMap[o._id]) o._id = effMap[o._id];
+    for (const k of Object.keys(o)) if (o[k] && typeof o[k] === "object") o[k] = remap(o[k]);
+    return o;
+  };
+  // les références peuvent être préfixées du UUID de l'objet (« Item.x.ActiveEffect.y ») : on ne garde que la fin
+  const keyOf = v => { const s = String(v ?? ""); return effMap[s] ? s : s.split(".").pop(); };
+  for (const e of d.effects || []) if (e?._id && !VALID_ID.test(e._id)) effMap[e._id] = fixId(e._id);
   if (Object.keys(effMap).length) {
+    changed.push(...Object.entries(effMap).map(([o, n]) => `effects:${o}→${n}`));
+    for (const e of d.effects || []) if (e?._id && effMap[e._id]) e._id = effMap[e._id];
     for (const act of Object.values(d.system?.activities || {})) {
-      for (const r of act?.effects || []) if (effMap[r._id]) r._id = effMap[r._id];
+      if (!act?.effects) continue;
+      act.effects = remap(act.effects);
+      for (const r of act.effects) {
+        const k = keyOf(r._id);
+        if (effMap[k]) r._id = effMap[k];
+        if (r.riders?.effect) r.riders.effect = r.riders.effect.map(x => effMap[keyOf(x)] || x);
+      }
+    }
+    for (const e of d.effects || []) {
+      if (e?.origin) { const k = keyOf(e.origin); if (k !== e.origin) e.origin = effMap[k]; }
+      if (e?.system?.origin) e.system.origin = remap(e.system.origin);
     }
   }
+  for (const p of d.pages || []) if (p?._id && !VALID_ID.test(p._id)) p._id = fixId(p._id);
   return changed;
+}
+
+/** Avertissements sur un objet (copie d'acteur ou source) : activité, effet ou avancement vide. */
+export function itemWarnings(item, sources = []) {
+  const warnings = [];
+  const acts = Object.values(item.system?.activities || {});
+  const advs = Object.values(item.system?.advancement || {});
+  const desc = String(item.system?.description?.value || "");
+  if (!acts.length && item.type !== "equipment" && item.type !== "container" && item.type !== "loot"
+    && item.type !== "consumable" && item.type !== "tool" && item.type !== "weapon" && item.type !== "armor") {
+    warnings.push(`aucune activité (${item.type})`);
+  }
+  for (const s of sources) {
+    if (!s || s._id === item._id) continue;
+    const sActs = Object.values(s.system?.activities || {}).length;
+    const sEff = (s.effects || []).length, sAdv = Object.values(s.system?.advancement || {}).length;
+    const eff = (item.effects || []).length, adv = advs.length;
+    if (sActs > acts.length) warnings.push(`${sActs} activité(s) dans la source « ${s.name || s._id} », ${acts.length} ici`);
+    if (sEff > eff) warnings.push(`${sEff} effet(s) dans la source « ${s.name || s._id} », ${eff} ici`);
+    if (sAdv > adv) warnings.push(`${sAdv} avancement(s) dans la source, ${adv} ici`);
+  }
+  if (!acts.length && !(item.effects || []).length && desc.length > 80 && !warnings.length) warnings.push("objet sans activité ni effet : importable depuis un compendium");
+  return [...new Set(warnings)];
 }
 
 /** Mise à jour Foundry (renommage des clés invalides : suppression + ajout) pour un objet existant. */
