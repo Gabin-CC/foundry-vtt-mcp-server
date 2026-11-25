@@ -2,12 +2,15 @@
 // Serveur MCP Foundry VTT — sans navigateur.
 // Auth : Basic auth = identifiants d'un compte Foundry (nom + mot de passe).
 // Chaque requête agit avec les droits Foundry de ce compte (joueur, MJ...).
-import http from "node:http";
 import crypto from "node:crypto";
+import express from "express";
+import { rateLimit } from "express-rate-limit";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { mcpAuthRouter } from "@modelcontextprotocol/sdk/server/auth/router.js";
 import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { FoundrySession } from "./foundry.mjs";
+import { createFoundryOAuth, oauthEncryptionKey } from "./oauth.mjs";
 import { plan as advPlan, apply as advApply, fetchUuid } from "./advancement.mjs";
 import { planClassSpells, applyClassSpells } from "./spells.mjs";
 import { ensureCastSpells } from "./cast.mjs";
@@ -815,32 +818,67 @@ async function runTool(fs, params) {
     }
 }
 
-const deny = (res, code, msg) => {
+const deny = (res, code, msg, challenge) => {
   const h = { "content-type": "application/json" };
-  if (code === 401) h["www-authenticate"] = 'Basic realm="Foundry VTT", charset="UTF-8"';
+  if (code === 401) h["www-authenticate"] = challenge || 'Basic realm="Foundry VTT", charset="UTF-8"';
   res.writeHead(code, h).end(JSON.stringify({ error: msg }));
 };
 
-if (process.env.NO_LISTEN !== "1") http.createServer(async (req, res) => {
+if (process.env.NO_LISTEN !== "1") {
+const app = express();
+const oauth = process.env.OAUTH_ENABLED === "1" ? createFoundryOAuth({
+  mcpUrl: process.env.OAUTH_MCP_URL,
+  key: oauthEncryptionKey(),
+  stateFile: process.env.OAUTH_STATE_PATH,
+  login: (user, pass) => FoundrySession.login(user, pass),
+  redirectOrigins: (process.env.OAUTH_REDIRECT_ORIGINS || "https://chatgpt.com").split(",").map(x => x.trim()).filter(Boolean)
+}) : null;
+
+if (oauth) {
+  app.use(mcpAuthRouter({
+    provider: oauth.provider,
+    issuerUrl: new URL(oauth.resource.origin),
+    resourceServerUrl: oauth.resource,
+    scopesSupported: ["foundry:access"],
+    resourceName: "Foundry VTT MCP"
+  }));
+  app.post("/oauth/approve",
+    rateLimit({ windowMs: 15 * 60 * 1000, limit: 10, standardHeaders: "draft-7", legacyHeaders: false,
+      skipSuccessfulRequests: true, keyGenerator: req => clientIp(req) || "unknown" }),
+    express.urlencoded({ extended: false, limit: "8kb" }), oauth.approve);
+}
+
+app.use(async (req, res) => {
   const url = new URL(req.url, "http://x");
   if (url.pathname === "/mcp-health") return res.writeHead(200).end("ok");
   if (url.pathname !== "/mcp") return deny(res, 404, "not found");
   const ip = clientIp(req);
   if (recentFails(ip).length >= 10) return deny(res, 429, "Trop d'échecs d'authentification, réessaie dans 15 min");
-  const m = /^Basic\s+(.+)$/i.exec(req.headers.authorization || "");
-  if (!m) return deny(res, 401, "Authentification requise (identifiants Foundry)");
-  const dec = Buffer.from(m[1], "base64").toString("utf8");
-  const i = dec.indexOf(":");
-  const user = dec.slice(0, i), pass = dec.slice(i + 1);
+  const authorization = req.headers.authorization || "";
+  const basic = /^Basic\s+(.+)$/i.exec(authorization);
+  const bearer = /^Bearer\s+(.+)$/i.exec(authorization);
+  const bearerChallenge = oauth ? `Bearer resource_metadata="${oauth.metadataUrl}"` : undefined;
+  let user, pass;
+  if (basic) {
+    const dec = Buffer.from(basic[1], "base64").toString("utf8");
+    const i = dec.indexOf(":");
+    user = i > 0 ? dec.slice(0, i) : "";
+    pass = i > 0 ? dec.slice(i + 1) : "";
+  } else if (bearer && oauth) {
+    try { ({ username: user, password: pass } = await oauth.credentialsForToken(bearer[1])); }
+    catch { return deny(res, 401, "Jeton OAuth invalide ou expiré", bearerChallenge); }
+  } else {
+    return deny(res, 401, "Authentification requise", bearerChallenge);
+  }
   let fs;
-  try { fs = i > 0 && pass ? await getSession(user, pass) : null; }
+  try { fs = user && pass ? await getSession(user, pass) : null; }
   catch (e) { return deny(res, 503, `Foundry indisponible : ${e.message}`); }
   const ent = sessions.get(keyOf(user, pass));
   if (ent) { ent.busy = (ent.busy || 0) + 1; res.on("close", () => { ent.busy--; ent.last = Date.now(); }); }
   if (!fs) {
     fails.set(ip, [...recentFails(ip), Date.now()]);
     console.warn(`[auth] échec pour "${user}" depuis ${ip}`);
-    return deny(res, 401, "Identifiants Foundry invalides");
+    return deny(res, 401, "Identifiants Foundry invalides", bearer ? bearerChallenge : undefined);
   }
   if (req.method !== "POST") return deny(res, 405, "Serveur MCP sans état : POST uniquement");
   const server = makeServer(fs);
@@ -848,4 +886,6 @@ if (process.env.NO_LISTEN !== "1") http.createServer(async (req, res) => {
   res.on("close", () => { transport.close(); server.close(); });
   await server.connect(transport);
   await transport.handleRequest(req, res);
-}).listen(PORT, HOST, () => console.log(`MCP Foundry sur :${PORT}/mcp`));
+});
+app.listen(PORT, HOST, () => console.log(`MCP Foundry sur :${PORT}/mcp${oauth ? " (OAuth + Basic)" : " (Basic)"}`));
+}

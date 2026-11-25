@@ -7,11 +7,13 @@
   "bin": { "foundry-vtt-mcp-server": "src/server.mjs" },
   "scripts": {
     "start": "node src/server.mjs",
-    "check": "node --check src/server.mjs && node --check src/foundry.mjs && node --check src/dnd5e.mjs && node --check src/advancement.mjs && node scripts/check-tools.mjs"
+    "check": "node --check src/server.mjs && node --check src/oauth.mjs && node --check src/foundry.mjs && node --check src/dnd5e.mjs && node --check src/advancement.mjs && node scripts/check-tools.mjs && node --test scripts/test-oauth.mjs scripts/test-server-http.mjs"
   },
   "engines": { "node": ">=20" },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.2",
+    "express": "5.3.0",
+    "express-rate-limit": "8.7.5",
     "socket.io-client": "4.8.3"
   },
   "keywords": ["foundry-vtt", "foundryvtt", "mcp", "model-context-protocol", "dnd5e", "claude"],

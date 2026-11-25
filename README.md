@@ -121,6 +121,22 @@ Nginx :
 location = /mcp { proxy_pass http://127.0.0.1:8808; proxy_set_header X-Forwarded-For $remote_addr; proxy_buffering off; }
 ```
 
+En mode OAuth, exposer **aussi** les routes `/.well-known/oauth-protected-resource/mcp`,
+`/.well-known/oauth-authorization-server`, `/authorize`, `/token`, `/register`, `/revoke`
+et `/oauth/approve` vers le même service. Ne pas exposer `/mcp-health`, ni les autres routes.
+Exemple Nginx (remplace la règle `location = /mcp` ci-dessus) :
+
+```nginx
+location ~ ^/(?:mcp|authorize|token|register|revoke|oauth/approve|\.well-known/oauth-protected-resource/mcp|\.well-known/oauth-authorization-server)$ {
+    proxy_pass http://127.0.0.1:8808;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_buffering off;
+}
+```
+
+Pour Traefik, ajouter ces chemins à la règle `Path(...)` du routeur MCP.
+
 ### Mise à jour
 
 ```bash
@@ -145,11 +161,87 @@ claude mcp add --transport http foundry https://foundry.example.com/mcp \
 
 Puis : *« Montre-moi la fiche de mon perso »*, *« Je lance Boule de feu au niveau 4 sur les gobelins »*, *« Donne 50 po et une potion de guérison à Tum »*…
 
+## Connexion depuis ChatGPT (OAuth, plusieurs joueurs)
+
+OAuth est **optionnel**, en complément du Basic existant. Chaque joueur autorise ChatGPT avec son
+propre compte Foundry : ses droits restent contrôlés par Foundry. Aucun compte MJ partagé n'est créé.
+
+### 1. Créer une clé de chiffrement sur le serveur
+
+```bash
+sudo install -d -m 700 -o foundrymcp -g foundrymcp /etc/foundry-mcp
+openssl rand -hex 32 | sudo tee /etc/foundry-mcp/oauth.key >/dev/null
+sudo chown foundrymcp:foundrymcp /etc/foundry-mcp/oauth.key
+sudo chmod 600 /etc/foundry-mcp/oauth.key
+```
+
+**Conserver cette clé en lieu sûr** : elle protège les mots de passe Foundry chiffrés nécessaires
+aux reconnexions. Ne jamais l'ajouter à Git. En cas de perte de la clé, il faudra supprimer
+l'ancien état OAuth et demander à tous les joueurs de reconnecter ChatGPT.
+
+### 2. Activer OAuth dans le service systemd
+
+Ajouter dans la section `[Service]` de `foundry-mcp.service` :
+
+```ini
+Environment=OAUTH_ENABLED=1
+Environment=OAUTH_MCP_URL=https://foundry.example.com/mcp
+Environment=OAUTH_KEY_FILE=/etc/foundry-mcp/oauth.key
+```
+
+Remplacer l'URL par l'adresse **publique exacte** de votre `/mcp`. Redémarrer :
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart foundry-mcp
+sudo journalctl -u foundry-mcp -n 30 --no-pager
+```
+
+Variables optionnelles :
+
+| Variable | Défaut | Rôle |
+|---|---|---|
+| `OAUTH_ENABLED` | `0` | Activer OAuth seulement avec `1` |
+| `OAUTH_MCP_URL` | *(obligatoire si activé)* | URL HTTPS publique se terminant par `/mcp` |
+| `OAUTH_KEY_FILE` | *(obligatoire si activé, ou `OAUTH_ENCRYPTION_KEY`)* | Fichier contenant 64 caractères hexadécimaux |
+| `OAUTH_STATE_PATH` | `data/oauth-state.json` | Clients, jetons hachés et identifiants Foundry chiffrés (fichier `0600`) |
+| `OAUTH_REDIRECT_ORIGINS` | `https://chatgpt.com` | Origines de retour OAuth autorisées, séparées par des virgules |
+
+### 3. Connecter ChatGPT
+
+Dans les **Plugins ChatGPT**, choisir *Ajouter un serveur MCP personnalisé*, l'URL de `/mcp`,
+et l'authentification **OAuth** (enregistrement dynamique du client / DCR). Le serveur publie :
+
+- `/.well-known/oauth-protected-resource/mcp` : ressource protégée ;
+- `/.well-known/oauth-authorization-server` : découverte OAuth ;
+- `/register`, `/authorize`, `/token`, `/revoke` : flux OAuth gérés par le SDK MCP.
+
+ChatGPT ouvre alors une page de connexion Foundry. Après validation, les appels MCP portent un
+jeton `Bearer` associé au joueur. Les jetons d'accès expirent au bout d'une heure, les jetons
+de renouvellement au bout de 30 jours (avec rotation). Le stockage survit aux redémarrages
+si la clé et le fichier d'état sont conservés. Le serveur chiffre les identifiants Foundry
+au repos ; aucun mot de passe n'est inclus dans un jeton. En cas de changement du mot de passe
+Foundry, il faut reconnecter le compte OAuth.
+
+**Attention** : la création d'un MCP personnalisé dépend des fonctionnalités autorisées par
+le compte / l'espace de travail ChatGPT. Ne désactivez pas l'authentification sur la route `/mcp`.
+
+### 4. Vérifier localement
+
+```bash
+npm run check
+```
+
+Les tests simulent deux joueurs, la découverte, le code PKCE, les jetons, leur renouvellement,
+la persistance chiffrée et les refus d'authentification. Ils ne remplacent pas un test avec
+un véritable monde Foundry et une connexion ChatGPT.
+
 ## Sécurité
 
 - Authentification déléguée à Foundry (mêmes mots de passe, mêmes permissions).
 - Anti brute-force : 10 échecs / 15 min / IP → 429.
-- Sessions Foundry en cache 30 min (clé = hash utilisateur + mot de passe).
+- Sessions Foundry libérées par défaut après 10 s d'inactivité (clé = hash utilisateur + mot de passe).
+- OAuth facultatif : compte Foundry de chaque joueur, PKCE, renouvellement et stockage chiffré des identifiants.
 - Le serveur ne lit jamais les fichiers de Foundry : tout passe par le protocole client.
 
 ## Tests
@@ -175,6 +267,7 @@ Tools: generic document CRUD (incl. embedded documents), computed character shee
 Limitations: the dnd5e advancement workflow runs client-side and is not executed; derived values are recomputed server-side (good for common cases); relies on Foundry's internal client protocol, so major Foundry updates may require changes; users without a password are rejected.
 
 Install: see the commands above (Node ≥ 20, systemd unit in `deploy/`), expose only `/mcp` over HTTPS through your reverse proxy, then add it to Claude with an `Authorization: Basic …` header.
+Optional OAuth 2.1 support for ChatGPT is documented above; each player connects with their own Foundry credentials. The existing Basic authentication remains available.
 
 ## Licence
 
