@@ -15,7 +15,7 @@ translations, or the Foundry world itself.
 | --- | --- | --- |
 | Tool names, arguments and JSON response keys | Unchanged | Always preserve existing spelling |
 | Tool discovery descriptions | English | Already English, regardless of locale |
-| Selected errors, pagination hints and GM/table/card feedback | `MCP_LOCALE=fr` (default) or `en` | Legacy French by default; opt-in English strings |
+| Selected errors, pagination hints, GM/table/card feedback and D&D dice/item-use messages | `MCP_LOCALE=fr` (default) or `en` | Legacy French by default; opt-in English strings |
 | OAuth sign-in page and its validation feedback | Browser `Accept-Language` (English/French), then `MCP_LOCALE` | Same form fields, endpoints, PKCE flow and credentials handling |
 | Foundry names, journal text, dice rules, translations and data | Not translated by this layer | Unchanged |
 
@@ -48,9 +48,9 @@ server setting. Invalid locale values fall back to French.
 
 This is not a claim that every message has been translated. In particular:
 
-- D&D advancement, derived-rule and resource-consumption diagnostics still
-  contain French text. Avoid editing dice/parser messages concurrently with
-  the numeric-formula work.
+- D&D class advancement, derived-rule and some resource-consumption diagnostics
+  still contain French text. Dice/check labels, item-use messages and spell-slot
+  feedback have been localized; further changes should preserve both locales.
 - Translation audits and search responses still use stable fields such as
   `resultats`, `portee`, `statut`, `anglais`, and `mixte`.
 - Some GM permission-level labels and repair/synchronization reports remain

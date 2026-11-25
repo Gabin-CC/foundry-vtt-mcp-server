@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { rollFormula, toRollFormula, useItem } from "../src/dnd5e.mjs";
+import { message } from "../src/i18n.mjs";
 import { resolveImportEntry } from "../src/edition.mjs";
 
 test("dice arithmetic respects precedence, unary signs, and division rounding", () => {
@@ -10,8 +11,8 @@ test("dice arithmetic respects precedence, unary signs, and division rounding", 
   assert.equal(rollFormula("9/2").total, 4);
   assert.equal(rollFormula("2+8/2").total, 6);
   assert.equal(rollFormula("2d1+3*2").total, 8);
-  assert.throws(() => rollFormula("3/0"), /Division par zéro/);
-  assert.throws(() => rollFormula("3*"), /incomplète/);
+  assert.throws(() => rollFormula("3/0"), new RegExp(message("Division by zero", "Division par zéro")));
+  assert.throws(() => rollFormula("3*"), new RegExp(message("Incomplete", "incomplète"), "i"));
 });
 
 test("dice division preserves actual rolls instead of reducing the number of dice", () => {

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { evaluateNumericFormula } from "../src/formula-numeric.mjs";
 import { evalBonus, rollFormula, toRollFormula, useItem } from "../src/dnd5e.mjs";
+import { message } from "../src/i18n.mjs";
 
 test("deterministic formulas evaluate arithmetic, unary signs and nested functions", () => {
   assert.equal(evaluateNumericFormula("2+3*4"), 14);
@@ -38,10 +39,10 @@ test("unary dice and signed numbers serialize terms that match their totals", ()
   assert.equal(signedDice.roll.terms[4].results.reduce((n, result) => n + result.result, 0), 2);
 
   assert.equal(rollFormula("1.5*2d1").total, 3);
-  assert.throws(() => rollFormula("1e500"), /non supportée/);
-  assert.throws(() => rollFormula("9".repeat(400)), /hors limites/);
-  assert.throws(() => rollFormula(`${"9".repeat(180)}*${"9".repeat(180)}`), /hors limites/);
-  assert.throws(() => rollFormula("1+".repeat(3000)), /trop longue/);
+  assert.throws(() => rollFormula("1e500"), new RegExp(message("Unsupported dice formula", "non supportée"), "i"));
+  assert.throws(() => rollFormula("9".repeat(400)), new RegExp(message("out of range", "hors limites"), "i"));
+  assert.throws(() => rollFormula(`${"9".repeat(180)}*${"9".repeat(180)}`), new RegExp(message("out of range", "hors limites"), "i"));
+  assert.throws(() => rollFormula("1+".repeat(3000)), new RegExp(message("too long", "trop longue"), "i"));
 });
 
 test("numeric functions preserve rounding order while retaining dice in simple floor wrappers", () => {

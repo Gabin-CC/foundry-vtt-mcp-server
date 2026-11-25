@@ -7,7 +7,7 @@
   "bin": { "foundry-vtt-mcp-server": "src/server.mjs" },
   "scripts": {
     "start": "node src/server.mjs",
-    "check": "node --check src/server.mjs && node --check src/tool-english.mjs && node --check src/formula-numeric.mjs && node --check src/oauth.mjs && node --check src/foundry.mjs && node --check src/advancement.mjs && node --check src/edition.mjs && node --check src/security.mjs && node --check src/upload.mjs && node scripts/check-tools.mjs && node --test scripts/test-oauth.mjs scripts/test-server-http.mjs scripts/test-security.mjs scripts/test-item-integrity.mjs scripts/test-snapshot-order.mjs scripts/test-dice-editions.mjs scripts/test-numeric-formulas.mjs scripts/test-english-metadata.mjs"
+    "check": "node --check src/server.mjs && node --check src/tool-english.mjs && node --check src/formula-numeric.mjs && node --check src/oauth.mjs && node --check src/foundry.mjs && node --check src/advancement.mjs && node --check src/edition.mjs && node --check src/security.mjs && node --check src/upload.mjs && node scripts/check-tools.mjs && node --test scripts/test-oauth.mjs scripts/test-server-http.mjs scripts/test-security.mjs scripts/test-item-integrity.mjs scripts/test-snapshot-order.mjs scripts/test-dice-editions.mjs scripts/test-numeric-formulas.mjs scripts/test-english-metadata.mjs scripts/test-dnd5e-i18n.mjs"
   },
   "engines": { "node": ">=20" },
   "dependencies": {
