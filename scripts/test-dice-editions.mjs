@@ -21,6 +21,16 @@ test("dice division preserves actual rolls instead of reducing the number of dic
   assert.equal(rollFormula(toRollFormula("3d1/2")).total, 1);
 });
 
+test("simple floor wrappers preserve dice and numeric functions handle division", () => {
+  assert.equal(toRollFormula("floor(2d1/2)"), "2d1/2");
+  assert.equal(toRollFormula("floor(3d1/2)+1"), "3d1/2+1");
+  assert.equal(rollFormula(toRollFormula("floor(3d1/2)+1")).total, 2);
+  assert.equal(toRollFormula("ceil(3/2)"), "2");
+  assert.equal(toRollFormula("max(1,ceil(3/2))"), "2");
+  // This rewrite would be unsafe: (floor(dice / 2) * 3) differs from floor(dice / 2 * 3).
+  assert.equal(toRollFormula("floor(2d1/2*3)"), "floor(2d1/2*3)");
+});
+
 test("spell DC formula variables resolve to the actual save DC, not the slot level", () => {
   const abilities = Object.fromEntries(["str", "dex", "con", "int", "wis", "cha"]
     .map(k => [k, { value: k === "int" ? 16 : 10 }]));

@@ -1,143 +1,80 @@
 # Foundry VTT MCP Server
 
-Serveur [MCP](https://modelcontextprotocol.io) **sans navigateur** pour [Foundry VTT](https://foundryvtt.com) (v13 / v14), pensé pour le système **dnd5e**.
-Chaque joueur s'y connecte avec **son propre compte Foundry** (HTTP Basic auth) et agit avec **ses droits Foundry** : un joueur ne peut modifier que ses fiches, le MJ peut tout faire.
+An open-source, headless [Model Context Protocol](https://modelcontextprotocol.io) server for [Foundry Virtual Tabletop](https://foundryvtt.com) v13/v14, focused on the **dnd5e** game system.
 
-*[English below](#english)*
+Each player signs in with their **own Foundry account**. The MCP connection respects that account's Foundry permissions: players can work with their characters, while GMs and assistant GMs have access to GM tools.
 
----
+**No open GM browser tab or Foundry browser module is required.** The server connects to the running Foundry world through its internal web-client protocol (`/join` and socket.io).
 
-## Pourquoi ?
+> [Guide en français](docs/README.fr.md) — the existing French instructions remain available during the English-first migration.
 
-Les autres ponts MCP ↔ Foundry passent par un module qui tourne **dans le navigateur du MJ** : sans onglet MJ ouvert, rien ne marche.
-Ici, le serveur se connecte directement à Foundry comme le ferait un navigateur (login `/join` + socket.io). Il suffit que le monde soit lancé.
+## Features
 
-```
-Claude (CLI / Desktop) ──HTTPS + Basic auth──▶ foundry-vtt-mcp-server ──socket.io──▶ Foundry VTT
-                                               (même machine que Foundry)
-```
+| Tools | Capabilities |
+| --- | --- |
+| `world_info`, `actor_sheet` | World information and computed character/NPC statistics |
+| `list_documents`, `get_document`, `create_documents`, `update_documents`, `delete_documents` | Generic Foundry document access, including embedded documents, filtering and previews |
+| `next_page`, `snapshots` | Safe pagination of long JSON results; recovery snapshots and restoration previews |
+| `roll`, `check`, `use_item`, `apply_damage`, `rest` | Dice, ability checks, attacks, spells, resource consumption, targeted damage/healing, rests |
+| `list_packs`, `search_compendium`, `get_compendium_entry`, `add_from_compendium` | Compendium discovery and imports, with 2014/2024 rules selection |
+| `localize_actor`, `audit_translation` | Apply available Babele translations and audit translation coverage |
+| `search_text`, `find_references` | World/compendium full-text search and reverse references |
+| `roll_table`, `cards` | Roll tables and card decks |
+| `give_loot`, `upload_file`, `send_chat` | Inventory, validated media upload, Foundry chat messages |
+| `advance` | Headless dnd5e advancement with explicit choices |
 
-## Outils
+**GM-only tools:** `gm_scene`, `gm_music`, `gm_show`, `gm_permissions`, `gm_tile`, `gm_token`, `gm_combat`, `gm_pause`, `gm_check_ids`, `gm_sync_items`, and `gm_patch_items`.
 
-| Outil | Rôle |
-|---|---|
-| `world_info` | Monde, compte connecté, utilisateurs |
-| `list_documents` / `get_document` | Lire acteurs, objets, journaux, scènes… (filtres, champs, sous-chemins). `list_documents` est paginé : ordre stable par `_id`, `total`, `next_cursor` / `next_offset` (`cursor` ou `offset` pour la page suivante) |
-| `next_page` | Suite d'une réponse trop grosse : au lieu d'être tronquée, elle est découpée en pages JSON valides (`curseur_suivant`) |
-| `create_documents` / `update_documents` / `delete_documents` | CRUD générique, y compris documents embarqués (`parent: "Actor.<id>"`). `dry_run` : aperçu avant/après champ par champ (ou liste de ce qui serait supprimé) |
-| `snapshots` | Instantanés pris automatiquement avant `update_documents`, `delete_documents` et `localize_actor` (valeurs d'origine des champs modifiés, documents supprimés entiers) : `list`, `show`, `restore` (avec `dry_run` ; la restauration est elle-même annulable). Fichiers JSON dans `data/snapshots` (500 derniers, 90 jours) |
-| `search_text` | Recherche plein texte (sans accents) monde + compendiums, versions FR et d'origine : UUID, document, chemin de dossier, champ, extrait |
-| `find_references` | Où un document est utilisé : liens `@UUID` dans les textes, objets copiés depuis lui (`compendiumSource`), jetons, notes de carte, résultats de tables, origines d'effets |
-| `audit_translation` | Audit de traduction FR (monde et/ou compendiums, traductions Babele comprises) : champs restés en anglais (nom, description, activités, effets, pages, cartes, résultats de tables, objets des acteurs) avec UUID, champ, extrait, statut et correctif (`localize_actor`) ; `mode: "coverage"` = part des entrées traduites par compendium |
-| `roll_table` | Tirage sur une table (monde ou compendium, traduite) comme Foundry : formule, tirage sans remise, tables imbriquées, carte dans le chat optionnelle ; `show`, `reset` |
-| `cards` | Cartes : `list`, `draw`, `deal`, `pass`, `discard`, `shuffle`, `recall` (mêmes opérations que le client Foundry) |
-| `actor_sheet` | Fiche calculée : niveau, maîtrise, mods, CA estimée, PV, compétences, attaque/DD de sort, emplacements |
-| `roll` | Jet de dés libre posté dans le chat (`2d20kh1+5`, `8d6`, `4d6kh3`…) |
-| `check` | Test de caractéristique, sauvegarde, compétence, initiative |
-| `use_item` | Lance un sort / utilise une arme ou un consommable : attaque, dégâts (critiques, montée en niveau, cantrips), soins, DD de sauvegarde, consommation d'emplacement / utilisation / quantité, carte dans le chat. Avec `targets` (UUID de jetons `Scene.x.Token.y`, nom de jeton de la scène active ou `Actor.x`) : touché/raté selon la CA, sauvegarde de chaque cible, dégâts avec résistances / immunités / vulnérabilités, soins, effets/états → **proposition** à valider |
-| `apply_damage` | Applique une proposition de `use_item` (tout, un sous-ensemble de cibles, ou corrigée : `overrides` avec `multiplier`, `damage`…) ou des valeurs libres (`manual`) : PV temporaires d'abord, soins plafonnés, effets copiés sur la cible ; jetons non liés modifiés seuls |
-| `rest` | Repos court / long |
-| `list_packs` / `search_compendium` / `get_compendium_entry` | Compendiums, recherche en **français ou anglais** |
-| `add_from_compendium` | Ajoute sorts, objets, classe (avec niveaux et PV), espèce, historique… à un acteur, ou importe dans le monde |
-| `localize_actor` | Traduit les objets d'un acteur d'après leur compendium d'origine (comme la traduction d'acteur de Babele) et convertit pieds/livres en mètres/kg si l'option métrique de dnd5e est active |
-| `give_loot` | Pièces et objets créés à la volée |
-| `upload_file` | Envoie une image / un son (base64 ou URL HTTPS explicitement autorisée via `UPLOAD_ALLOWED_ORIGINS`) |
-| `send_chat` | Message dans le chat, au nom d'un personnage, chuchotements |
+The exact JSON schemas of tools are provided by the MCP `tools/list` endpoint. Some existing response field names and enum values remain French for backward compatibility; see [API compatibility](#api-compatibility).
 
-### Outils de MJ (comptes MJ et assistant MJ uniquement)
+## Requirements
 
-| Outil | Rôle |
-|---|---|
-| `gm_scene` | lister les scènes, activer une scène, amener les joueurs sur une scène, régler l'obscurité |
-| `gm_music` | lister les playlists, lancer / arrêter une playlist ou un morceau, régler le volume, tout arrêter |
-| `gm_show` | montrer une image (fenêtre chez les joueurs), un journal / une page de journal, ou amener sur une scène ; `users` choisit les destinataires ; `preview` donne un aperçu (contenu, image, jetons, qui peut déjà lire) sans rien montrer |
-| `gm_permissions` | ce que chaque joueur peut voir d'un document (niveau, titre visible, contenu lisible, modifiable ; pages d'un journal ; compendiums selon le rôle) |
-| `gm_tile` | poser une image sur le plateau (tuile) |
-| `gm_token` | lister, poser, déplacer, cacher, montrer, retirer des jetons |
-| `gm_combat` | démarrer un combat avec les jetons de la scène, tour suivant / précédent, état, fin |
-| `gm_pause` | mettre la partie en pause / la reprendre |
-| `gm_check_ids` | contrôle (et corrige avec `apply`) les identifiants invalides des objets — compendiums du monde, objets du monde, fiches |
-| `gm_sync_items` | synchronise les objets d'une fiche avec leur compendium d'origine : ajoute les effets, activités et avancements manquants (simulation par défaut, `apply` écrit, instantané de restauration) |
-| `gm_patch_items` | applique les correctifs de données de compendium (Lame retentissante, Lame des flammes vertes : attaque d'arme) à un acteur ou à un compendium |
-- `gm_check_ids` : contrôle (et corrige avec `apply`) les identifiants invalides des objets — compendiums du monde, objets du monde, fiches. Foundry v14 rejette côté navigateur tout objet dont un avancement, une activité ou un effet n'a pas un identifiant de 16 caractères alphanumériques : l'objet disparaît alors de la fiche. Les objets importés ou ajoutés par le MCP sont corrigés automatiquement (`create_documents` inclus).
-- `gm_sync_items` : pour chaque objet d'une fiche, compare avec `_stats.compendiumSource` et signale (ou ajoute, `apply`) les effets, activités et avancements manquants. `item`, `only` et `pack` limitent la portée ; un instantané de restauration est gardé.
-- `gm_patch_items` : applique les correctifs de structure de `src/patches.mjs` (entrées de compendium incomplètes) à un acteur (`actor`), à tous, ou à un compendium du monde (`pack`). Les mêmes correctifs sont appliqués automatiquement à la création d'un objet (`create_documents`, `add_from_compendium`, `advance`).
+- Node.js **20 or newer**.
+- Foundry VTT **v13 or v14**, with an active world.
+- The dnd5e system for D&D-specific features.
+- One Foundry username/password per user. Accounts without passwords are not supported.
+- An HTTPS reverse proxy for connections outside the Foundry host.
 
-- Les objets créés par le MCP sont assainis (identifiants de 16 caractères, références d'effets re-pointées) et les entrées de compendium à structure incomplète sont corrigées (`src/patches.mjs`) : Lame retentissante et Lame des flammes vertes reçoivent leur attaque d'arme au lieu de dégâts « on hit » sans jet.
-- `use_item` gère les attaques classées « weapon » (True Strike, Shillelagh, cantrips d'arme) : bonus et dégâts de l'arme équipée, formules `max(…)`/`floor(…)`/divisions.
-- `search_compendium` et `add_from_compendium` privilégient les entrées 2024 (option `rules: "2024"` pour forcer la version 2024 d'un compendium).
-
-**Connexion** : l'écran de connexion de Foundry grise les comptes déjà actifs. Le serveur relâche donc sa connexion
-10 s après le dernier appel (`IDLE_SECONDS`) pour que le joueur puisse revenir dans son navigateur. Le MCP fonctionne
-même quand le joueur est connecté.
-
-
-Les jets peuvent être publics, `mj`, `aveugle` ou `prive`.
-
-**Traduction FR** : si le module [`dnd5e_fr-FR`](https://foundryvtt.com/packages/dnd5e_fr-FR) est installé, les noms et descriptions des compendiums sont traduits (recherche et import).
-
-## Limites
-
-- L'assistant d'avancement de dnd5e (choix d'aptitudes, compétences de classe…) tourne dans le navigateur : il n'est pas exécuté. `add_from_compendium` remplit les PV de classe et les sauvegardes maîtrisées ; le reste s'ajoute explicitement.
-- Les valeurs dérivées (CA, emplacements max…) sont recalculées côté serveur : bonnes pour les cas courants, approximatives pour les règles exotiques ou les effets actifs.
-- Le serveur utilise le protocole interne de Foundry (comme un navigateur), pas une API officielle : une mise à jour majeure de Foundry peut nécessiter une adaptation.
-- Les comptes Foundry **sans mot de passe** sont refusés.
+The server requires no direct access to Foundry's data directory. It uses Foundry's client protocol, not a public/stable server API; future Foundry updates may require compatibility changes.
 
 ## Installation
 
-Sur la machine qui héberge Foundry (Node.js ≥ 20) :
+Run on the Foundry host:
 
 ```bash
 sudo useradd -r -m -d /opt/foundry-vtt-mcp-server -s /usr/sbin/nologin foundrymcp
 sudo git clone https://github.com/Gabin-CC/foundry-vtt-mcp-server.git /opt/foundry-vtt-mcp-server
-cd /opt/foundry-vtt-mcp-server && sudo npm ci --omit=dev
+cd /opt/foundry-vtt-mcp-server
+sudo npm ci --omit=dev
 sudo chown -R foundrymcp:foundrymcp /opt/foundry-vtt-mcp-server
-sudo cp deploy/foundry-mcp.service /etc/systemd/system/   # éditer les variables
-sudo systemctl daemon-reload && sudo systemctl enable --now foundry-mcp
+sudo cp deploy/foundry-mcp.service /etc/systemd/system/
+# Review the environment variables in the service file before enabling it.
+sudo systemctl daemon-reload
+sudo systemctl enable --now foundry-mcp
 ```
 
-Variables d'environnement :
+Key configuration variables:
 
-| Variable | Défaut | Rôle |
-|---|---|---|
-| `FOUNDRY_URL` | `http://127.0.0.1:30000` | URL de Foundry vue par le serveur |
-| `PORT` / `HOST` | `8808` / `127.0.0.1` | Écoute HTTP (endpoint `/mcp`, santé `/mcp-health`) |
-| `TRUSTED_PROXY` | *(vide)* | IP du reverse proxy dont on croit `X-Forwarded-For` |
-| `PUBLIC_URL` | *(vide)* | URL publique de Foundry, pour renvoyer l'URL des fichiers envoyés |
-| `UPLOAD_ALLOWED_ORIGINS` | *(vide)* | Origines HTTPS autorisées pour `upload_file` (liste séparée par des virgules) ; vide = URL distantes désactivées, base64 toujours disponible |
-| `TRANSLATION_SOURCES` | `dnd5e_fr-FR/compendium_fr` | Dossiers de traductions Babele (`module/dossier`, séparés par des virgules, par priorité). Chaque dossier contient `<id du compendium>.json`, ex. `world.sors.json` |
+| Variable | Default | Description |
+| --- | --- | --- |
+| `FOUNDRY_URL` | `http://127.0.0.1:30000` | Internal Foundry URL |
+| `PORT` | `8808` | Local HTTP port for the MCP endpoint |
+| `HOST` | `127.0.0.1` | Local bind address; expose a private interface only when required by your proxy setup |
+| `TRUSTED_PROXY` | empty | IP of a trusted reverse proxy for rate limiting |
+| `PUBLIC_URL` | empty | Public Foundry URL used when returning uploaded file URLs |
+| `UPLOAD_ALLOWED_ORIGINS` | empty | Optional comma-separated HTTPS origins for remote uploads; disabled by default |
+| `TRANSLATION_SOURCES` | `dnd5e_fr-FR/compendium_fr` | Priority-ordered Babele translation folders |
+| `SNAPSHOT_DIR` | `data/snapshots` | Directory for document recovery snapshots |
+| `SNAPSHOT_KEEP` / `SNAPSHOT_DAYS` | `500` / `90` | Snapshot retention limits |
 
-### Reverse proxy (HTTPS obligatoire)
+### HTTPS reverse proxy
 
-Exposez **uniquement** `/mcp` en HTTPS, sans authentification côté proxy (le serveur la gère). Exemple Traefik (file provider) :
+Expose only the MCP endpoint and, if enabled, its OAuth routes. Keep the Node.js port private.
 
-```yaml
-http:
-  routers:
-    foundry-mcp:
-      rule: "Host(`foundry.example.com`) && Path(`/mcp`)"
-      entryPoints: [websecure]
-      service: foundry-mcp
-      tls: { certResolver: letsencrypt }
-  services:
-    foundry-mcp:
-      loadBalancer:
-        servers: [{ url: "http://127.0.0.1:8808" }]
-```
-
-Nginx :
+Basic authentication (Nginx example):
 
 ```nginx
-location = /mcp { proxy_pass http://127.0.0.1:8808; proxy_set_header X-Forwarded-For $remote_addr; proxy_buffering off; }
-```
-
-En mode OAuth, exposer **aussi** les routes `/.well-known/oauth-protected-resource/mcp`,
-`/.well-known/oauth-authorization-server`, `/authorize`, `/token`, `/register`, `/revoke`
-et `/oauth/approve` vers le même service. Ne pas exposer `/mcp-health`, ni les autres routes.
-Exemple Nginx (remplace la règle `location = /mcp` ci-dessus) :
-
-```nginx
-location ~ ^/(?:mcp|authorize|token|register|revoke|oauth/approve|\.well-known/oauth-protected-resource/mcp|\.well-known/oauth-authorization-server)$ {
+location = /mcp {
     proxy_pass http://127.0.0.1:8808;
     proxy_set_header Host $host;
     proxy_set_header X-Forwarded-For $remote_addr;
@@ -145,164 +82,94 @@ location ~ ^/(?:mcp|authorize|token|register|revoke|oauth/approve|\.well-known/o
 }
 ```
 
-Pour Traefik, ajouter ces chemins à la règle `Path(...)` du routeur MCP.
+OAuth additionally requires routing `/.well-known/oauth-protected-resource/mcp`, `/.well-known/oauth-authorization-server`, `/authorize`, `/token`, `/register`, `/revoke`, and `/oauth/approve` to the same service. Do **not** expose `/mcp-health` or other unneeded routes publicly. The MCP server handles authentication; do not add a conflicting authentication layer at the proxy.
 
-### Mise à jour
+### Update an installation
 
 ```bash
 sudo /opt/foundry-vtt-mcp-server/scripts/update.sh
 ```
 
-## Connexion depuis Claude
+## Connect an MCP client
 
-Le header est `Authorization: Basic base64(<nom d'utilisateur Foundry>:<mot de passe>)`.
+### Basic authentication (Claude Code example)
 
-**Claude Code** :
+The `Authorization` header contains `Basic` plus base64 encoding of `FoundryUsername:FoundryPassword`.
+
 ```bash
 claude mcp add --transport http foundry https://foundry.example.com/mcp \
-  --header "Authorization: Basic $(printf 'MonPseudo:MonMotDePasse' | base64)"
+  --header "Authorization: Basic $(printf 'YourFoundryUsername:YourFoundryPassword' | base64)"
 ```
 
-**Claude Desktop** (`claude_desktop_config.json`, via [`mcp-remote`](https://www.npmjs.com/package/mcp-remote)) :
-```json
-{ "mcpServers": { "foundry": { "command": "npx", "args": ["-y", "mcp-remote", "https://foundry.example.com/mcp",
-  "--header", "Authorization: Basic <base64>"] } } }
-```
+Use a dedicated Foundry user account with only the required permissions. Do not commit Basic credentials or expose the MCP endpoint over plain HTTP.
 
-Puis : *« Montre-moi la fiche de mon perso »*, *« Je lance Boule de feu au niveau 4 sur les gobelins »*, *« Donne 50 po et une potion de guérison à Tum »*…
+### OAuth for ChatGPT and multiple players
 
-## Connexion depuis ChatGPT (OAuth, plusieurs joueurs)
+OAuth is optional and coexists with Basic authentication. Each player authorizes ChatGPT with their own Foundry credentials; no shared GM account is needed.
 
-OAuth est **optionnel**, en complément du Basic existant. Chaque joueur autorise ChatGPT avec son
-propre compte Foundry : ses droits restent contrôlés par Foundry. Aucun compte MJ partagé n'est créé.
+1. Generate a persistent encryption key on the server:
 
-### 1. Créer une clé de chiffrement sur le serveur
+   ```bash
+   sudo install -d -m 700 -o foundrymcp -g foundrymcp /etc/foundry-mcp
+   openssl rand -hex 32 | sudo tee /etc/foundry-mcp/oauth.key >/dev/null
+   sudo chown foundrymcp:foundrymcp /etc/foundry-mcp/oauth.key
+   sudo chmod 600 /etc/foundry-mcp/oauth.key
+   ```
+
+2. Configure these systemd service environment variables:
+
+   ```ini
+   Environment=OAUTH_ENABLED=1
+   Environment=OAUTH_MCP_URL=https://foundry.example.com/mcp
+   Environment=OAUTH_KEY_FILE=/etc/foundry-mcp/oauth.key
+   ```
+
+3. Restart with `sudo systemctl daemon-reload && sudo systemctl restart foundry-mcp`.
+4. In ChatGPT, connect a custom MCP server using the exact public `/mcp` URL and OAuth authentication, if supported by your account or workspace.
+
+The server supports OAuth client registration, PKCE, refresh-token rotation and encrypted credential storage. Access tokens expire after one hour; refresh tokens after 30 days. Keep the encryption key and state file backed up securely. Losing the key means users must reconnect; never commit it to Git.
+
+Optional OAuth settings: `OAUTH_STATE_PATH` (default `data/oauth-state.json`), `OAUTH_REDIRECT_ORIGINS` (default `https://chatgpt.com`), and `OAUTH_ENCRYPTION_KEY` (alternative to `OAUTH_KEY_FILE`).
+
+## Security and data integrity
+
+- HTTP binds to **localhost by default**. Use HTTPS and firewall restrictions for any public deployment.
+- Foundry account permissions are preserved; per-IP rate limiting blocks repeated failed logins.
+- Idle Foundry sessions are released by default after 10 seconds (`IDLE_SECONDS`).
+- Remote URL uploads require explicit HTTPS origin allowlisting. Requests to private/reserved IP addresses, redirects outside the allowlist, oversized files (20 MiB), unsafe paths and SVG are rejected.
+- `update_documents`, `delete_documents`, `gm_sync_items`, `gm_patch_items`, and `gm_check_ids` snapshot their original document values before writing. If recovery data cannot be obtained or saved, the migration is aborted.
+- **Snapshots are not database transactions.** A Foundry failure midway through a batch may still leave partial writes. Inspect and restore the saved state using the `snapshots` tool when needed. Test bulk changes in a disposable Foundry world first.
+
+## Tests and development
 
 ```bash
-sudo install -d -m 700 -o foundrymcp -g foundrymcp /etc/foundry-mcp
-openssl rand -hex 32 | sudo tee /etc/foundry-mcp/oauth.key >/dev/null
-sudo chown foundrymcp:foundrymcp /etc/foundry-mcp/oauth.key
-sudo chmod 600 /etc/foundry-mcp/oauth.key
-```
-
-**Conserver cette clé en lieu sûr** : elle protège les mots de passe Foundry chiffrés nécessaires
-aux reconnexions. Ne jamais l'ajouter à Git. En cas de perte de la clé, il faudra supprimer
-l'ancien état OAuth et demander à tous les joueurs de reconnecter ChatGPT.
-
-### 2. Activer OAuth dans le service systemd
-
-Ajouter dans la section `[Service]` de `foundry-mcp.service` :
-
-```ini
-Environment=OAUTH_ENABLED=1
-Environment=OAUTH_MCP_URL=https://foundry.example.com/mcp
-Environment=OAUTH_KEY_FILE=/etc/foundry-mcp/oauth.key
-```
-
-Remplacer l'URL par l'adresse **publique exacte** de votre `/mcp`. Redémarrer :
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl restart foundry-mcp
-sudo journalctl -u foundry-mcp -n 30 --no-pager
-```
-
-Variables optionnelles :
-
-| Variable | Défaut | Rôle |
-|---|---|---|
-| `OAUTH_ENABLED` | `0` | Activer OAuth seulement avec `1` |
-| `OAUTH_MCP_URL` | *(obligatoire si activé)* | URL HTTPS publique se terminant par `/mcp` |
-| `OAUTH_KEY_FILE` | *(obligatoire si activé, ou `OAUTH_ENCRYPTION_KEY`)* | Fichier contenant 64 caractères hexadécimaux |
-| `OAUTH_STATE_PATH` | `data/oauth-state.json` | Clients, jetons hachés et identifiants Foundry chiffrés (fichier `0600`) |
-| `OAUTH_REDIRECT_ORIGINS` | `https://chatgpt.com` | Origines de retour OAuth autorisées, séparées par des virgules |
-
-### 3. Connecter ChatGPT
-
-Dans les **Plugins ChatGPT**, choisir *Ajouter un serveur MCP personnalisé*, l'URL de `/mcp`,
-et l'authentification **OAuth** (enregistrement dynamique du client / DCR). Le serveur publie :
-
-- `/.well-known/oauth-protected-resource/mcp` : ressource protégée ;
-- `/.well-known/oauth-authorization-server` : découverte OAuth ;
-- `/register`, `/authorize`, `/token`, `/revoke` : flux OAuth gérés par le SDK MCP.
-
-ChatGPT ouvre alors une page de connexion Foundry. Après validation, les appels MCP portent un
-jeton `Bearer` associé au joueur. Les jetons d'accès expirent au bout d'une heure, les jetons
-de renouvellement au bout de 30 jours (avec rotation). Le stockage survit aux redémarrages
-si la clé et le fichier d'état sont conservés. Le serveur chiffre les identifiants Foundry
-au repos ; aucun mot de passe n'est inclus dans un jeton. En cas de changement du mot de passe
-Foundry, il faut reconnecter le compte OAuth.
-
-**Attention** : la création d'un MCP personnalisé dépend des fonctionnalités autorisées par
-le compte / l'espace de travail ChatGPT. Ne désactivez pas l'authentification sur la route `/mcp`.
-
-### 4. Vérifier localement
-
-```bash
+npm ci
 npm run check
 ```
 
-Les tests simulent deux joueurs, la découverte, le code PKCE, les jetons, leur renouvellement,
-la persistance chiffrée et les refus d'authentification. Ils ne remplacent pas un test avec
-un véritable monde Foundry et une connexion ChatGPT.
+The checks validate tool declarations and run offline regression tests for HTTP/OAuth, security, dice arithmetic, edition selection, document synchronization and snapshot order. They do not require a running Foundry world.
 
-## Sécurité
-
-- Authentification déléguée à Foundry (mêmes mots de passe, mêmes permissions).
-- Anti brute-force : 10 échecs / 15 min / IP → 429.
-- Sessions Foundry libérées par défaut après 10 s d'inactivité (clé = hash utilisateur + mot de passe).
-- OAuth facultatif : compte Foundry de chaque joueur, PKCE, renouvellement et stockage chiffré des identifiants.
-- Le serveur ne lit jamais les fichiers de Foundry : tout passe par le protocole client.
-- L'API MCP écoute uniquement sur `127.0.0.1` par défaut (`HOST`) : pour un proxy distant, configurer une adresse de réseau privé et un pare-feu adapté. Ne jamais exposer le port MCP en HTTP public.
-- `upload_file` refuse par défaut les téléchargements distants. Pour autoriser des images externes : définir `UPLOAD_ALLOWED_ORIGINS=https://cdn.example.com,https://media.example.org` ; seules les URL HTTPS de ces origines sont acceptées, avec filtrage des adresses privées et limite de 20 Mio. Les SVG sont refusés.
-
-## Tests
+Optional integration probe (requires access to your own disposable Foundry world):
 
 ```bash
-ADMIN_PASSWORD='mdp admin Foundry' node scripts/test-tools.mjs MonPseudo '[["actor_sheet",{"actor":"Tum"}]]'
+ADMIN_PASSWORD='admin password' node scripts/test-tools.mjs PlayerName '[["actor_sheet",{"actor":"Example Hero"}]]'
 ```
-(utilise le mot de passe administrateur pour se connecter « en tant que » un utilisateur ; variante sans mot de passe
-administrateur : `FOUNDRY_AUTH=<base64 utilisateur:mot de passe> node scripts/test-tools.mjs - @appels.json`. Dans une
-suite d'appels, `"@last.chemin"` reprend une valeur de la réponse précédente, ex. `["apply_damage",{"proposal":"@last.proposition"}]`)
 
-Variables supplémentaires : `MAX_OUT` (taille max d'une réponse avant découpage, défaut 60000), `SNAPSHOT_DIR`,
-`SNAPSHOT_KEEP`, `SNAPSHOT_DAYS` (instantanés de restauration).
+For detailed test examples and contribution requirements, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
----
+## API compatibility
 
-## English
+The project's public presentation is moving to English. Existing tool names and argument keys remain stable. Some legacy response keys (`nom`, `formule`, `resultats`, `instantane`, etc.), error messages, and enum values (`court`, `mj`, `prive`, etc.) still use French to avoid breaking existing clients.
 
-Headless [MCP](https://modelcontextprotocol.io) server for Foundry VTT v13/v14 (dnd5e-focused). **No browser and no Foundry module needed**: the server logs in to Foundry like a web client (`/join` + socket.io). Each user authenticates with **their own Foundry username and password** via HTTP Basic auth and acts with their own Foundry permissions.
+English-facing metadata and documentation do not imply a breaking change to those keys. A future **versioned API** will introduce consistent English response names and aliases with an explicit migration period. Please do not silently rename existing keys in contributions.
 
-Tools: generic document CRUD (incl. embedded documents), computed character sheet, dice rolls and checks posted to chat, `use_item` (spell/weapon/consumable: attack, damage incl. crits/upcasting/cantrip scaling, healing, save DC, slot/uses/quantity consumption, chat card), short/long rest, compendium search (French or English names when the `dnd5e_fr-FR` Babele translations are installed), `add_from_compendium` (spells, items, class with levels/HP, species, background…), `localize_actor` (re-apply Babele translations and metric units to an existing actor), loot, file upload, chat messages. Also: stable pagination (`list_documents` cursors, oversized answers split into valid JSON pages + `next_page`), `dry_run` before/after previews and server-side restore snapshots (`snapshots`), world + compendium full-text search (`search_text`) and reverse references (`find_references`), translation audit / coverage (`audit_translation`), roll tables (`roll_table`) and cards (`cards`), targeted `use_item` with a validation step (`apply_damage`), GM sharing with recipients and preview (`gm_show`) and permission checks (`gm_permissions`).
+## Limitations
 
-Limitations: the dnd5e advancement workflow runs client-side and is not executed; derived values are recomputed server-side (good for common cases); relies on Foundry's internal client protocol, so major Foundry updates may require changes; users without a password are rejected.
+- dnd5e's browser-based advancement wizard is not executed; the server models common advancement paths and requests explicit choices when necessary.
+- Derived stats are approximations for standard cases. Exotic rules and unusual active-effect interactions may differ from Foundry's client-side calculations.
+- The dice evaluator supports common arithmetic, keep-high/keep-low, and simple numeric functions. Complex function expressions that contain dice within parentheses are still being hardened and require integration testing.
+- Translation quality depends on the Babele modules installed in your Foundry world. No private books or translation datasets are bundled in this repository.
 
-Install: see the commands above (Node ≥ 20, systemd unit in `deploy/`), expose only `/mcp` over HTTPS through your reverse proxy, then add it to Claude with an `Authorization: Basic …` header.
-Optional OAuth 2.1 support for ChatGPT is documented above; each player connects with their own Foundry credentials. The existing Basic authentication remains available.
+## License
 
-### Security-hardening notes (phase 1)
-
-- The MCP HTTP server now binds to **`127.0.0.1` by default**, including in the supplied systemd unit. Keep TLS termination at the reverse proxy. If your proxy runs on another host or container, explicitly set `HOST` to the appropriate private interface and firewall the port.
-- Remote URLs for `upload_file` are **disabled by default**. Base64 uploads continue working. To enable a specific asset CDN, set `UPLOAD_ALLOWED_ORIGINS=https://assets.example.com` (comma-separated HTTPS origins; an origin includes its port, if non-default). Redirect destinations must also be allowlisted. Private and reserved IP addresses are blocked after DNS lookup and on connection; downloads have time and 20 MiB limits.
-- File uploads reject path traversal, unknown formats, and **SVG**; recognized formats are PNG, JPEG, WebP, GIF, MP3, OGG, WAV, WebM, MP4 and PDF. A basic file-signature check is performed. This is not an antivirus or content-disarm system.
-- Property overrides and active-effect updates reject prototype-related keys. This prevents a malicious document key from modifying the Node.js process-wide object prototype.
-- Existing `upload_file` clients that used arbitrary URLs must either switch to base64 or configure explicitly trusted CDN origins. The current release remains French-first; a versioned English API migration is planned separately.
-
-### Data-integrity safeguards (phase 2)
-
-- `update_documents`, `delete_documents`, `gm_sync_items` and `gm_patch_items` now require a successful recovery snapshot **before** writing to Foundry. If the original documents cannot be retrieved or `SNAPSHOT_DIR` is unavailable, the operation returns an error without starting the requested mutation. Keep this directory writable and back it up independently.
-- `gm_sync_items` and `gm_patch_items` remain dry-run by default. Review the proposed changes before passing `apply: true`, especially for operations that affect multiple characters or compendiums.
-- `gm_check_ids` also prepares a single recovery snapshot covering the full ID repair plan (including advancement references) before the first write.
-- Snapshots are per operation, not database transactions. A Foundry error midway through a multi-document update can still leave a partial application; use `snapshots` to inspect the original values and restore affected documents. Test migrations on a disposable world before applying them to your campaign.
-- Run `npm run check` for the security, OAuth, item-synchronization, combat, and snapshot-order regression tests. These unit tests use mock Foundry sessions and do not replace an integration test with a real Foundry server.
-
-### Rules editions and dice formulas (phase 3)
-
-- `add_from_compendium` uses the `rules` field (`"2014"` or `"2024"`) separately from `item_type` (`"spell"`, `"feat"`, etc.). When switching between installed editions it resolves the corresponding item by **name**, not by assuming the same `_id` exists in both compendiums. If the requested edition is unavailable or contradicts source metadata, the import fails rather than silently using a different ruleset. Custom packs with explicitly labelled source rules are supported without a separate `*24` pack.
-- Dice formulas now respect multiplication/division precedence. Division is rounded down for D&D integer results and applied to the **rolled total**, not by silently reducing the number of dice. Variable resolution distinguishes spell slot level from spell save DC.
-- `gm_sync_items` checks an item's identity when its recorded source compendium is absent, and refuses ambiguous fallback candidates; matching `_id` values alone are not considered sufficient evidence.
-
-## Licence
-
-MIT — not affiliated with Foundry Gaming LLC or Anthropic.
+MIT. Not affiliated with Foundry Gaming LLC, Wizards of the Coast, Anthropic, or OpenAI.
