@@ -54,9 +54,16 @@ export function split(v, budget = Math.floor(MAX_OUT * 0.9)) {
     // les autres champs sont répétés sur chaque page
     const biggest = keys.reduce((b, k) => size(v[k]) > size(v[b] ?? "") ? k : b, keys[0]);
     if (Array.isArray(v[biggest])) {
-      const rest = Object.fromEntries(keys.filter(k => k !== biggest).map(k => [k, v[k]]));
+      // Additive English aliases share the same array reference in memory.
+      // Split it once and repeat each matching key on the same page, instead
+      // of putting the legacy and English copies on separate pages.
+      const shared = keys.filter(k => v[k] === v[biggest]);
+      const rest = Object.fromEntries(keys.filter(k => !shared.includes(k)).map(k => [k, v[k]]));
       const restSize = size(rest);
-      if (restSize < budget / 4) return split(v[biggest], budget - restSize - 100).map(chunk => ({ ...rest, [biggest]: chunk }));
+      if (restSize < budget / 4 && budget - restSize - 100 > shared.length * 200) {
+        const chunkBudget = Math.floor((budget - restSize - 100) / shared.length);
+        return split(v[biggest], chunkBudget).map(chunk => ({ ...rest, ...Object.fromEntries(shared.map(k => [k, chunk])) }));
+      }
     }
     const pages = []; let cur = {}, curSize = 2;
     const flush = () => { if (Object.keys(cur).length) pages.push(cur); cur = {}; curSize = 2; };
