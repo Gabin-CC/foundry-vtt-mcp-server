@@ -169,6 +169,7 @@ The server implements OAuth discovery, dynamic client registration, authorizatio
 ## Security and recovery
 
 - Foundry account permissions are enforced for the authenticated user. GM operations are role-restricted.
+- Foundry sends every world document to every client and lets the client hide what a user may not see, so the MCP applies Foundry's **read permissions itself** for non-GM accounts (`src/access.mjs`): documents without permission are absent from lists and refused when read; Limited permission exposes the title only; Observer or higher exposes the content. Journal pages with their own permission, role-based compendium permissions, hidden tokens/combatants, whispered chat messages and folders without visible content are handled the same way. GM and assistant-GM accounts see everything.
 - Authentication failures are rate limited (10 failures per 15 minutes per client IP).
 - The listener binds to loopback by default. Always use HTTPS externally.
 - Remote `upload_file` URLs are disabled until explicitly allowlisted. Redirects must also be allowed; private/reserved IP targets, SVG files, unsupported file signatures and oversized downloads are rejected. This does not replace malware scanning.

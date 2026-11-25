@@ -1,8 +1,66 @@
 /** Resolve a compendium import without silently crossing the requested rules edition. */
+import { message } from "./i18n.mjs";
 const normalize = value => String(value || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 const is2024Pack = id => /24$/.test(String(id));
 
+/**
+ * Priorité de recherche sans compendium précisé : compendiums du monde, puis dnd5e 2024 (« *24 »), puis les autres.
+ * Avec rules, les compendiums dnd5e de l'autre édition sont écartés (les autres sont vérifiés après coup).
+ */
+export function packTier(pack) {
+  if (String(pack.id).startsWith("world.")) return 0;
+  const isSystem = pack.packageName === "dnd5e" || String(pack.id).startsWith("dnd5e.");
+  return isSystem && is2024Pack(pack.id) ? 1 : 2;
+}
+function rulesCompatiblePack(pack, rules) {
+  const isSystem = pack.packageName === "dnd5e" || String(pack.id).startsWith("dnd5e.");
+  if (!rules || !isSystem) return true;
+  return (rules === "2024") === is2024Pack(pack.id);
+}
+
+/**
+ * Import par nom sans compendium : cherche dans les compendiums installés du type voulu (Item par défaut),
+ * niveau de priorité par niveau (monde, dnd5e 2024, autres) ; nom FR ou EN exact, item_type et rules respectés.
+ * Un même nom porté par plusieurs types d'objet (ex. sort et armure) sans item_type : erreur listant les candidats.
+ */
+async function resolveWithoutPack(fs, packs, entry, indexOf) {
+  if (!entry.name) throw new Error(message("Provide 'pack' with an ID, or an exact name", "Préciser 'pack' avec un ID, ou un nom exact"));
+  const docType = entry.document_type || "Item";
+  const query = normalize(entry.name);
+  const pool = packs.filter(p => p.type === docType && rulesCompatiblePack(p, entry.rules));
+  const tiers = [...new Set(pool.map(packTier))].sort((a, b) => a - b);
+  const errors = [];
+  for (const tier of tiers) {
+    const inTier = pool.filter(p => packTier(p) === tier);
+    const indexes = await Promise.all(inTier.map(p => Promise.resolve(indexOf(p)).catch(() => [])));
+    const hits = [];
+    inTier.forEach((p, i) => {
+      for (const doc of indexes[i] || []) {
+        if (normalize(doc.name) !== query && normalize(doc.name_fr) !== query) continue;
+        if (entry.item_type && doc.type !== entry.item_type) continue;
+        hits.push({ pack: p, doc });
+      }
+    });
+    if (!hits.length) continue;
+    const types = [...new Set(hits.map(h => h.doc.type))];
+    if (types.length > 1) {
+      const list = hits.slice(0, 10).map(h => `${h.pack.id}/${h.doc._id} (${h.doc.type}: ${h.doc.name_fr || h.doc.name})`).join(", ");
+      throw new Error(message(`Several item types are named "${entry.name}": ${list}. Specify item_type or pack.`,
+        `Plusieurs types d'objet portent le nom « ${entry.name} » : ${list}. Préciser item_type ou pack.`));
+    }
+    for (const hit of hits) {
+      try {
+        const r = await resolveImportEntry(fs, packs, { ...entry, pack: hit.pack.id, id: hit.doc._id, name: undefined }, indexOf);
+        if (!r.missing) return r;
+      } catch (e) { errors.push(e.message); }   // édition non vérifiable dans ce compendium : candidat suivant
+    }
+  }
+  if (errors.length) throw new Error(errors[0]);
+  return { missing: entry.name };
+}
+
 export async function resolveImportEntry(fs, packs, entry, indexOf) {
+  if (!entry.pack) return resolveWithoutPack(fs, packs, entry, indexOf);
   const originalPack = packs.find(p => p.id === entry.pack);
   if (!originalPack) throw new Error(`Unknown compendium: ${entry.pack}`);
 

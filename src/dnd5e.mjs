@@ -511,20 +511,33 @@ const TR_SOURCES = (process.env.TRANSLATION_SOURCES
   || `${process.env.TRANSLATION_MODULE || "dnd5e_fr-FR"}/${process.env.TRANSLATION_DIR || "compendium_fr"}`)
   .split(",").map(s => s.trim()).filter(Boolean);
 const TR_TTL = 10 * 60 * 1000;
-export async function translations(packId) {
+/** Entrées Babele : objet {clé: entrée} ou ancien format tableau [{id: nom d'origine, name, …}]. */
+export function normalizeEntries(entries) {
+  if (!Array.isArray(entries)) return entries && typeof entries === "object" ? entries : {};
+  const out = {};
+  for (const e of entries) if (e && typeof e === "object" && (e.id ?? e._id) != null) out[e.id ?? e._id] = e;
+  return out;
+}
+/** Fichier de traduction d'un compendium : { entries, mapping } (null si aucune source n'en fournit). */
+export async function translationFile(packId) {
   const c = trCache.get(packId);
-  if (c && Date.now() - c.at < TR_TTL) return c.t;
-  let t = null;
+  if (c && Date.now() - c.at < TR_TTL) return c.file;
+  let file = null;
   for (const src of TR_SOURCES) {
     try {
       const r = await fetch(`${FOUNDRY}/modules/${src}/${encodeURIComponent(packId)}.json`);
       if (!r.ok) continue;
-      const e = (await r.json()).entries || {};
-      t = { ...e, ...(t || {}) }; // la première source gagne
+      const j = await r.json();
+      const e = normalizeEntries(j.entries);
+      // la première source gagne (entrées comme correspondances de champs)
+      file = { entries: { ...e, ...(file?.entries || {}) }, mapping: { ...(j.mapping || {}), ...(file?.mapping || {}) } };
     } catch { /* source absente */ }
   }
-  trCache.set(packId, { t, at: Date.now() });
-  return t;
+  trCache.set(packId, { file, at: Date.now() });
+  return file;
+}
+export async function translations(packId) {
+  return (await translationFile(packId))?.entries || null;
 }
 /** Entrée de traduction d'un document : clé _id d'abord, puis nom (même ordre que Babele). */
 export const trFor = (tr, doc) => tr?.[doc?._id] ?? tr?.[doc?.name];
@@ -590,9 +603,10 @@ export function actorMetricUpdates(a) {
 }
 
 export async function translateDoc(packId, doc) {
-  const t = trFor(await translations(packId), doc);
+  const file = await translationFile(packId);
+  const t = trFor(file?.entries, doc);
   if (!t) return withMetric(doc);
-  return withMetric(applyTr(doc, t));
+  return withMetric(applyTr(doc, t, file.mapping));
 }
 function withMetric(doc) {
   const up = doc?.system ? itemMetricUpdates(doc) : {};
@@ -601,72 +615,178 @@ function withMetric(doc) {
   for (const [p, v] of Object.entries(up)) { const ks = p.split("."); let o = c; ks.slice(0, -1).forEach(k => { o = o[k] ??= {}; }); o[ks.at(-1)] = v; }
   return c;
 }
-function applyTr(doc, t) {
+// Correspondances de champs Babele : chemin (« system.details.biography.value ») ou { path, converter }.
+// Les convertisseurs propres à un module (unités, portées…) ne sont pas rejoués : seuls les textes simples,
+// les objets intégrés (items), les effets et les activités sont appliqués.
+const mapPath = spec => typeof spec === "string" ? spec : spec && typeof spec === "object" ? spec.path : null;
+const SKIP_KEYS = new Set(["name", "description", "materials", "effects", "items", "activities"]);
+const isActorDoc = doc => !!(doc && (doc.prototypeToken || Array.isArray(doc.items)) && !doc.system?.description);
+/** Champ de description d'un document : correspondance du compendium, sinon défaut du type (comme Babele). */
+function descriptionPath(doc, mapping) {
+  const m = mapPath(mapping?.description);
+  if (m) return m;
+  if (doc.text) return "text.content";   // page de journal
+  if (isActorDoc(doc)) return "system.details.biography.value";
+  return "system.description.value";
+}
+const getAt = (o, p) => p.split(".").reduce((a, k) => a?.[k], o);
+function setAt(o, p, v) {
+  const ks = p.split(".");
+  let x = o;
+  for (const k of ks.slice(0, -1)) { if (x[k] == null || typeof x[k] !== "object") return false; x = x[k]; }
+  x[ks.at(-1)] = v;
+  return true;
+}
+/** Entrée de traduction d'un sous-document (objet intégré, effet, activité) : clé _id d'abord, puis nom d'origine. */
+export const subEntry = (map, doc) => map && doc ? (map[doc._id] ?? map[doc.name] ?? null) : null;
+function applyEffects(effects, map) {
+  if (!map || !Array.isArray(effects)) return;
+  for (const e of effects) { const te = subEntry(map, e); if (te?.name) e.name = te.name; if (te?.description) e.description = te.description; }
+}
+function applyActivities(activities, map) {
+  if (!map || !activities || typeof activities !== "object") return;
+  for (const act of Object.values(activities)) {
+    const ta = subEntry(map, act);
+    if (typeof ta === "string") act.name = ta;
+    else if (ta?.name) act.name = ta.name;
+  }
+}
+function applyTr(doc, t, mapping = {}) {
   const c = structuredClone(doc);
-  if (t.name) c.name = t.name;
-  if (t.description && c.system?.description) c.system.description.value = t.description;
-  if (t.description && c.text) c.text.content = t.description; // pages de journal
+  if (t.name) {
+    // nom du jeton : suit le nom de l'acteur s'il était identique (comme Babele)
+    if (c.prototypeToken && (!c.prototypeToken.name || c.prototypeToken.name === doc.name)) c.prototypeToken.name = t.name;
+    c.name = t.name;
+  }
+  if (t.description) setAt(c, descriptionPath(c, mapping), t.description);
   if (t.materials && c.system?.materials) c.system.materials.value = t.materials;   // composantes matérielles
-  if (t.effects && Array.isArray(c.effects))   // effets : clé = nom anglais de l'effet (comme Babele)
-    for (const e of c.effects) { const te = t.effects[e._id] ?? t.effects[e.name]; if (te?.name) e.name = te.name; if (te?.description) e.description = te.description; }
+  applyEffects(c.effects, t.effects);   // effets : clé = _id ou nom anglais de l'effet (comme Babele)
+  applyActivities(c.system?.activities, t.activities);
+  // objets intégrés d'un acteur : clé = _id ou nom anglais de l'objet
+  const itemsKey = Object.entries(mapping || {}).find(([k, v]) => k === "items" || mapPath(v) === "items")?.[0] || "items";
+  if (t[itemsKey] && typeof t[itemsKey] === "object" && Array.isArray(c.items))
+    c.items = c.items.map(it => { const ti = subEntry(t[itemsKey], it); return ti && typeof ti === "object" ? applyTr(it, ti) : it; });
+  // autres champs textuels simples prévus par le fichier (sans convertisseur)
+  for (const [key, spec] of Object.entries(mapping || {})) {
+    if (SKIP_KEYS.has(key) || key === itemsKey || typeof t[key] !== "string") continue;
+    const path = mapPath(spec);
+    if (!path || (typeof spec === "object" && spec.converter)) continue;
+    if (typeof getAt(c, path) === "string") setAt(c, path, t[key]);
+  }
   return c;
 }
 /** Traduction d'un objet d'acteur d'après sa source de compendium (comme la traduction à la demande de Babele). */
 // Objets importés par Plutonium sans lien de compendium : Plutonium garde sa propre référence
 // (flags.plutonium.hash + source, ex. « bless_xphb » / « XPHB »), présente aussi sur les entrées des
-// compendiums importés par Plutonium. Index hash|source -> UUID de compendium (cache 30 min).
-const PLUT = { map: new Map(), at: 0 };
+// compendiums importés par Plutonium. Index hash|source|type -> UUID de compendium (cache 30 min).
+// Le type d'objet fait partie de la clé : le sort « Shield » et l'armure « Shield » ont le même hash Plutonium.
+// Caches partagés par le processus : un compte non MJ (lectures filtrées) a sa propre entrée.
+const cacheScope = fs => fs?.restricted ? `user:${fs.userId}` : "gm";
+const PLUTS = new Map();   // portée -> { map, at }
 async function plutoniumSource(fs, it) {
   const p = it.flags?.plutonium;
   if (!p?.hash || !fs) return null;
+  const PLUT = PLUTS.get(cacheScope(fs)) || PLUTS.set(cacheScope(fs), { map: new Map(), at: 0 }).get(cacheScope(fs));
   if (!PLUT.map.size || Date.now() - PLUT.at > 30 * 60 * 1000) {
     const map = new Map();
     const packs = ((await fs.worldData()).packs || []).filter(x => x.type === "Item");
     for (const pk of packs) {
       let idx = [];
-      try { idx = await fs.doc("get", "Item", { pack: pk.id, query: {}, index: true, indexFields: ["_id", "name", "flags.plutonium.hash", "flags.plutonium.source"] }); } catch { /* */ }
+      try { idx = await fs.doc("get", "Item", { pack: pk.id, query: {}, index: true, indexFields: ["_id", "name", "type", "flags.plutonium.hash", "flags.plutonium.source"] }); } catch { /* */ }
       for (const x of idx) {
         const h = x.flags?.plutonium?.hash;
         if (!h) continue;
-        const k = `${h}|${x.flags.plutonium.source || ""}`;
+        const k = `${h}|${x.flags.plutonium.source || ""}|${x.type || ""}`;
         if (!map.has(k)) map.set(k, `Compendium.${pk.id}.Item.${x._id}`);
       }
     }
     Object.assign(PLUT, { map, at: Date.now() });
   }
-  return PLUT.map.get(`${p.hash}|${p.source || ""}`) || null;
+  return PLUT.map.get(`${p.hash}|${p.source || ""}|${it.type || ""}`) || null;
 }
 
-export async function localizeItem(it, fs) {
+/**
+ * Parchemin de sort (scrollFromSpell, ou « Créer un parchemin » de dnd5e) : activité « Lancer un sort » qui
+ * pointe vers le sort. Son compendium d'origine est le parchemin générique du niveau : le retraduire écraserait
+ * le nom (« Parchemin : <sort> ») et la description qui embarque le sort.
+ */
+export function isSpellScroll(it) {
+  if (it?.type !== "consumable") return false;
+  if (it.flags?.mcp?.spellScroll) return true;
+  return Object.values(it.system?.activities || {}).some(a => a?.type === "cast" && (a._id === "dnd5escrollspell" || a.spell?.uuid));
+}
+
+// Index (_id → nom anglais, type, identifiant) des compendiums sources, partagé par le processus (10 min).
+const SRC_IDX = new Map();   // portée|packId -> { at, p: Promise<Map> }
+async function sourceEntry(fs, packId, id) {
+  const key = `${cacheScope(fs)}|${packId}`;
+  let c = SRC_IDX.get(key);
+  if (!c || Date.now() - c.at > 10 * 60 * 1000) {
+    c = { at: Date.now(), p: fs.doc("get", "Item", { pack: packId, query: {}, index: true, indexFields: ["_id", "name", "type", "system.identifier"] })
+      .then(list => new Map((list || []).map(x => [x._id, x]))).catch(() => null) };
+    SRC_IDX.set(key, c);
+  }
+  const map = await c.p;
+  if (!map) { SRC_IDX.delete(key); return undefined; }   // compendium absent ou illisible
+  return map.get(id) || null;
+}
+
+/**
+ * Traduction applicable à un objet d'acteur : entrée Babele du compendium source, en exigeant le même type
+ * d'objet (une armure « Shield » ne reçoit pas la traduction du sort « Shield »).
+ * @returns {{ t, pack, id } | null}
+ */
+async function itemTranslation(it, fs) {
   const src = it._stats?.compendiumSource || it.flags?.core?.sourceId || it.flags?.dnd5e?.sourceId || await plutoniumSource(fs, it);
   const m = /^Compendium\.([^.]+\.[^.]+)\.(?:Item\.)?([A-Za-z0-9]{16})$/.exec(src || "");
+  if (!m) return null;
+  const tr = await translations(m[1]);
+  if (!tr) return null;
+  const entry = fs ? await sourceEntry(fs, m[1], m[2]) : undefined;
+  if (entry === undefined) return { t: tr[m[2]] ?? tr[it.name] ?? null, pack: m[1], id: m[2] };   // source illisible : comportement historique
+  if (entry === null) return { t: tr[m[2]] ?? null, pack: m[1], id: m[2] };   // _id absent du compendium : pas de repli par nom
+  if (entry.type && it.type && entry.type !== it.type) return null;
+  if (entry.system?.identifier && it.system?.identifier && entry.system.identifier !== it.system.identifier) return null;
+  return { t: tr[m[2]] ?? tr[entry.name] ?? tr[it.name] ?? null, pack: m[1], id: m[2] };
+}
+
+/**
+ * Mise à jour de traduction d'un objet d'acteur (comme la traduction à la demande de Babele).
+ * `opts.entry` : entrée de traduction imposée (objet intégré d'un acteur venu d'un compendium d'acteurs) ;
+ * `opts.sourceEffects` : effets de l'objet source correspondant (pour retrouver leurs noms anglais).
+ */
+export async function localizeItem(it, fs, opts = {}) {
   const up = {};
-  if (m) {
-    const tr = await translations(m[1]);
-    let t = tr?.[m[2]] ?? tr?.[it.name];
-    if (!t && tr && fs) {   // traductions indexées par le nom anglais : nom d'origine lu dans le compendium source
-      try {
-        const idx = await fs.doc("get", "Item", { pack: m[1], query: { _id: m[2] }, index: true, indexFields: ["_id", "name"] });
-        const src = idx.find(x => x._id === m[2]);
-        if (src) t = tr[src.name];
-      } catch { /* compendium absent */ }
-    }
-    if (t?.name && t.name !== it.name) up.name = t.name;
+  if (isSpellScroll(it)) return Object.assign(up, itemMetricUpdates(it));   // jamais de retraduction d'un parchemin de sort
+  let t = null, pack = null, id = null;
+  if (opts.entry) t = opts.entry;
+  else { const r = await itemTranslation(it, fs); if (r) ({ t, pack, id } = r); }
+  if (t && typeof t === "object") {
+    if (t.name && t.name !== it.name) up.name = t.name;
     // comparaison sur le texte seul : Foundry réécrit le HTML à l'enregistrement (guillemets, entités, attributs)
     // un « < » littéral (ex. jet [[/r 1d100cs<26]]) n'est pas une balise : Foundry l'enregistre en &lt;
     const txt = x => String(x || "").replace(/<(?![A-Za-z\/!])/g, "&lt;").replace(/<[^>]+>/g, " ")
       .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&(amp|#x27|#39|quot|apos|nbsp);/g, "").replace(/['’"&]/g, "").replace(/\s+/g, " ").trim();
     const same = (x, y) => txt(x) === txt(y);
-    if (t?.description && it.system?.description && !same(t.description, it.system.description.value)) up["system.description.value"] = t.description;
-    if (t?.materials && it.system?.materials && !same(t.materials, it.system.materials.value)) up["system.materials.value"] = t.materials;
-    // effets de l'objet : nom anglais retrouvé dans le compendium source (l'effet sur la fiche peut déjà être renommé)
-    if (t?.effects && (it.effects || []).length) {
-      let srcEff = null;
-      try { srcEff = (await fs.doc("get", "Item", { pack: m[1], query: { _id: m[2] } })).find(x => x._id === m[2])?.effects || []; } catch { srcEff = []; }
+    if (t.description && it.system?.description && !same(t.description, it.system.description.value)) up["system.description.value"] = t.description;
+    if (t.materials && it.system?.materials && !same(t.materials, it.system.materials.value)) up["system.materials.value"] = t.materials;
+    // activités : clé _id ou nom anglais
+    if (t.activities && typeof t.activities === "object") for (const [aid, act] of Object.entries(it.system?.activities || {})) {
+      const ta = subEntry(t.activities, act) ?? t.activities[aid];
+      const name = typeof ta === "string" ? ta : ta?.name;
+      if (name && name !== act.name) up[`system.activities.${aid}.name`] = name;
+    }
+    // effets de l'objet : nom anglais retrouvé dans la source (l'effet sur la fiche peut déjà être renommé)
+    if (t.effects && (it.effects || []).length) {
+      let srcEff = opts.sourceEffects || null;
+      if (!srcEff && pack) {
+        try { srcEff = (await fs.doc("get", "Item", { pack, query: { _id: id } })).find(x => x._id === id)?.effects || []; } catch { srcEff = []; }
+      }
+      srcEff ||= [];
       const effUp = [];
       for (const e of it.effects) {
         const se = srcEff.find(x => x._id === e._id) || srcEff.find(x => x.name === e.name);
-        const te = t.effects[se?.name ?? e.name] ?? t.effects[e.name];
+        const te = t.effects[e._id] ?? t.effects[se?.name ?? e.name] ?? t.effects[e.name];
         if (!te) continue;
         const u = { _id: e._id };
         if (te.name && te.name !== e.name) u.name = te.name;
@@ -677,4 +797,33 @@ export async function localizeItem(it, fs) {
     }
   }
   return Object.assign(up, itemMetricUpdates(it));
+}
+
+/**
+ * Contexte de traduction d'un acteur venu d'un compendium d'acteurs (ex. monstre importé) : entrée Babele de
+ * l'acteur source et ses objets intégrés. Ses objets se traduisent par cette entrée (clés _id ou nom anglais),
+ * pas par les compendiums d'objets. null si l'acteur n'a pas de source d'acteur traduite.
+ */
+export async function actorTranslationContext(actor, fs) {
+  const src = actor?._stats?.compendiumSource || actor?.flags?.core?.sourceId;
+  const m = /^Compendium\.([^.]+\.[^.]+)\.(?:Actor\.)?([A-Za-z0-9]{16})$/.exec(src || "");
+  if (!m) return null;
+  const file = await translationFile(m[1]);
+  if (!file) return null;
+  let source = null;
+  try { source = (await fs.doc("get", "Actor", { pack: m[1], query: { _id: m[2] } })).find(x => x._id === m[2]) || null; } catch { source = null; }
+  const entry = file.entries[m[2]] ?? (source && file.entries[source.name]) ?? file.entries[actor.name] ?? null;
+  if (!entry) return null;
+  const itemsKey = Object.entries(file.mapping || {}).find(([k, v]) => k === "items" || mapPath(v) === "items")?.[0] || "items";
+  const items = entry[itemsKey] && typeof entry[itemsKey] === "object" ? entry[itemsKey] : null;
+  /** Entrée et objet source d'un objet de la fiche (même _id, sinon même nom d'origine et même type). */
+  const forItem = it => {
+    if (!items) return null;
+    const srcIt = (source?.items || []).find(x => x._id === it._id && x.type === it.type)
+      || (source?.items || []).find(x => x.name === it.name && x.type === it.type) || null;
+    if (srcIt?.type && srcIt.type !== it.type) return null;
+    const e = items[it._id] ?? (srcIt && (items[srcIt._id] ?? items[srcIt.name])) ?? items[it.name] ?? null;
+    return e && typeof e === "object" ? { entry: e, sourceEffects: srcIt?.effects || [] } : null;
+  };
+  return { pack: m[1], id: m[2], entry, forItem };
 }

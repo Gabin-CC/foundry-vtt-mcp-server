@@ -7,7 +7,8 @@ import { scanAndRepair } from "./repair.mjs";
 import { syncItems } from "./sync.mjs";
 import { patchActor, patchPack } from "./patchrun.mjs";
 import { message } from "./i18n.mjs";
-export const GM_ROLE = 3;   // 3 = assistant MJ, 4 = MJ
+import { GM_ROLE, levelFor, packLevel } from "./access.mjs";
+export { GM_ROLE };
 
 const sceneProp = { type: "string", description: "Scène (nom ou _id). Défaut : la scène active." };
 export const GM_TOOLS = [
@@ -81,16 +82,8 @@ const now = () => Date.now();
 
 // ---------- droits de lecture ----------
 const LEVELS = { "-1": "hérité", 0: "aucun", 1: "limité", 2: "observateur", 3: "propriétaire" };
-const ROLE_NAMES = { 1: "PLAYER", 2: "TRUSTED", 3: "ASSISTANT", 4: "GAMEMASTER" };
-const LEVEL_OF = { NONE: 0, LIMITED: 1, OBSERVER: 2, OWNER: 3 };
 const sceneImage = s => s.levels?.[0]?.background?.src || s.background?.src || s.img || null;
 const plainText = h => String(h || "").replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/\s+/g, " ").trim();
-function levelFor(doc, user, inherited = 0) {
-  if ((Number(user.role) || 0) >= GM_ROLE) return 3;
-  const o = doc?.ownership || {};
-  const v = o[user._id] ?? o.default ?? 0;
-  return v === -1 ? inherited : v;
-}
 async function permissionsOf(fs, uuid, userRef) {
   uuid = String(uuid || "").trim();
   const users = await fs.doc("get", "User", { query: {} });
@@ -102,7 +95,7 @@ async function permissionsOf(fs, uuid, userRef) {
     const packs = (await fs.worldData()).packs || [];
     const pk = packs.find(p => p.id === pack);
     if (!pk) throw new Error(message(`Unknown compendium: ${pack}`, `Compendium inconnu : ${pack}`));
-    packOwn = pk.ownership || { PLAYER: "OBSERVER", ASSISTANT: "OWNER" };
+    packOwn = pk;
     doc = (await fs.doc("get", type, { pack, query: { _id: parts[4] } })).find(d => d._id === parts[4]);
   } else {
     type = parts[0];
@@ -117,11 +110,8 @@ async function permissionsOf(fs, uuid, userRef) {
   if (!doc) throw new Error(message(`Document not found: ${uuid}`, `Document introuvable : ${uuid}`));
   const rows = list.map(u => {
     let lvl;
-    if (packOwn) {   // compendium : droit selon le rôle (réglage du compendium)
-      let best = 0;
-      for (let r = 1; r <= (Number(u.role) || 0); r++) best = Math.max(best, LEVEL_OF[packOwn[ROLE_NAMES[r]]] ?? 0);
-      lvl = (Number(u.role) || 0) >= GM_ROLE ? 3 : best;
-    } else lvl = parent ? levelFor(doc, u, levelFor(parent, u)) : levelFor(doc, u);
+    if (packOwn) lvl = packLevel(packOwn, u);   // compendium : droit selon le rôle (réglage du compendium)
+    else lvl = parent ? levelFor(doc, u, levelFor(parent, u)) : levelFor(doc, u);
     if (type === "Item" && parent && !doc.ownership) lvl = levelFor(parent, u);
     return { _id: u._id, nom: u.name, role: u.role, niveau: LEVELS[lvl], titre_visible: lvl >= 1, contenu_lisible: lvl >= 2, modifiable: lvl >= 3 };
   });
@@ -137,6 +127,22 @@ async function permissionsOf(fs, uuid, userRef) {
     jetons_caches: (doc.tokens || []).filter(t => t.hidden).map(t => t.name),
     note: message("A player can see the active scene and, in the navigation bar, scenes marked for navigation where they have at least Limited permission.", "Un joueur voit la scène active, et dans la navigation les scènes marquées « navigation » dont il a au moins le droit limité.") });
   return res;
+}
+
+/**
+ * Nom affiché d'un combattant, comme le suivi de combat de Foundry : nom du combattant, sinon nom du jeton
+ * (scène du combattant ou du combat), sinon nom de l'acteur ; _id d'acteur en dernier recours.
+ */
+export async function combatantLabels(fs, combat, combatants) {
+  const tokens = new Map(), actors = new Map();
+  const sceneIds = [...new Set(combatants.map(x => x.sceneId || combat.scene).filter(Boolean))];
+  for (const sid of sceneIds) {
+    try { for (const t of await fs.doc("get", "Token", { parentUuid: `Scene.${sid}`, query: {} })) tokens.set(`${sid}.${t._id}`, t); } catch { /* scène absente */ }
+  }
+  if (combatants.some(x => !x.name && x.actorId)) {
+    try { for (const ac of await fs.doc("get", "Actor", { query: {} })) actors.set(ac._id, ac); } catch { /* */ }
+  }
+  return x => x.name || tokens.get(`${x.sceneId || combat.scene}.${x.tokenId}`)?.name || actors.get(x.actorId)?.name || x.actorId || "?";
 }
 
 export async function handleGm(fs, name, a) {
@@ -299,13 +305,15 @@ export async function handleGm(fs, name, a) {
       if (!c) throw new Error(message("No combat in progress", "Aucun combat en cours"));
       const cbs = (await fs.doc("get", "Combatant", { parentUuid: `Combat.${c._id}`, query: {} }))
         .sort((x, y) => (Number(y.initiative) || -99) - (Number(x.initiative) || -99));
-      if (a.action === "status") return { round: c.round, tour: c.turn, ordre: cbs.map(x => `${x.name || x.actorId} (${x.initiative ?? "—"})`) };
+      const label = await combatantLabels(fs, c, cbs);
+      if (a.action === "status") return { round: c.round, tour: c.turn, ordre: cbs.map(x => `${label(x)} (${x.initiative ?? "—"})`) };
       if (a.action === "end") { await fs.doc("delete", "Combat", { ids: [c._id], modifiedTime: now() }); return message("Combat ended", "Combat terminé"); }
       let round = Number(c.round) || 0, turn = c.turn == null ? -1 : Number(c.turn);
       if (a.action === "next") { turn++; if (round === 0 || turn >= cbs.length) { round++; turn = 0; } }
       if (a.action === "previous") { turn--; if (turn < 0) { round = Math.max(1, round - 1); turn = cbs.length - 1; } }
       await fs.doc("update", "Combat", { updates: [{ _id: c._id, round, turn }], modifiedTime: now() });
-      return message(`Round ${round}, current turn: ${cbs[turn]?.name || cbs[turn]?.actorId || "?"}`, `Round ${round}, au tour de : ${cbs[turn]?.name || cbs[turn]?.actorId || "?"}`);
+      const who = cbs[turn] ? label(cbs[turn]) : "?";
+      return message(`Round ${round}, current turn: ${who}`, `Round ${round}, au tour de : ${who}`);
     }
     case "gm_pause": {
       await fs.broadcast("pause", !!a.paused, { broadcast: true, userId: fs.userId });

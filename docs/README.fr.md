@@ -251,6 +251,7 @@ un véritable monde Foundry et une connexion ChatGPT.
 ## Sécurité
 
 - Authentification déléguée à Foundry (mêmes mots de passe, mêmes permissions).
+- Droits de lecture appliqués par le MCP pour les comptes non MJ (Foundry envoie tout le monde à chaque client et laisse le navigateur masquer) : sans droit, document absent des listes et refusé en lecture ; droit limité = titre seul ; observateur ou plus = contenu. Pages de journal à droit propre, compendiums selon le rôle, jetons et combattants cachés, messages chuchotés et dossiers sans contenu visible suivent les mêmes règles (`src/access.mjs`).
 - Anti brute-force : 10 échecs / 15 min / IP → 429.
 - Sessions Foundry libérées par défaut après 10 s d'inactivité (clé = hash utilisateur + mot de passe).
 - OAuth facultatif : compte Foundry de chaque joueur, PKCE, renouvellement et stockage chiffré des identifiants.
