@@ -1,7 +1,8 @@
 // Moteur d'avancement dnd5e côté serveur : rejoue ce que fait l'assistant de montée de niveau
 // de Foundry (AdvancementManager) à partir des "advancements" décrits dans les objets
 // (classe, sous-classe, espèce, historique, dons). Les choix sont demandés à l'appelant.
-import { translateDoc, SKILLS, ABIL } from "./dnd5e.mjs";
+import { translateDoc, SKILLS, ABIL, SKILLS_EN, ABIL_EN } from "./dnd5e.mjs";
+import { message } from "./i18n.mjs";
 import { fixId, sanitizeItemData } from "./repair.mjs";
 import { applyPatches } from "./patches.mjs";
 import { synthesize } from "./synth.mjs";
@@ -12,7 +13,8 @@ const advList = item => {
 };
 const LANGS = ["common", "sign", "draconic", "dwarvish", "elvish", "giant", "gnomish", "goblin", "halfling", "orc",
   "abyssal", "celestial", "deep", "infernal", "primordial", "sylvan", "undercommon", "druidic", "cant"];
-const ARMOR = { lgt: "armures légères", med: "armures intermédiaires", hvy: "armures lourdes", shl: "boucliers" };
+const ARMOR = { lgt: message("light armor", "armures légères"), med: message("medium armor", "armures intermédiaires"),
+  hvy: message("heavy armor", "armures lourdes"), shl: message("shields", "boucliers") };
 
 // ---------- accès compendium ----------
 function parseUuid(uuid) {
@@ -22,11 +24,11 @@ function parseUuid(uuid) {
 export async function fetchUuid(fs, uuid) {
   // objets du monde : "Item.<id>" ou "Actor.<id>.Item.<id>"
   let m = /^Item\.([A-Za-z0-9]{16})$/.exec(uuid || "");
-  if (m) { const d = (await fs.doc("get", "Item", { query: { _id: m[1] } })).find(x => x._id === m[1]); if (d) return synthesize(fs, d, structuredClone(d)); throw new Error(`Introuvable : ${uuid}`); }
+  if (m) { const d = (await fs.doc("get", "Item", { query: { _id: m[1] } })).find(x => x._id === m[1]); if (d) return synthesize(fs, d, structuredClone(d)); throw new Error(message(`Not found: ${uuid}`, `Introuvable : ${uuid}`)); }
   m = /^Actor\.([A-Za-z0-9]{16})\.Item\.([A-Za-z0-9]{16})$/.exec(uuid || "");
-  if (m) { const d = (await fs.doc("get", "Item", { parentUuid: `Actor.${m[1]}`, query: {} })).find(x => x._id === m[2]); if (d) return d; throw new Error(`Introuvable : ${uuid}`); }
+  if (m) { const d = (await fs.doc("get", "Item", { parentUuid: `Actor.${m[1]}`, query: {} })).find(x => x._id === m[2]); if (d) return d; throw new Error(message(`Not found: ${uuid}`, `Introuvable : ${uuid}`)); }
   const p = parseUuid(uuid);
-  if (!p) throw new Error(`UUID de compendium invalide : ${uuid}`);
+  if (!p) throw new Error(message(`Invalid compendium UUID: ${uuid}`, `UUID de compendium invalide : ${uuid}`));
   const packs = (fs._packs2 ??= ((await fs.worldData()).packs || []));
   if (packs.some(x => x.id === p.pack)) {
     const d = (await fs.doc("get", p.type, { pack: p.pack, query: { _id: p.id } })).find(x => x._id === p.id);
@@ -36,7 +38,7 @@ export async function fetchUuid(fs, uuid) {
   // ressource (même _id) dans tous les compendiums installés du même type.
   const found = await findById(fs, p.type, p.id);
   if (found) { const raw = structuredClone(found.doc); return Object.assign(await synthesize(fs, await translateDoc(found.pack, found.doc), raw), { __pack: found.pack }); }
-  throw new Error(`Ressource introuvable dans les compendiums installés : ${uuid}`);
+  throw new Error(message(`Resource not found in installed compendiums: ${uuid}`, `Ressource introuvable dans les compendiums installés : ${uuid}`));
 }
 
 async function findById(fs, type, id) {
@@ -78,8 +80,8 @@ export async function spellLists(fs) {
 // ---------- description lisible des options ----------
 function traitLabel(k) {
   const [t, a, b] = k.split(":");
-  if (t === "skills") return `${SKILLS[a]?.[1] || a} (${k})`;
-  if (t === "saves") return `Sauvegarde ${ABIL[a] || a} (${k})`;
+  if (t === "skills") return `${message(SKILLS_EN[a], SKILLS[a]?.[1]) || a} (${k})`;
+  if (t === "saves") return `${message(`Saving throw ${ABIL_EN[a] || a}`, `Sauvegarde ${ABIL[a] || a}`)} (${k})`;
   if (t === "armor") return `${ARMOR[a] || a} (${k})`;
   return k;
 }
@@ -125,8 +127,8 @@ async function categoryOptions(fs, entry) {
 async function describeEntry(fs, e, kids) {
   if (e.type === "linked") { try { const d = await fetchUuid(fs, e.key); return `${e.count > 1 ? e.count + "× " : ""}${d.name}`; } catch { return e.key; } }
   if (e.type === "currency") return `${e.count} ${e.key}`;
-  if (["AND", "OR"].includes(e.type)) { const parts = []; for (const k of kids(e._id)) parts.push(await describeEntry(fs, k, kids)); return parts.join(e.type === "AND" ? " + " : " OU "); }
-  return `${e.count > 1 ? e.count + "× " : ""}${e.type}:${e.key} (au choix)`;
+  if (["AND", "OR"].includes(e.type)) { const parts = []; for (const k of kids(e._id)) parts.push(await describeEntry(fs, k, kids)); return parts.join(e.type === "AND" ? " + " : message(" OR ", " OU ")); }
+  return `${e.count > 1 ? e.count + "× " : ""}${e.type}:${e.key} ${message("(choose one)", "(au choix)")}`;
 }
 export async function planStartingEquipment(fs, item, choices) {
   const entries = item.system?.startingEquipment || [];
@@ -143,7 +145,7 @@ export async function planStartingEquipment(fs, item, choices) {
       if (!pick) {
         const options = [];
         for (const o of opts) options.push(`${await describeEntry(fs, o, kids)} — ${o._id}`);
-        pending.push({ id: key, objet: item.name, niveau: 1, type: "StartingEquipment", titre: "Équipement de départ (choix)", nombre: 1, options, aide: "Valeur = l'identifiant de l'option" });
+        pending.push({ id: key, objet: item.name, niveau: 1, type: "StartingEquipment", titre: message("Starting equipment (choice)", "Équipement de départ (choix)"), nombre: 1, options, aide: message("Value = option identifier", "Valeur = l'identifiant de l'option") });
         return;
       }
       await walk(pick); return;
@@ -153,7 +155,7 @@ export async function planStartingEquipment(fs, item, choices) {
     // catégorie (arme, armure, outil, focaliseur) : choix d'un objet
     const val = choices[key];
     if (!val) {
-      pending.push({ id: key, objet: item.name, niveau: 1, type: "StartingEquipment", titre: `Équipement de départ : ${e.type} « ${e.key} »`, nombre: 1, options: (await categoryOptions(fs, e)).slice(0, 80), aide: "Valeur = l'UUID de l'objet" });
+      pending.push({ id: key, objet: item.name, niveau: 1, type: "StartingEquipment", titre: message(`Starting equipment: ${e.type} "${e.key}"`, `Équipement de départ : ${e.type} « ${e.key} »`), nombre: 1, options: (await categoryOptions(fs, e)).slice(0, 80), aide: message("Value = item UUID", "Valeur = l'UUID de l'objet") });
       return;
     }
     items.push({ uuid: val, count: e.count || 1 });
@@ -221,9 +223,9 @@ export async function plan(fs, actor, item, { fromLevel, toLevel, choices = {}, 
       }
       const labels = [];
       for (const u of options.slice(0, 150)) { try { const d = await fetchUuid(fs, u); labels.push(`${d.name} — ${u}`); } catch { /* compendium absent */ } }
-      if (!labels.length && options.length) labels.push(`(options dans des compendiums non installés — fournis l'UUID de ton choix)`);
-      out.pending.push({ id: key(adv, l), objet: item.name, niveau: l, type: "ItemChoice", titre: adv.title || adv.name || "Choix",
-        aide: strip(adv.hint) || (c.restriction?.list?.length ? `Listes : ${c.restriction.list.join(", ")}, niveau ${c.restriction.level}` : ""),
+      if (!labels.length && options.length) labels.push(message("(options from compendiums that are not installed — provide the UUID of your choice)", "(options dans des compendiums non installés — fournis l'UUID de ton choix)"));
+      out.pending.push({ id: key(adv, l), objet: item.name, niveau: l, type: "ItemChoice", titre: adv.title || adv.name || message("Choice", "Choix"),
+        aide: strip(adv.hint) || (c.restriction?.list?.length ? message(`Lists: ${c.restriction.list.join(", ")}, level ${c.restriction.level}`, `Listes : ${c.restriction.list.join(", ")}, niveau ${c.restriction.level}`) : ""),
         nombre: count, options: labels });
       return out;
     }
@@ -263,7 +265,7 @@ export async function plan(fs, actor, item, { fromLevel, toLevel, choices = {}, 
       }
     }
     if (legacySpecies && adv.type === "AbilityScoreImprovement") {
-      warnings.push(`${item.name} : espèce d'un ancien livre — augmentations de caractéristique ignorées (PHB 2024, p. 38)`);
+      warnings.push(message(`${item.name}: species from an older book — ability score improvements ignored (PHB 2024, p. 38)`, `${item.name} : espèce d'un ancien livre — augmentations de caractéristique ignorées (PHB 2024, p. 38)`));
       continue;
     }
     if (adv.type === "HitPoints" && isClass) {
@@ -283,7 +285,7 @@ export async function plan(fs, actor, item, { fromLevel, toLevel, choices = {}, 
           const skip = it.optional && Array.isArray(choice(adv, l)) && !choice(adv, l).includes(uuid);
           if (skip) continue;
           let d;
-          try { d = await fetchUuid(fs, uuid); } catch (e) { warnings.push(`${item.name} niv. ${l} — ignoré : ${e.message}`); continue; }
+          try { d = await fetchUuid(fs, uuid); } catch (e) { warnings.push(message(`${item.name} lvl. ${l} — skipped: ${e.message}`, `${item.name} niv. ${l} — ignoré : ${e.message}`)); continue; }
           docs.push({ uuid, doc: d });
           if (depth < 3 && advList(d).length) {
             const sub = await plan(fs, actor, d, { fromLevel: 0, toLevel: Math.max(toLevel, 0), choices, isFirstClass, depth: depth + 1 });
@@ -303,7 +305,7 @@ export async function plan(fs, actor, item, { fromLevel, toLevel, choices = {}, 
           const picks = Array.isArray(val) ? val.filter(v => matchPool(v, ch.pool) || pool.includes(v)) : [];
           if (picks.length < ch.count) {
             missing = true;
-            pending.push({ id: key(adv, l), objet: item.name, niveau: l, type: "Trait", titre: adv.title || adv.name || "Maîtrises",
+            pending.push({ id: key(adv, l), objet: item.name, niveau: l, type: "Trait", titre: adv.title || adv.name || message("Proficiencies", "Maîtrises"),
               aide: strip(adv.hint), nombre: ch.count, options: pool.filter(o => !(c.grants || []).includes(o)).map(traitLabel) });
           } else chosen.push(...picks.slice(0, ch.count));
         }
@@ -314,8 +316,8 @@ export async function plan(fs, actor, item, { fromLevel, toLevel, choices = {}, 
         const val = choice(adv, l);
         const fixed = Object.entries(c.fixed || {}).filter(([, v]) => v).length;
         if (!val && !fixed) {
-          pending.push({ id: key(adv, l), objet: item.name, niveau: l, type: "AbilityScoreImprovement", titre: adv.title || "Amélioration de caractéristique",
-            aide: strip(adv.hint) || `Répartir ${c.points ?? 2} points (max +${c.cap ?? 2} par carac), ou { "feat": "<uuid du don>" }`,
+          pending.push({ id: key(adv, l), objet: item.name, niveau: l, type: "AbilityScoreImprovement", titre: adv.title || message("Ability score improvement", "Amélioration de caractéristique"),
+            aide: strip(adv.hint) || message(`Allocate ${c.points ?? 2} points (max +${c.cap ?? 2} per ability), or { "feat": "<feat UUID>" }`, `Répartir ${c.points ?? 2} points (max +${c.cap ?? 2} par carac), ou { "feat": "<uuid du don>" }`),
             points: c.points ?? 2, max_par_carac: c.cap ?? 2, verrouillees: c.locked || [] });
           break;
         }
@@ -326,7 +328,9 @@ export async function plan(fs, actor, item, { fromLevel, toLevel, choices = {}, 
         } else if (val) {
           const pts = Object.values(val).reduce((a, b) => a + Number(b || 0), 0);
           if (pts > (c.points ?? 2) || Object.entries(val).some(([k, v]) => v > (c.cap ?? 2) || (c.locked || []).includes(k)))
-            throw new Error(`Répartition invalide pour « ${adv.title || "ASI"} » : ${JSON.stringify(val)} (points ${c.points ?? 2}, max +${c.cap ?? 2}, verrouillées ${(c.locked || []).join(",") || "aucune"})`);
+            throw new Error(message(
+              `Invalid allocation for "${adv.title || "ASI"}": ${JSON.stringify(val)} (points ${c.points ?? 2}, max +${c.cap ?? 2}, locked ${(c.locked || []).join(",") || "none"})`,
+              `Répartition invalide pour « ${adv.title || "ASI"} » : ${JSON.stringify(val)} (points ${c.points ?? 2}, max +${c.cap ?? 2}, verrouillées ${(c.locked || []).join(",") || "aucune"})`));
         }
         steps.push({ kind: "asi", item, adv, level: l, assignments: val?.feat ? {} : { ...(c.fixed || {}), ...(val || {}) }, featDoc, featUuid: val?.feat });
         if (featSub) { steps.push(...featSub.steps); pending.push(...featSub.pending); warnings.push(...featSub.warnings); }
@@ -365,9 +369,9 @@ export async function plan(fs, actor, item, { fromLevel, toLevel, choices = {}, 
           }
           const labels = [];
           for (const u of options.slice(0, 150)) { try { const d = await fetchUuid(fs, u); labels.push(`${d.name} — ${u}`); } catch { /* compendium absent */ } }
-          if (!labels.length && options.length) labels.push(`(options dans des compendiums non installés — fournis l'UUID de ton choix)`);
-          pending.push({ id: key(adv, l), objet: item.name, niveau: l, type: "ItemChoice", titre: adv.title || "Choix",
-            aide: strip(adv.hint) || (c.restriction?.list ? `Listes : ${c.restriction.list.join(", ")}, niveau ${c.restriction.level}` : ""),
+          if (!labels.length && options.length) labels.push(message("(options from compendiums that are not installed — provide the UUID of your choice)", "(options dans des compendiums non installés — fournis l'UUID de ton choix)"));
+          pending.push({ id: key(adv, l), objet: item.name, niveau: l, type: "ItemChoice", titre: adv.title || message("Choice", "Choix"),
+            aide: strip(adv.hint) || (c.restriction?.list ? message(`Lists: ${c.restriction.list.join(", ")}, level ${c.restriction.level}`, `Listes : ${c.restriction.list.join(", ")}, niveau ${c.restriction.level}`) : ""),
             nombre: count, options: labels });
           break;
         }
@@ -387,8 +391,8 @@ export async function plan(fs, actor, item, { fromLevel, toLevel, choices = {}, 
       case "Subclass": {
         const val = choice(adv, l);
         if (!val) {
-          pending.push({ id: key(adv, l), objet: item.name, niveau: l, type: "Subclass", titre: "Sous-classe",
-            aide: "UUID de la sous-classe (search_compendium item_type=subclass), ex. Compendium.dnd5e.classes24.Item.phbclcLifeDomain" });
+          pending.push({ id: key(adv, l), objet: item.name, niveau: l, type: "Subclass", titre: message("Subclass", "Sous-classe"),
+            aide: message("Subclass UUID (search_compendium item_type=subclass), e.g. Compendium.dnd5e.classes24.Item.phbclcLifeDomain", "UUID de la sous-classe (search_compendium item_type=subclass), ex. Compendium.dnd5e.classes24.Item.phbclcLifeDomain") });
           break;
         }
         const sub = await fetchUuid(fs, val);
@@ -399,7 +403,7 @@ export async function plan(fs, actor, item, { fromLevel, toLevel, choices = {}, 
       }
       case "Size": {
         const val = choice(adv, l) || (c.sizes?.length === 1 ? c.sizes[0] : null);
-        if (!val) pending.push({ id: key(adv, l), objet: item.name, niveau: l, type: "Size", titre: "Taille", options: c.sizes });
+        if (!val) pending.push({ id: key(adv, l), objet: item.name, niveau: l, type: "Size", titre: message("Size", "Taille"), options: c.sizes });
         else steps.push({ kind: "size", item, adv, level: l, size: val });
         break;
       }
@@ -473,7 +477,7 @@ export async function apply(fs, actor, rootItemId, steps, { hpMode = "avg", isFi
         for (const r of res) { created.set(r.uuid, r.id); const src = s.docs.find(d => d.uuid === r.uuid).doc; src._id = r.id; }
         const added = Object.fromEntries(res.map(r => [r.id, r.uuid]));
         if (s.item._id) setAdv(s.item._id, s.adv._id, s.choiceStore ? { [`value.added.${s.level}`]: added } : { "value.added": added });
-        log.push(`${s.item.name} niv. ${s.level} — ${s.adv.title || s.adv.type} : ${res.map(r => r.name).join(", ")}`);
+        log.push(message(`${s.item.name} lvl. ${s.level} — ${s.adv.title || s.adv.type}: ${res.map(r => r.name).join(", ")}`, `${s.item.name} niv. ${s.level} — ${s.adv.title || s.adv.type} : ${res.map(r => r.name).join(", ")}`));
         break;
       }
       case "trait": {
@@ -488,7 +492,7 @@ export async function apply(fs, actor, rootItemId, steps, { hpMode = "avg", isFi
           else if (["di", "dr", "dv", "ci"].includes(t)) { tr[t] ??= { value: [] }; addTo(tr[t].value, a); }
         }
         if (s.item._id) setAdv(s.item._id, s.adv._id, { "value.chosen": s.chosen });
-        log.push(`${s.item.name} niv. ${s.level} — ${s.adv.title || "Maîtrises"} : ${s.chosen.map(traitLabel).join(", ")}`);
+        log.push(message(`${s.item.name} lvl. ${s.level} — ${s.adv.title || "Proficiencies"}: ${s.chosen.map(traitLabel).join(", ")}`, `${s.item.name} niv. ${s.level} — ${s.adv.title || "Maîtrises"} : ${s.chosen.map(traitLabel).join(", ")}`));
         break;
       }
       case "asi": {
@@ -496,16 +500,16 @@ export async function apply(fs, actor, rootItemId, steps, { hpMode = "avg", isFi
           const res = await createItems([{ uuid: s.featUuid, doc: s.featDoc }], originOf(s), s.adv._id);
           created.set(s.featUuid, res[0]?.id); s.featDoc._id = res[0]?.id;
           if (s.item._id) setAdv(s.item._id, s.adv._id, { "value.type": "feat", "value.feat": { [res[0].id]: s.featUuid } });
-          log.push(`${s.item.name} niv. ${s.level} — Don : ${res[0]?.name}`);
+          log.push(message(`${s.item.name} lvl. ${s.level} — Feat: ${res[0]?.name}`, `${s.item.name} niv. ${s.level} — Don : ${res[0]?.name}`));
         } else {
           const ch = [];
           for (const [k, v] of Object.entries(s.assignments)) if (v) {
             const before = Number(abil[k]?.value) || 10;
             abil[k] = { ...(abil[k] || {}), value: Math.min(20, before + Number(v)) };
-            ch.push(`${ABIL[k]} ${before}→${abil[k].value}`);
+            ch.push(`${message(ABIL_EN[k], ABIL[k])} ${before}→${abil[k].value}`);
           }
           if (s.item._id) setAdv(s.item._id, s.adv._id, { "value.type": "asi", "value.assignments": s.assignments });
-          log.push(`${s.item.name} niv. ${s.level} — Amélioration : ${ch.join(", ")}`);
+          log.push(message(`${s.item.name} lvl. ${s.level} — Improvement: ${ch.join(", ")}`, `${s.item.name} niv. ${s.level} — Amélioration : ${ch.join(", ")}`));
         }
         break;
       }
@@ -513,14 +517,14 @@ export async function apply(fs, actor, rootItemId, steps, { hpMode = "avg", isFi
         const res = await createItems([{ uuid: s.uuid, doc: s.doc }], originOf(s), s.adv._id);
         created.set(s.uuid, res[0].id); s.doc._id = res[0].id;
         if (s.item._id) setAdv(s.item._id, s.adv._id, { "value.document": res[0].id, "value.uuid": s.uuid });
-        log.push(`${s.item.name} niv. ${s.level} — Sous-classe : ${res[0].name}`);
+        log.push(message(`${s.item.name} lvl. ${s.level} — Subclass: ${res[0].name}`, `${s.item.name} niv. ${s.level} — Sous-classe : ${res[0].name}`));
         break;
       }
       case "equipment": {
         const names = [];
         for (const { uuid, count } of s.items) {
           let doc;
-          try { doc = await fetchUuid(fs, uuid); } catch (e) { log.push(`Équipement ignoré : ${e.message}`); continue; }
+          try { doc = await fetchUuid(fs, uuid); } catch (e) { log.push(message(`Equipment skipped: ${e.message}`, `Équipement ignoré : ${e.message}`)); continue; }
           // un objet pris seul dans le compendium ne garde pas son conteneur de compendium (ex. sac de couchage d'un paquetage)
           const sys = { ...doc.system, container: null, ...(count > 1 ? { quantity: count } : {}) };
           const res = await createItems([{ uuid, doc: { ...doc, system: sys } }], originOf(s), "startingEquipment");
@@ -532,11 +536,11 @@ export async function apply(fs, actor, rootItemId, steps, { hpMode = "avg", isFi
             const cdocs = [];
             for (const c of contents) { try { cdocs.push({ uuid: `Compendium.${doc.__pack}.Item.${c._id}`, doc: await fetchUuid(fs, `Compendium.${doc.__pack}.Item.${c._id}`) }); } catch { /* */ } }
             for (const cd of cdocs) cd.doc = { ...cd.doc, system: { ...cd.doc.system, container: res[0].id } };
-            if (cdocs.length) { await createItems(cdocs, originOf(s), "startingEquipment"); names.push(`(contenu : ${cdocs.map(c => c.doc.name).join(", ")})`); }
+            if (cdocs.length) { await createItems(cdocs, originOf(s), "startingEquipment"); names.push(message(`(contents: ${cdocs.map(c => c.doc.name).join(", ")})`, `(contenu : ${cdocs.map(c => c.doc.name).join(", ")})`)); }
           }
         }
         for (const [k, v] of Object.entries(s.currency)) actorUpd[`system.currency.${k}`] = (Number(actor.system?.currency?.[k]) || 0) + v;
-        log.push(`${s.item.name} — Équipement de départ : ${names.join(", ")}${Object.keys(s.currency).length ? " ; " + Object.entries(s.currency).map(([k, v]) => `${v} ${k}`).join(", ") : ""}`);
+        log.push(message(`${s.item.name} — Starting equipment: ${names.join(", ")}${Object.keys(s.currency).length ? " ; " + Object.entries(s.currency).map(([k, v]) => `${v} ${k}`).join(", ") : ""}`, `${s.item.name} — Équipement de départ : ${names.join(", ")}${Object.keys(s.currency).length ? " ; " + Object.entries(s.currency).map(([k, v]) => `${v} ${k}`).join(", ") : ""}`));
         break;
       }
       case "size":

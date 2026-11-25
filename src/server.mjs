@@ -780,7 +780,7 @@ async function runTool(fs, params) {
           // le paramètre spells n'est pas exposé par tous les clients : des choix « spells:… » valent spells:"all"
           const wantSpells = a.spells === "all" || Object.keys(a.choices || {}).some(k => k.startsWith("spells:"));
           const onlySpells = isClass && target <= current && wantSpells;
-          if (isClass && target <= current && !onlySpells) return out(`${root.name} est déjà niveau ${current}`);
+          if (isClass && target <= current && !onlySpells) return out(message(`${root.name} is already level ${current}`, `${root.name} est déjà niveau ${current}`));
           const isFirstClass = isClass && (isNew ? classes.length === 0 : (actor.system?.details?.originalClass ? actor.system.details.originalClass === root._id : classes[0]?._id === root._id));
           const from = isClass ? current + 1 : 0;
           // inclut les avancements de la sous-classe existante
@@ -810,7 +810,7 @@ async function runTool(fs, params) {
             spellPlan = await planClassSpells(fs, actor, root, Math.max(target, current), a.choices || {});
             pending.push(...spellPlan.pending);
           }
-          if (pending.length) return out({ choix_requis: pending, avertissements: warnings.length ? warnings : undefined, rappel: "Rappelle 'advance' avec les mêmes paramètres + choices { id: valeur }. Rien n'a encore été appliqué." });
+          if (pending.length) return out({ choix_requis: pending, avertissements: warnings.length ? warnings : undefined, rappel: message("Call 'advance' again with the same parameters + choices { id: value }. Nothing has been applied yet.", "Rappelle 'advance' avec les mêmes paramètres + choices { id: valeur }. Rien n'a encore été appliqué.") });
           const hadClass = (actor.items || []).some(i => i.type === "class") || (await fs.doc("get", "Item", { parentUuid: `Actor.${actor._id}`, query: { type: "class" } })).some(i => i.type === "class");
           const slotsBefore = hadClass ? slotMax(actor) : {};
           const hpBefore = hadClass ? sheet(actor).pv : { max: 0 };   // PV avant (0 sans classe) : les PV gagnés s'ajoutent aux PV courants
@@ -831,9 +831,9 @@ async function runTool(fs, params) {
             await fs.doc("update", "Item", { parentUuid: `Actor.${actor._id}`, updates: [{ _id: root._id, "system.levels": target }], modifiedTime: Date.now() });
           }
           const log = await advApply(fs, actor, root._id, steps, { hpMode: a.hp || "avg", isFirstClass });
-          if (spellPlan) log.push("Sorts — " + await applyClassSpells(fs, await findActor(fs, actor._id), spellPlan.step, root._id));
+          if (spellPlan) log.push(message("Spells — ", "Sorts — ") + await applyClassSpells(fs, await findActor(fs, actor._id), spellPlan.step, root._id));
           const castNew = await ensureCastSpells(fs, actor._id);   // sorts des activités « Lancer un sort » (comme Foundry)
-          if (castNew.length) log.push("Sorts d'aptitude : " + castNew.join(", "));
+          if (castNew.length) log.push(message("Feature spells: ", "Sorts d'aptitude : ") + castNew.join(", "));
           const fresh = await findActor(fs, actor._id);
           let after = sheet(fresh);
           // PV et emplacements de sort gagnés : ajoutés aux valeurs courantes (comme une montée de niveau dans Foundry)
@@ -854,7 +854,7 @@ async function runTool(fs, params) {
             after = sheet(await findActor(fs, actor._id));
           }
           return out({ applique: log, avertissements: warnings.length ? warnings : undefined, niveau: after.niveau, pv_max: after.pv.max, caracs: after.caracs,
-            rappel_sorts: isClass && root.system?.spellcasting?.progression && root.system.spellcasting.progression !== "none" ? "Les sorts préparés/connus se choisissent ensuite (search_compendium + add_from_compendium), comme dans Foundry." : undefined });
+            rappel_sorts: isClass && root.system?.spellcasting?.progression && root.system.spellcasting.progression !== "none" ? message("Select prepared/known spells next (search_compendium + add_from_compendium), as in Foundry.", "Les sorts préparés/connus se choisissent ensuite (search_compendium + add_from_compendium), comme dans Foundry.") : undefined });
         }
         default:
           if (params.name.startsWith("gm_")) {

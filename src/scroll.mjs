@@ -6,6 +6,7 @@
 import { fetchUuid } from "./advancement.mjs";
 import { loc } from "./cast.mjs";
 import { sanitizeItemData } from "./repair.mjs";
+import { message } from "./i18n.mjs";
 
 // CONFIG.DND5E.spellScrollIds / spellScrollValues (dnd5e 6.1)
 const SCROLL_IDS = Object.fromEntries([["0", "Ca"], ["1", "1s"], ["2", "2n"], ["3", "3r"], ["4", "4t"], ["5", "5t"], ["6", "6t"], ["7", "7t"], ["8", "8t"], ["9", "9t"]]
@@ -16,7 +17,7 @@ const ACTIVITY_ID = "dnd5escrollspell"; // staticID("dnd5escrollspell")
 /** Données d'un parchemin pour le sort `spellUuid` (niveau du sort, ou `level` s'il est plus haut). */
 export async function scrollFromSpell(fs, spellUuid, level) {
   const spell = await fetchUuid(fs, spellUuid);
-  if (spell?.type !== "spell") throw new Error(`Pas un sort : ${spellUuid}`);
+  if (spell?.type !== "spell") throw new Error(message(`Not a spell: ${spellUuid}`, `Pas un sort : ${spellUuid}`));
   const lvl = Math.max(Number(spell.system?.level) || 0, Number(level) || 0);
   const scrollUuid = SCROLL_IDS[lvl];
   const scroll = structuredClone(await fetchUuid(fs, scrollUuid));
