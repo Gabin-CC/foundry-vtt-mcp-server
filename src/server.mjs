@@ -17,6 +17,7 @@ import { ensureCastSpells } from "./cast.mjs";
 import { GM_TOOLS, GM_ROLE, handleGm } from "./gm.mjs";
 import { sanitizeItemData, itemWarnings } from "./repair.mjs";
 import { applyPatches } from "./patches.mjs";
+import { resolveImportEntry } from "./edition.mjs";
 import { scrollFromSpell } from "./scroll.mjs";
 import { render, nextPage, MAX_OUT } from "./paging.mjs";
 import { auditTranslation, searchText, findReferences } from "./corpus.mjs";
@@ -590,32 +591,12 @@ async function runTool(fs, params) {
               if (e.enchant) { d._id = randomId(); enchants.push({ type: t, id: d._id, ...e.enchant }); }
               continue;
             }
-            const pack = packs.find(p => p.id === e.pack);
-            if (!pack) throw new Error(`Compendium inconnu : ${e.pack}`);
-            // « rules: 2024 » (ou item_type 2024) : préférer l'entrée 2024 ; « 2014 » : refuser une entrée 2024
-            let packId = pack.id;
-            if (!/24$/.test(packId) && (e.rules === "2024" || e.item_type === "2024")) {
-              const alt = packs.find(p => p.id === `${packId}24` && p.type === pack.type);
-              if (alt) packId = alt.id;
-            }
-            const pool = e.rules === "2014" && /24$/.test(packId) ? packs.filter(p => p.id === packId.replace(/24$/, "")) : [packs.find(p => p.id === packId)];
-            if (!e.id && e.name) {
-              const q = norm(e.name);
-              const pools = pool.length ? pool : [pack];
-              let hit = null;
-              for (const p of pools) {
-                if (!p) continue;
-                hit = (await packIndex(fs, p)).find(x => (norm(x.name) === q || norm(x.name_fr) === q) && (!e.item_type || x.type === e.item_type));
-                if (hit) { packId = p.id; break; }
-              }
-              if (!hit) { missing.push(e.name); continue; }
-              e.id = hit._id;
-            }
-            const src = (await fs.doc("get", pack.type, { pack: packId, query: { _id: e.id } })).find(x => x._id === e.id);
-            if (!src) throw new Error(`Entrée ${e.id} introuvable dans ${packId}`);
-            const d = await translateDoc(packId, src);
+            const selected = await resolveImportEntry(fs, packs, e, p => packIndex(fs, p));
+            if (selected.missing) { missing.push(selected.missing); continue; }
+            const { pack, source: src, id } = selected;
+            const d = await translateDoc(pack.id, src);
             delete d._id; delete d.folder; delete d.sort; delete d.ownership;
-            d._stats = { ...(d._stats || {}), compendiumSource: `Compendium.${packId}.${pack.type}.${e.id}` };
+            d._stats = { ...(d._stats || {}), compendiumSource: `Compendium.${pack.id}.${pack.type}.${id}` };
             if (e.quantity != null && d.system) d.system.quantity = e.quantity;
             if (e.equipped != null && d.system) d.system.equipped = e.equipped;
             if (d.type === "class" && e.levels) {

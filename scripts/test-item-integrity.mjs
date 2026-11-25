@@ -12,7 +12,7 @@ process.env.SNAPSHOT_DIR = path.join(blocker, "snapshots");
 process.env.NO_LISTEN = "1";
 after(() => fs.rmSync(temporary, { recursive: true, force: true }));
 
-const [{ itemDiff, syncUpdate, syncItems }, { applyPatches }, { patchItems }, { useItem }, { fixId }, { handleTool }] =
+const [{ itemDiff, syncUpdate, syncItems }, { applyPatches }, { patchItems }, { useItem }, { fixId, scanAndRepair }, { handleTool }] =
   await Promise.all([
     import("../src/sync.mjs"), import("../src/patches.mjs"), import("../src/patchrun.mjs"),
     import("../src/dnd5e.mjs"), import("../src/repair.mjs"), import("../src/server.mjs")
@@ -125,6 +125,77 @@ test("gm_sync_items never writes if its recovery snapshot fails", async () => {
       return [];
     } };
   await assert.rejects(syncItems(session, { actor: { _id: ACTOR_ID, name: "Hero", items: [item] }, apply: true }), /ENOTDIR/);
+  assert.equal(writes.length, 0);
+});
+
+test("source fallback rejects an unrelated item with the same compendium ID", async () => {
+  const target = { _id: ITEM_ID, name: "Heroic Feature", type: "feat", effects: [],
+    _stats: { compendiumSource: `Compendium.absent.features.Item.${ITEM_ID}` },
+    system: { activities: {}, advancement: {} } };
+  const unrelated = { _id: ITEM_ID, name: "Completely Different", type: "feat", effects: [],
+    system: { activities: { [ACTIVITY_ID]: { _id: ACTIVITY_ID, type: "attack" } }, advancement: {} } };
+  const session = {
+    async worldData() { return { packs: [{ id: "world.unrelated", type: "Item" }] }; },
+    async doc(action, type, options) {
+      if (options.index) return [{ _id: ITEM_ID }];
+      if (options.pack) return [unrelated];
+      return [];
+    }
+  };
+  const report = await syncItems(session, { actor: { _id: ACTOR_ID, name: "Hero", items: [target] } });
+  assert.equal(report.detail[0].probleme, "source introuvable");
+  assert.equal(report.modifies, 0);
+});
+
+test("source fallback accepts a uniquely verified item by name and type", async () => {
+  const target = { _id: ITEM_ID, name: "Heroic Feature", type: "feat", effects: [],
+    _stats: { compendiumSource: `Compendium.absent.features.Item.${ITEM_ID}` },
+    system: { activities: {}, advancement: {} } };
+  const candidate = { _id: ITEM_ID, name: "Heroic Feature", type: "feat", effects: [],
+    system: { activities: { [ACTIVITY_ID]: { _id: ACTIVITY_ID, type: "attack" } }, advancement: {} } };
+  const session = {
+    async worldData() { return { packs: [{ id: "world.verified", type: "Item" }] }; },
+    async doc(action, type, options) {
+      if (options.index) return [{ _id: ITEM_ID }];
+      if (options.pack) return [candidate];
+      return [];
+    }
+  };
+  const report = await syncItems(session, { actor: { _id: ACTOR_ID, name: "Hero", items: [target] } });
+  assert.equal(report.a_completer, 1);
+  assert.match(report.detail[0].manque[0], /activité/);
+});
+
+test("source fallback refuses ambiguous equal-name matches across compendiums", async () => {
+  const target = { _id: ITEM_ID, name: "Heroic Feature", type: "feat", effects: [],
+    _stats: { compendiumSource: `Compendium.absent.features.Item.${ITEM_ID}` },
+    system: { activities: {}, advancement: {} } };
+  const candidate = { _id: ITEM_ID, name: "Heroic Feature", type: "feat", effects: [],
+    system: { activities: { [ACTIVITY_ID]: { _id: ACTIVITY_ID, type: "attack" } }, advancement: {} } };
+  const session = {
+    async worldData() { return { packs: ["world.a", "world.b"].map(id => ({ id, type: "Item" })) }; },
+    async doc(action, type, options) {
+      if (options.index) return [{ _id: ITEM_ID }];
+      if (options.pack) return [candidate];
+      return [];
+    }
+  };
+  const report = await syncItems(session, { actor: { _id: ACTOR_ID, name: "Hero", items: [target] } });
+  assert.match(report.detail[0].probleme, /Ambiguous compendium source/);
+});
+
+test("gm_check_ids never begins bulk repairs if its combined snapshot fails", async () => {
+  const broken = { _id: ITEM_ID, name: "Broken ID", type: "feat",
+    system: { activities: { "bad-id": { _id: "bad-id", type: "attack" } }, advancement: {} } };
+  const writes = [];
+  const session = { userId: "gm", user: { name: "GM" },
+    async doc(action, type, options) {
+      if (action === "update") { writes.push(options); return []; }
+      if (type === "Actor") return [{ _id: ACTOR_ID, name: "Hero" }];
+      return [broken];
+    }
+  };
+  await assert.rejects(scanAndRepair(session, { apply: true, actors: true, items: false, packs: false }), /ENOTDIR/);
   assert.equal(writes.length, 0);
 });
 
