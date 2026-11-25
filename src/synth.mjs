@@ -219,8 +219,13 @@ async function subclass(fs, raw) {
  * vient de Plutonium et n'en a aucun. Sans effet sinon.
  */
 export async function synthesize(fs, doc, raw = doc) {
-  const has = a => Array.isArray(a) ? a.length : Object.keys(a || {}).length;
-  if (!doc?.system || has(doc.system.advancement) || !raw?.flags?.plutonium) return doc;
+  const list = a => Array.isArray(a) ? a : Object.values(a || {});
+  if (!doc?.system || !raw?.flags?.plutonium) return doc;
+  const existing = list(doc.system.advancement);
+  // sous-classe Plutonium avec seulement des valeurs d'échelle (ex. dés de supériorité) : aptitudes à reconstruire
+  const grants = existing.filter(a => ["ItemGrant", "ItemChoice"].includes(a.type));
+  const merge = doc.type === "subclass" && existing.length && !grants.length;
+  if (existing.length && !merge) return doc;
   let r = null;
   try {
     if (doc.type === "background") r = await background(fs, raw);
@@ -228,7 +233,7 @@ export async function synthesize(fs, doc, raw = doc) {
     else if (doc.type === "subclass") r = await subclass(fs, raw);
   } catch { r = null; }
   if (!r) return doc;
-  doc.system.advancement = Object.fromEntries(r.advancement.map(a => [a._id, a]));
+  doc.system.advancement = Object.fromEntries([...(merge ? existing : []), ...r.advancement].map(a => [a._id, a]));
   if (r.startingEquipment?.length && !(doc.system.startingEquipment || []).length) doc.system.startingEquipment = r.startingEquipment;
   doc.flags = { ...(doc.flags || {}), mcp: { ...(doc.flags?.mcp || {}), synthesizedAdvancement: true } };
   return doc;
