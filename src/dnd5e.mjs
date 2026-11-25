@@ -4,6 +4,7 @@ import crypto from "node:crypto";
 import { FOUNDRY } from "./foundry.mjs";
 import { evaluateNumericFormula } from "./formula-numeric.mjs";
 import { setSafePath } from "./security.mjs";
+import { message } from "./i18n.mjs";
 
 // ====================== DÉS ======================
 // Formules : 2d6+3, 1d20+5, 2d20kh1+4 (avantage), 2d20kl1 (désavantage), 4d6kh3, d8, 3d6-1, 1d4+1d6+2
@@ -142,11 +143,15 @@ export function evalBonus(v, actor) {
 
 // ====================== STATS DÉRIVÉES ======================
 export const ABIL = { str: "FOR", dex: "DEX", con: "CON", int: "INT", wis: "SAG", cha: "CHA" };
+export const ABIL_EN = { str: "STR", dex: "DEX", con: "CON", int: "INT", wis: "WIS", cha: "CHA" };
 export const SKILLS = { acr: ["dex", "Acrobaties"], ani: ["wis", "Dressage"], arc: ["int", "Arcanes"], ath: ["str", "Athlétisme"],
   dec: ["cha", "Tromperie"], his: ["int", "Histoire"], ins: ["wis", "Perspicacité"], itm: ["cha", "Intimidation"],
   inv: ["int", "Investigation"], med: ["wis", "Médecine"], nat: ["int", "Nature"], prc: ["wis", "Perception"],
   prf: ["cha", "Représentation"], per: ["cha", "Persuasion"], rel: ["int", "Religion"], slt: ["dex", "Escamotage"],
   ste: ["dex", "Discrétion"], sur: ["wis", "Survie"] };
+export const SKILLS_EN = { acr: "Acrobatics", ani: "Animal Handling", arc: "Arcana", ath: "Athletics", dec: "Deception",
+  his: "History", ins: "Insight", itm: "Intimidation", inv: "Investigation", med: "Medicine", nat: "Nature",
+  prc: "Perception", prf: "Performance", per: "Persuasion", rel: "Religion", slt: "Sleight of Hand", ste: "Stealth", sur: "Survival" };
 
 export function derive(actor) {
   actor = withEffects(actor);
@@ -168,22 +173,22 @@ export function derive(actor) {
 export function checkBonus(actor, kind, key) {
   actor = withEffects(actor);
   const d = derive(actor), s = actor.system, ev = v => evalBonus(v, actor);
-  if (kind === "ability") return { bonus: d.mods[key] + ev(s.bonuses?.abilities?.check) + ev(s.abilities?.[key]?.bonuses?.check) + ev(s.abilities?.[key]?.check?.roll?.bonus), label: `Test de ${ABIL[key]}` };
+  if (kind === "ability") return { bonus: d.mods[key] + ev(s.bonuses?.abilities?.check) + ev(s.abilities?.[key]?.bonuses?.check) + ev(s.abilities?.[key]?.check?.roll?.bonus), label: message(`${ABIL_EN[key]} check`, `Test de ${ABIL[key]}`) };
   if (kind === "save") {
     const p = num(s.abilities?.[key]?.proficient);
-    return { bonus: d.mods[key] + Math.floor(p * d.prof) + ev(s.abilities?.[key]?.bonuses?.save) + ev(s.abilities?.[key]?.save?.roll?.bonus) + ev(s.bonuses?.abilities?.save), label: `Sauvegarde de ${ABIL[key]}` };
+    return { bonus: d.mods[key] + Math.floor(p * d.prof) + ev(s.abilities?.[key]?.bonuses?.save) + ev(s.abilities?.[key]?.save?.roll?.bonus) + ev(s.bonuses?.abilities?.save), label: message(`${ABIL_EN[key]} saving throw`, `Sauvegarde de ${ABIL[key]}`) };
   }
   if (kind === "skill") {
     const sk = s.skills?.[key]; const [ab, name] = SKILLS[key] || [];
-    if (!ab) throw new Error(`Compétence inconnue : ${key}`);
+    if (!ab) throw new Error(message(`Unknown skill: ${key}`, `Compétence inconnue : ${key}`));
     const abil = sk?.ability || ab;
-    return { bonus: d.mods[abil] + Math.floor(num(sk?.value) * d.prof) + ev(sk?.bonuses?.check) + ev(sk?.roll?.bonus) + ev(s.bonuses?.abilities?.skill) + ev(s.bonuses?.abilities?.check), label: `Test de ${name} (${ABIL[abil]})` };
+    return { bonus: d.mods[abil] + Math.floor(num(sk?.value) * d.prof) + ev(sk?.bonuses?.check) + ev(sk?.roll?.bonus) + ev(s.bonuses?.abilities?.skill) + ev(s.bonuses?.abilities?.check), label: message(`${SKILLS_EN[key]} check (${ABIL_EN[abil]})`, `Test de ${name} (${ABIL[abil]})`) };
   }
   if (kind === "initiative") {
     const alert = s.attributes?.init?.prof || actor.flags?.dnd5e?.initiativeAlert;
     return { bonus: d.mods[s.attributes?.init?.ability || "dex"] + ev(s.attributes?.init?.bonus) + (alert ? d.prof : 0) + ev(s.bonuses?.abilities?.check), label: "Initiative" };
   }
-  throw new Error(`Type de test inconnu : ${kind}`);
+  throw new Error(message(`Unknown check type: ${kind}`, `Type de test inconnu : ${kind}`));
 }
 
 function armorClass(actor, d) {
@@ -253,17 +258,17 @@ export function sheet(actor) {
     niveau: d.level, bonus_maitrise: d.prof,
     pv: { actuels: hp.value, max: hpMax, temp: hp.temp || 0 },
     ca_estimee: armorClass(actor, d),
-    caracs: Object.fromEntries(Object.entries(ABIL).map(([k, l]) => [l, `${s.abilities?.[k]?.value} (${sign(d.mods[k])})${num(s.abilities?.[k]?.proficient) ? " ★sauv" : ""}`])),
+    caracs: Object.fromEntries(Object.entries(ABIL).map(([k, l]) => [l, `${s.abilities?.[k]?.value} (${sign(d.mods[k])})${num(s.abilities?.[k]?.proficient) ? message(" ★save", " ★sauv") : ""}`])),
     sauvegardes: Object.fromEntries(Object.entries(ABIL).map(([k, l]) => [l, sign(checkBonus(actor, "save", k).bonus)])),
     initiative: sign(checkBonus(actor, "initiative").bonus),
     perception_passive: 10 + checkBonus(actor, "skill", "prc").bonus,
-    competences_maitrisees: Object.entries(s.skills || {}).filter(([, v]) => num(v.value) > 0).map(([k, v]) => `${SKILLS[k]?.[1] || k} ${sign(checkBonus(actor, "skill", k).bonus)}${num(v.value) >= 2 ? " (expertise)" : ""}`),
+    competences_maitrisees: Object.entries(s.skills || {}).filter(([, v]) => num(v.value) > 0).map(([k, v]) => `${message(SKILLS_EN[k], SKILLS[k]?.[1]) || k} ${sign(checkBonus(actor, "skill", k).bonus)}${num(v.value) >= 2 ? " (expertise)" : ""}`),
     incantation: d.classes.some(c => c.system?.spellcasting?.progression && c.system.spellcasting.progression !== "none")
       ? { carac: ABIL[d.scAbility], attaque: sign(d.spellAttack), dd: d.spellDC } : null,
     emplacements: (() => { const mx = slotMax(actor); return Object.fromEntries(Object.entries(mx).filter(([k]) => k !== "pactLevel").map(([k, m]) => [k === "pact" ? `pacte (niv. ${mx.pactLevel})` : k.replace("spell", "niv. "), `${num(s.spells?.[k]?.value)}/${m}`])); })(),
     sorts_par_niveau: spells,
     objets: items.filter(i => !["spell", "class", "subclass", "feat", "race", "background"].includes(i.type))
-      .map(i => `${i.name}${num(i.system?.quantity) > 1 ? " ×" + i.system.quantity : ""}${i.system?.equipped ? " [équipé]" : ""}${i.system?.attuned ? " [harmonisé]" : ""} (${i._id})`),
+      .map(i => `${i.name}${num(i.system?.quantity) > 1 ? " ×" + i.system.quantity : ""}${i.system?.equipped ? message(" [equipped]", " [équipé]") : ""}${i.system?.attuned ? message(" [attuned]", " [harmonisé]") : ""} (${i._id})`),
     aptitudes: items.filter(i => ["feat", "race", "background", "subclass"].includes(i.type)).map(i => i.name),
     monnaie: s.currency,
     xp: s.details?.xp?.value,
@@ -363,6 +368,7 @@ function partFormula(p, { actor, d, item, spellLevel, castLevel }) {
 const DMG_FR = { acid: "acide", bludgeoning: "contondant", cold: "froid", fire: "feu", force: "force", lightning: "foudre",
   necrotic: "nécrotique", piercing: "perforant", poison: "poison", psychic: "psychique", radiant: "radiant",
   slashing: "tranchant", thunder: "tonnerre", healing: "soins", temphp: "PV temporaires" };
+const damageLabel = type => message(type === "temphp" ? "temporary HP" : type === "healing" ? "healing" : type, DMG_FR[type] || type);
 
 /** Prépare l'utilisation : jets + mises à jour de consommation. Ne touche pas Foundry. */
 export function useItem(rawActor, item, { activityId, slotLevel, advantage, disadvantage, consume = true, versatile }) {
@@ -379,18 +385,18 @@ export function useItem(rawActor, item, { activityId, slotLevel, advantage, disa
     if (item.type === "spell" && spellLevel > 0 && (act?.consumption?.spellSlot ?? true) && !["innate", "atwill", "ritual"].includes(item.system.method || item.system.preparation?.mode)) {
       const method = item.system.method || item.system.preparation?.mode;
       const key = method === "pact" ? "pact" : `spell${castLevel}`;
-      if (method === "pact") { const pl = slotMax(actor).pactLevel || castLevel; if (castLevel < pl) out.lignes.push(`Lancé au niveau de pacte ${pl}`); }
+      if (method === "pact") { const pl = slotMax(actor).pactLevel || castLevel; if (castLevel < pl) out.lignes.push(message(`Cast using a level ${pl} pact slot`, `Lancé au niveau de pacte ${pl}`)); }
       const slot = actor.system.spells?.[key];
-      if (!slot || num(slot.value) <= 0) throw new Error(`Plus d'emplacement de niveau ${castLevel} disponible (${key} : ${slot?.value ?? 0}). Précise un autre slot_level ou consume=false.`);
+      if (!slot || num(slot.value) <= 0) throw new Error(message(`No level ${castLevel} spell slot available (${key}: ${slot?.value ?? 0}). Specify another slot_level or consume=false.`, `Plus d'emplacement de niveau ${castLevel} disponible (${key} : ${slot?.value ?? 0}). Précise un autre slot_level ou consume=false.`));
       out.actorUpdate[`system.spells.${key}.value`] = num(slot.value) - 1;
-      out.lignes.push(`Emplacement ${method === "pact" ? "de pacte" : "niv. " + castLevel} utilisé (${num(slot.value) - 1} restant(s))`);
+      out.lignes.push(message(`${method === "pact" ? "Pact slot" : "Level " + castLevel + " slot"} used (${num(slot.value) - 1} remaining)`, `Emplacement ${method === "pact" ? "de pacte" : "niv. " + castLevel} utilisé (${num(slot.value) - 1} restant(s))`));
     }
     const uses = item.system?.uses;
     if (uses?.max && act?.consumption?.targets?.some(t => t.type === "itemUses") || (uses?.max && item.type === "consumable")) {
       const left = num(uses.max) - num(uses.spent);
-      if (left <= 0) throw new Error(`${item.name} n'a plus d'utilisation disponible.`);
+      if (left <= 0) throw new Error(message(`${item.name} has no uses remaining.`, `${item.name} n'a plus d'utilisation disponible.`));
       out.itemUpdate["system.uses.spent"] = num(uses.spent) + 1;
-      out.lignes.push(`Utilisations : ${left - 1}/${uses.max}`);
+      out.lignes.push(message(`Uses: ${left - 1}/${uses.max}`, `Utilisations : ${left - 1}/${uses.max}`));
       if (left - 1 <= 0 && uses.autoDestroy && item.type === "consumable") {
         if (num(item.system.quantity) > 1) { out.itemUpdate["system.quantity"] = num(item.system.quantity) - 1; out.itemUpdate["system.uses.spent"] = 0; }
         else out.deleteItem = true;
@@ -398,11 +404,11 @@ export function useItem(rawActor, item, { activityId, slotLevel, advantage, disa
     } else if (item.type === "consumable" && num(item.system.quantity) > 0) {
       const q = num(item.system.quantity) - 1;
       if (q <= 0) out.deleteItem = true; else out.itemUpdate["system.quantity"] = q;
-      out.lignes.push(`Quantité restante : ${q}`);
+      out.lignes.push(message(`Quantity remaining: ${q}`, `Quantité restante : ${q}`));
     }
   }
 
-  if (!act) { out.lignes.push("(Aucune activité : rien à lancer)"); return out; }
+  if (!act) { out.lignes.push(message("(No activity: nothing to execute)", "(Aucune activité : rien à lancer)")); return out; }
   out.activity = { _id: act._id, type: act.type, effects: (act.effects || []).map(e => e._id).filter(Boolean) };
   const ctx = { actor, d, item, spellLevel, castLevel };
 
@@ -419,7 +425,7 @@ export function useItem(rawActor, item, { activityId, slotLevel, advantage, disa
       bonus = d.mods[ab] + (prof ? d.prof : 0) + num(act.attack?.bonus)
         + (weapon ? num(weapon.system?.magicalBonus) : 0)
         + evalBonus(actor.system.bonuses?.[(act.attack?.type?.value === "ranged" ? "r" : "m") + "wak"]?.attack, actor);
-      if (weapon) out.lignes.push(`Arme : ${weapon.name}${num(weapon.system?.magicalBonus) ? ` (+${weapon.system.magicalBonus})` : ""}`);
+      if (weapon) out.lignes.push(message(`Weapon: ${weapon.name}${num(weapon.system?.magicalBonus) ? ` (+${weapon.system.magicalBonus})` : ""}`, `Arme : ${weapon.name}${num(weapon.system?.magicalBonus) ? ` (+${weapon.system.magicalBonus})` : ""}`));
     } else if (item.type === "spell") bonus = d.prof + d.scMod + evalBonus(actor.system.bonuses?.[(act.attack?.type?.value === "melee" ? "m" : "r") + "sak"]?.attack, actor);
     else {
       const ab = act.attack?.ability && act.attack.ability !== "none" ? act.attack.ability : weaponAbility(item, d);
@@ -428,12 +434,12 @@ export function useItem(rawActor, item, { activityId, slotLevel, advantage, disa
         + evalBonus(actor.system.bonuses?.[(act.attack?.type?.value === "ranged" ? "r" : "m") + "wak"]?.attack, actor);
     }
     const dice = advantage && !disadvantage ? "2d20kh1" : disadvantage && !advantage ? "2d20kl1" : "1d20";
-    const r = rollFormula(`${dice}${sign(bonus)}`, { flavor: `${item.name} — attaque` });
+    const r = rollFormula(`${dice}${sign(bonus)}`, { flavor: `${item.name} — ${message("attack", "attaque")}` });
     const nat = r.roll.terms[0].results.filter(x => x.active)[0].result;
     out.crit = nat >= num(act.attack?.critical?.threshold || 20);
     out.attack = { total: r.total, nat, crit: out.crit, arme: weapon?.name || null };
     out.rolls.push(r);
-    out.lignes.push(`Attaque : ${r.total} (d20=${nat}${sign(bonus)})${out.crit ? " — CRITIQUE !" : nat === 1 ? " — échec critique" : ""}`);
+    out.lignes.push(message(`Attack: ${r.total} (d20=${nat}${sign(bonus)})${out.crit ? " — CRITICAL HIT!" : nat === 1 ? " — critical miss" : ""}`, `Attaque : ${r.total} (d20=${nat}${sign(bonus)})${out.crit ? " — CRITIQUE !" : nat === 1 ? " — échec critique" : ""}`));
   }
 
   // --- sauvegarde ---
@@ -442,7 +448,7 @@ export function useItem(rawActor, item, { activityId, slotLevel, advantage, disa
       : act.save?.dc?.calculation && ABIL[act.save.dc.calculation] ? 8 + d.prof + d.mods[act.save.dc.calculation]
       : num(resolveFormulaVars(act.save?.dc?.formula, actor, d, item)) || d.spellDC;
     out.save = { abilities: toList(act.save?.ability), dc, onSave: act.damage?.onSave || "none" };
-    out.lignes.push(`Jet de sauvegarde de ${toList(act.save?.ability).map(a => ABIL[a] || a).join("/")} DD ${dc}${act.damage?.onSave === "half" ? " (moitié des dégâts si réussi)" : ""}`);
+    out.lignes.push(message(`Saving throw ${toList(act.save?.ability).map(a => ABIL_EN[a] || a).join("/")} DC ${dc}${act.damage?.onSave === "half" ? " (half damage on a successful save)" : ""}`, `Jet de sauvegarde de ${toList(act.save?.ability).map(a => ABIL[a] || a).join("/")} DD ${dc}${act.damage?.onSave === "half" ? " (moitié des dégâts si réussi)" : ""}`));
   }
 
   // --- dégâts ---
@@ -469,28 +475,29 @@ export function useItem(rawActor, item, { activityId, slotLevel, advantage, disa
     f = toRollFormula(f.replace(/\[[^\]]*\]/g, ""));
     if (out.crit) f = f.replace(/(\d+)d(\d+)/g, (_, n, fa) => `${2 * n}d${fa}`);
     if (f === "0") continue;
-    const types = (p.types || []).map(t => DMG_FR[t] || t).join("/");
-    const r = rollFormula(f, { flavor: `${item.name} — dégâts ${types}` });
+    const types = (p.types || []).map(damageLabel).join("/");
+    const r = rollFormula(f, { flavor: `${item.name} — ${message("damage", "dégâts")} ${types}` });
     out.rolls.push(r);
     (out.damage ??= []).push({ total: r.total, types: p.types || [], formula: r.formula });
-    out.lignes.push(`Dégâts : ${r.total} ${types} (${r.formula})`);
+    out.lignes.push(message(`Damage: ${r.total} ${types} (${r.formula})`, `Dégâts : ${r.total} ${types} (${r.formula})`));
   }
 
   // --- soins ---
   if (act.type === "heal" && act.healing) {
     const f = toRollFormula(partFormula(act.healing, ctx));
-    const r = rollFormula(f, { flavor: `${item.name} — ${DMG_FR[act.healing.types?.[0]] || "soins"}` });
+    const healingType = act.healing.types?.[0];
+    const r = rollFormula(f, { flavor: `${item.name} — ${healingType && DMG_FR[healingType] ? damageLabel(healingType) : message("healing", "soins")}` });
     out.rolls.push(r);
     out.healing = { total: r.total, temp: (act.healing.types || []).includes("temphp"), formula: r.formula };
-    out.lignes.push(`Soins : ${r.total} (${r.formula})`);
+    out.lignes.push(message(`Healing: ${r.total} (${r.formula})`, `Soins : ${r.total} (${r.formula})`));
   }
 
   // --- jet libre (activité utility avec formule) ---
   if (act.type === "utility" && act.roll?.formula) {
     const f = toRollFormula(resolveFormulaVars(act.roll.formula, actor, d, item));
-    const r = rollFormula(f, { flavor: `${item.name} — ${act.roll.name || "jet"}` });
+    const r = rollFormula(f, { flavor: `${item.name} — ${act.roll.name || message("roll", "jet")}` });
     out.rolls.push(r);
-    out.lignes.push(`${act.roll.name || "Jet"} : ${r.total} (${r.formula})`);
+    out.lignes.push(`${act.roll.name || message("Roll", "Jet")} : ${r.total} (${r.formula})`);
   }
   if (act.duration?.concentration) out.lignes.push("⚠ Concentration");
   return out;

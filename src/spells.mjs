@@ -3,6 +3,7 @@
 // sorts mineurs / sorts de classe / sorts préparés selon les compteurs de la classe.
 import { translations, trFor, slotMax } from "./dnd5e.mjs";
 import { spellLists, fetchUuid } from "./advancement.mjs";
+import { message } from "./i18n.mjs";
 
 const norm = t => String(t || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]+/g, " ").trim();
 const cap = s => String(s || "").replace(/(^|[-_ ])(\w)/g, (_, a, b) => (a ? " " : "") + b.toUpperCase());
@@ -105,9 +106,9 @@ export async function planClassSpells(fs, actor, cls, level, choices) {
   let cantrips = [];
   if (needC) {
     cantrips = await pickAny(choices["spells:cantrips"], cantripPool, l => l === 0);
-    if (cantrips.length > needC) throw new Error(`Trop de sorts mineurs : ${cantrips.length} > ${needC}`);
+    if (cantrips.length > needC) throw new Error(message(`Too many cantrips: ${cantrips.length} > ${needC}`, `Trop de sorts mineurs : ${cantrips.length} > ${needC}`));
     // comme pour les sorts préparés : une liste fournie peut être plus courte que le maximum
-    if (!choices["spells:cantrips"]) pending.push({ id: "spells:cantrips", objet: cls.name, type: "Spells", titre: `Sorts mineurs de ${cls.name}`, nombre: needC, options: cantripPool.map(s => `${s.name} — ${s.uuid}`) });
+    if (!choices["spells:cantrips"]) pending.push({ id: "spells:cantrips", objet: cls.name, type: "Spells", titre: message(`${cls.name} cantrips`, `Sorts mineurs de ${cls.name}`), nombre: needC, options: cantripPool.map(s => `${s.name} — ${s.uuid}`) });
   }
   // sorts de classe accessibles
   const leveled = list.filter(s => s.level >= 1 && s.level <= maxLvl && !have.has(s.key));
@@ -118,8 +119,8 @@ export async function planClassSpells(fs, actor, cls, level, choices) {
   if (prepMax) {
     const needP = Math.max(0, prepMax - alreadyPrep);
     prepared = await pickAny(choices["spells:prepared"], [...leveled, ...list.filter(s => s.level >= 1 && have.has(s.key))], l => l >= 1 && l <= maxLvl);
-    if (needP && !choices["spells:prepared"]) pending.push({ id: "spells:prepared", objet: cls.name, type: "Spells", titre: `Sorts préparés (${needP} max)`, nombre: needP, options: leveled.map(s => `niv.${s.level} ${s.name} — ${s.uuid}`) });
-    if (prepared.length > needP) throw new Error(`Trop de sorts préparés : ${prepared.length} > ${needP}`);
+    if (needP && !choices["spells:prepared"]) pending.push({ id: "spells:prepared", objet: cls.name, type: "Spells", titre: message(`Prepared spells (${needP} max)`, `Sorts préparés (${needP} max)`), nombre: needP, options: leveled.map(s => `${message("lvl.", "niv.")}${s.level} ${s.name} — ${s.uuid}`) });
+    if (prepared.length > needP) throw new Error(message(`Too many prepared spells: ${prepared.length} > ${needP}`, `Trop de sorts préparés : ${prepared.length} > ${needP}`));
   }
   // la limite exacte est recalculée à l'application (les aptitudes accordées au même passage,
   // ex. Thaumaturge +1 sort mineur, n'existent pas encore sur la fiche au moment du plan)
@@ -149,5 +150,5 @@ export async function applyClassSpells(fs, actor, step, classItemId) {
   const upd = (actor.items || []).filter(i => i.type === "spell" && step.prepared.has(i.system?.identifier || norm(i.name)) && Number(i.system?.prepared) === 0).map(i => ({ _id: i._id, "system.prepared": 1 }));
   if (data.length) await fs.doc("create", "Item", { parentUuid: `Actor.${actor._id}`, data, modifiedTime: Date.now() });
   if (upd.length) await fs.doc("update", "Item", { parentUuid: `Actor.${actor._id}`, updates: upd, modifiedTime: Date.now() });
-  return `${step.cantrips.length} sort(s) mineur(s), ${step.leveled.length} sort(s) de classe (niv. 1 à ${step.maxLvl}), ${step.prepared.size} préparé(s)`;
+  return message(`${step.cantrips.length} cantrip(s), ${step.leveled.length} class spell(s) (levels 1 to ${step.maxLvl}), ${step.prepared.size} prepared`, `${step.cantrips.length} sort(s) mineur(s), ${step.leveled.length} sort(s) de classe (niv. 1 à ${step.maxLvl}), ${step.prepared.size} préparé(s)`);
 }
