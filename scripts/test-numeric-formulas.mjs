@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { evaluateNumericFormula } from "../src/formula-numeric.mjs";
 import { evalBonus, rollFormula, toRollFormula, useItem } from "../src/dnd5e.mjs";
+import { currentLocale } from "../src/i18n.mjs";
 
 test("deterministic formulas evaluate arithmetic, unary signs and nested functions", () => {
   assert.equal(evaluateNumericFormula("2+3*4"), 14);
@@ -38,10 +39,30 @@ test("unary dice and signed numbers serialize terms that match their totals", ()
   assert.equal(signedDice.roll.terms[4].results.reduce((n, result) => n + result.result, 0), 2);
 
   assert.equal(rollFormula("1.5*2d1").total, 3);
-  assert.throws(() => rollFormula("1e500"), /non supportée/);
-  assert.throws(() => rollFormula("9".repeat(400)), /hors limites/);
-  assert.throws(() => rollFormula(`${"9".repeat(180)}*${"9".repeat(180)}`), /hors limites/);
-  assert.throws(() => rollFormula("1+".repeat(3000)), /trop longue/);
+});
+
+test("dice parser errors use English opt-in and preserve exact legacy French messages", () => {
+  const largeNumber = "9".repeat(400);
+  const multiplication = `${"9".repeat(180)}*${"9".repeat(180)}`;
+  const longFormula = "1+".repeat(3000);
+  const cases = [
+    [longFormula, "Dice formula is too long", "Formule de dés trop longue"],
+    ["1e500", "Unsupported dice formula: 1e500", "Formule non supportée : 1e500"],
+    ["1+", "Incomplete dice formula: 1+", "Formule incomplète : 1+"],
+    ["1*/2", "Unexpected operator: /", "Opérateur inattendu : /"],
+    ["2/0", "Division by zero in dice formula", "Division par zéro dans la formule de dés"],
+    [largeNumber, `Numeric term is out of range: ${largeNumber}`, `Terme numérique hors limites : ${largeNumber}`],
+    [multiplication, "Numeric result is out of range", "Résultat numérique hors limites"],
+    ["101d6", "Dice limits exceeded: 101d6", "Dés hors limites : 101d6"],
+    ["2dd6", "Unsupported dice term: 2dd6", "Terme non supporté : 2dd6"],
+  ];
+  const english = currentLocale() === "en";
+  for (const [formula, englishError, frenchError] of cases) {
+    assert.throws(() => rollFormula(formula), error => {
+      assert.equal(error.message, english ? englishError : frenchError, `formula: ${formula.slice(0, 24)}`);
+      return true;
+    });
+  }
 });
 
 test("numeric functions preserve rounding order while retaining dice in simple floor wrappers", () => {
