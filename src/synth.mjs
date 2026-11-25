@@ -184,12 +184,14 @@ async function feat(fs, raw) {
 
 // ---- sous-classe ----
 async function subclass(fs, raw) {
-  const h = String(raw.flags?.plutonium?.hash || "");
+  let h = String(raw.flags?.plutonium?.hash || "");
+  try { h = decodeURIComponent(h); } catch { /* déjà décodé */ }
   // « druid_xphb,state:sub_moon_xphb=b1 »
   const m = /^([^_,]+)_([^,]+),state:sub_([^_]+)_([^=]+)=/.exec(h);
   if (!m) return null;
   const [, cls, csrc, short, ssrc] = m;
-  const re = new RegExp(`_${cls}_${csrc}_${short}_${ssrc}_(\\d+)_`);
+  const esc = x => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(`_${esc(cls)}_${esc(csrc)}_${esc(short)}_${esc(ssrc)}_(\\d+)_`);
   const adv = [];
   // aptitudes : compendium des capacités de classe, rangées par niveau
   const idx = await packIndex(fs, "world.capacites-de-classe", ["flags.plutonium.hash"]);
