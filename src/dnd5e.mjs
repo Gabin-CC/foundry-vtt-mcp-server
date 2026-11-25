@@ -304,7 +304,11 @@ function mainWeapon(actor, kind) {
 
 /** Formule de dégâts/soins utilisable par rollFormula : « max(…) », floor/ceil et divisions ramenés à ses termes. */
 export function toRollFormula(f) {
-  const nums = s => String(s).split(",").map(v => Number(String(v).trim()));
+  const nums = s => String(s).split(",").map(v => {
+    const raw = String(v).trim();
+    const division = /^([+-]?(?:\d+\.?\d*|\.\d+))\/([+-]?(?:\d+\.?\d*|\.\d+))$/.exec(raw);
+    return division ? Number(division[1]) / Number(division[2]) : Number(raw);
+  });
   const fn = (name, args) => {
     const vals = nums(args);
     if (vals.some(v => !Number.isFinite(v))) return NaN;
@@ -331,6 +335,13 @@ export function toRollFormula(f) {
       const lead = rest.length - rest.replace(/^\s+/, "").length;
       const div = /^\/(\d+)/.exec(rest.slice(lead));
       let v = fm ? fn(fm[1], inner) : NaN;
+      // floor(dice) and floor(dice / positiveInteger) are already handled
+      // exactly by rollFormula. Keep the dice intact for chat serialization.
+      if (!Number.isFinite(v) && fm?.[1] === "floor" &&
+          /^\d*d\d+(?:(?:kh|kl)\d*)?(?:\/[1-9]\d*)?$/i.test(inner)) {
+        hit = { start, end: close + 1, rep: inner };
+        break;
+      }
       if (!Number.isFinite(v) && !fm) {
         // parenthèse numérique : « (5+0) », « (5) »… (somme simple)
         if (/^[\d\s+*/-]+$/.test(inner)) {

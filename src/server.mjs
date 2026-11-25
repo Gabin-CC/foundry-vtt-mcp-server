@@ -18,6 +18,7 @@ import { GM_TOOLS, GM_ROLE, handleGm } from "./gm.mjs";
 import { sanitizeItemData, itemWarnings } from "./repair.mjs";
 import { applyPatches } from "./patches.mjs";
 import { resolveImportEntry } from "./edition.mjs";
+import { englishToolMetadata } from "./tool-english.mjs";
 import { scrollFromSpell } from "./scroll.mjs";
 import { render, nextPage, MAX_OUT } from "./paging.mjs";
 import { auditTranslation, searchText, findReferences } from "./corpus.mjs";
@@ -92,7 +93,7 @@ const typeProp = { type: "string", enum: TYPES, description: "Type de document F
 const packProp = { type: "string", description: "Compendium (id, ex. 'world.classes-and-sous-classes') pour agir sur ses entrées au lieu du monde" };
 const parentProp = { type: "string", description: "Pour un document embarqué : UUID du parent, ex. 'Actor.abc123' (objets/effets d'un acteur), 'Scene.xyz' (tokens, murs...), 'JournalEntry.id' (pages)." };
 
-export const TOOLS = [
+export const TOOL_DEFINITIONS = [
   { name: "world_info", description: "Infos du monde Foundry actif, du compte connecté et liste des utilisateurs.",
     inputSchema: { type: "object", properties: {} } },
   { name: "list_documents",
@@ -231,8 +232,9 @@ export const TOOLS = [
       scope: { type: "string", enum: ["world", "packs", "all"], description: "Défaut : all pour un UUID de compendium, world sinon" },
       packs: { type: "array", items: { type: "string" } }, limit: { type: "number", default: 100 }, offset: { type: "number" } } } },
   ...TABLE_TOOLS, ...CARD_TOOLS,
-  ...GM_TOOLS,   // outils de MJ : listés seulement pour les comptes MJ / assistant MJ
+  ...GM_TOOLS,   // GM-only tools are listed only for GM and assistant GM accounts.
 ];
+export const TOOLS = TOOL_DEFINITIONS.map(englishToolMetadata);
 
 // ---------- helpers D&D / Foundry ----------
 async function findActor(fs, ref) {
