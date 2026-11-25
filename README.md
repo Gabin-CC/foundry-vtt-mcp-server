@@ -22,12 +22,20 @@ Claude (CLI / Desktop) ──HTTPS + Basic auth──▶ foundry-vtt-mcp-server 
 | Outil | Rôle |
 |---|---|
 | `world_info` | Monde, compte connecté, utilisateurs |
-| `list_documents` / `get_document` | Lire acteurs, objets, journaux, scènes… (filtres, champs, sous-chemins) |
-| `create_documents` / `update_documents` / `delete_documents` | CRUD générique, y compris documents embarqués (`parent: "Actor.<id>"`) |
+| `list_documents` / `get_document` | Lire acteurs, objets, journaux, scènes… (filtres, champs, sous-chemins). `list_documents` est paginé : ordre stable par `_id`, `total`, `next_cursor` / `next_offset` (`cursor` ou `offset` pour la page suivante) |
+| `next_page` | Suite d'une réponse trop grosse : au lieu d'être tronquée, elle est découpée en pages JSON valides (`curseur_suivant`) |
+| `create_documents` / `update_documents` / `delete_documents` | CRUD générique, y compris documents embarqués (`parent: "Actor.<id>"`). `dry_run` : aperçu avant/après champ par champ (ou liste de ce qui serait supprimé) |
+| `snapshots` | Instantanés pris automatiquement avant `update_documents`, `delete_documents` et `localize_actor` (valeurs d'origine des champs modifiés, documents supprimés entiers) : `list`, `show`, `restore` (avec `dry_run` ; la restauration est elle-même annulable). Fichiers JSON dans `data/snapshots` (500 derniers, 90 jours) |
+| `search_text` | Recherche plein texte (sans accents) monde + compendiums, versions FR et d'origine : UUID, document, chemin de dossier, champ, extrait |
+| `find_references` | Où un document est utilisé : liens `@UUID` dans les textes, objets copiés depuis lui (`compendiumSource`), jetons, notes de carte, résultats de tables, origines d'effets |
+| `audit_translation` | Audit de traduction FR (monde et/ou compendiums, traductions Babele comprises) : champs restés en anglais (nom, description, activités, effets, pages, cartes, résultats de tables, objets des acteurs) avec UUID, champ, extrait, statut et correctif (`localize_actor`) ; `mode: "coverage"` = part des entrées traduites par compendium |
+| `roll_table` | Tirage sur une table (monde ou compendium, traduite) comme Foundry : formule, tirage sans remise, tables imbriquées, carte dans le chat optionnelle ; `show`, `reset` |
+| `cards` | Cartes : `list`, `draw`, `deal`, `pass`, `discard`, `shuffle`, `recall` (mêmes opérations que le client Foundry) |
 | `actor_sheet` | Fiche calculée : niveau, maîtrise, mods, CA estimée, PV, compétences, attaque/DD de sort, emplacements |
 | `roll` | Jet de dés libre posté dans le chat (`2d20kh1+5`, `8d6`, `4d6kh3`…) |
 | `check` | Test de caractéristique, sauvegarde, compétence, initiative |
-| `use_item` | Lance un sort / utilise une arme ou un consommable : attaque, dégâts (critiques, montée en niveau, cantrips), soins, DD de sauvegarde, consommation d'emplacement / utilisation / quantité, carte dans le chat |
+| `use_item` | Lance un sort / utilise une arme ou un consommable : attaque, dégâts (critiques, montée en niveau, cantrips), soins, DD de sauvegarde, consommation d'emplacement / utilisation / quantité, carte dans le chat. Avec `targets` (UUID de jetons `Scene.x.Token.y`, nom de jeton de la scène active ou `Actor.x`) : touché/raté selon la CA, sauvegarde de chaque cible, dégâts avec résistances / immunités / vulnérabilités, soins, effets/états → **proposition** à valider |
+| `apply_damage` | Applique une proposition de `use_item` (tout, un sous-ensemble de cibles, ou corrigée : `overrides` avec `multiplier`, `damage`…) ou des valeurs libres (`manual`) : PV temporaires d'abord, soins plafonnés, effets copiés sur la cible ; jetons non liés modifiés seuls |
 | `rest` | Repos court / long |
 | `list_packs` / `search_compendium` / `get_compendium_entry` | Compendiums, recherche en **français ou anglais** |
 | `add_from_compendium` | Ajoute sorts, objets, classe (avec niveaux et PV), espèce, historique… à un acteur, ou importe dans le monde |
@@ -42,7 +50,8 @@ Claude (CLI / Desktop) ──HTTPS + Basic auth──▶ foundry-vtt-mcp-server 
 |---|---|
 | `gm_scene` | lister les scènes, activer une scène, amener les joueurs sur une scène, régler l'obscurité |
 | `gm_music` | lister les playlists, lancer / arrêter une playlist ou un morceau, régler le volume, tout arrêter |
-| `gm_show` | montrer une image (fenêtre chez les joueurs) ou un journal / une page de journal |
+| `gm_show` | montrer une image (fenêtre chez les joueurs), un journal / une page de journal, ou amener sur une scène ; `users` choisit les destinataires ; `preview` donne un aperçu (contenu, image, jetons, qui peut déjà lire) sans rien montrer |
+| `gm_permissions` | ce que chaque joueur peut voir d'un document (niveau, titre visible, contenu lisible, modifiable ; pages d'un journal ; compendiums selon le rôle) |
 | `gm_tile` | poser une image sur le plateau (tuile) |
 | `gm_token` | lister, poser, déplacer, cacher, montrer, retirer des jetons |
 | `gm_combat` | démarrer un combat avec les jetons de la scène, tour suivant / précédent, état, fin |
@@ -148,7 +157,12 @@ Puis : *« Montre-moi la fiche de mon perso »*, *« Je lance Boule de feu au ni
 ```bash
 ADMIN_PASSWORD='mdp admin Foundry' node scripts/test-tools.mjs MonPseudo '[["actor_sheet",{"actor":"Tum"}]]'
 ```
-(utilise le mot de passe administrateur pour se connecter « en tant que » un utilisateur)
+(utilise le mot de passe administrateur pour se connecter « en tant que » un utilisateur ; variante sans mot de passe
+administrateur : `FOUNDRY_AUTH=<base64 utilisateur:mot de passe> node scripts/test-tools.mjs - @appels.json`. Dans une
+suite d'appels, `"@last.chemin"` reprend une valeur de la réponse précédente, ex. `["apply_damage",{"proposal":"@last.proposition"}]`)
+
+Variables supplémentaires : `MAX_OUT` (taille max d'une réponse avant découpage, défaut 60000), `SNAPSHOT_DIR`,
+`SNAPSHOT_KEEP`, `SNAPSHOT_DAYS` (instantanés de restauration).
 
 ---
 
@@ -156,7 +170,7 @@ ADMIN_PASSWORD='mdp admin Foundry' node scripts/test-tools.mjs MonPseudo '[["act
 
 Headless [MCP](https://modelcontextprotocol.io) server for Foundry VTT v13/v14 (dnd5e-focused). **No browser and no Foundry module needed**: the server logs in to Foundry like a web client (`/join` + socket.io). Each user authenticates with **their own Foundry username and password** via HTTP Basic auth and acts with their own Foundry permissions.
 
-Tools: generic document CRUD (incl. embedded documents), computed character sheet, dice rolls and checks posted to chat, `use_item` (spell/weapon/consumable: attack, damage incl. crits/upcasting/cantrip scaling, healing, save DC, slot/uses/quantity consumption, chat card), short/long rest, compendium search (French or English names when the `dnd5e_fr-FR` Babele translations are installed), `add_from_compendium` (spells, items, class with levels/HP, species, background…), `localize_actor` (re-apply Babele translations and metric units to an existing actor), loot, file upload, chat messages.
+Tools: generic document CRUD (incl. embedded documents), computed character sheet, dice rolls and checks posted to chat, `use_item` (spell/weapon/consumable: attack, damage incl. crits/upcasting/cantrip scaling, healing, save DC, slot/uses/quantity consumption, chat card), short/long rest, compendium search (French or English names when the `dnd5e_fr-FR` Babele translations are installed), `add_from_compendium` (spells, items, class with levels/HP, species, background…), `localize_actor` (re-apply Babele translations and metric units to an existing actor), loot, file upload, chat messages. Also: stable pagination (`list_documents` cursors, oversized answers split into valid JSON pages + `next_page`), `dry_run` before/after previews and server-side restore snapshots (`snapshots`), world + compendium full-text search (`search_text`) and reverse references (`find_references`), translation audit / coverage (`audit_translation`), roll tables (`roll_table`) and cards (`cards`), targeted `use_item` with a validation step (`apply_damage`), GM sharing with recipients and preview (`gm_show`) and permission checks (`gm_permissions`).
 
 Limitations: the dnd5e advancement workflow runs client-side and is not executed; derived values are recomputed server-side (good for common cases); relies on Foundry's internal client protocol, so major Foundry updates may require changes; users without a password are rejected.
 

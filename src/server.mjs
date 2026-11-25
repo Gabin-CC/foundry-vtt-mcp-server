@@ -16,6 +16,8 @@ import { sanitizeItemData } from "./repair.mjs";
 import { scrollFromSpell } from "./scroll.mjs";
 import { render, nextPage, MAX_OUT } from "./paging.mjs";
 import { auditTranslation, searchText, findReferences } from "./corpus.mjs";
+import { TABLE_TOOLS, CARD_TOOLS, handleTable, handleCards } from "./tables.mjs";
+import { resolveTarget, propose, applyDamage } from "./targets.mjs";
 import { diffUpdates, saveSnapshot, currentDocs, listSnapshots, showSnapshot, restoreSnapshot } from "./snapshots.mjs";
 import { rollFormula, derive, checkBonus, sheet, slotMax, useItem, translations, translateDoc, trFor, refreshUnits, localizeItem, actorMetricUpdates, ABIL, SKILLS } from "./dnd5e.mjs";
 
@@ -140,7 +142,17 @@ export const TOOLS = [
       advantage: { type: "boolean" }, disadvantage: { type: "boolean" }, versatile: { type: "boolean", description: "Arme polyvalente à deux mains" },
       consume: { type: "boolean", default: true, description: "Consommer emplacement/utilisation/quantité" },
       target: { type: "string", description: "Cible (texte libre affiché dans le chat)" },
+      targets: { type: "array", items: { type: "string" }, description: "Jetons ciblés : UUID (Scene.x.Token.y), _id ou nom d'un jeton de la scène active, ou Actor.x. Calcule touché/raté (CA), sauvegarde de chaque cible, dégâts (résistances, immunités, vulnérabilités), soins et effets/états de l'activité, et renvoie une proposition à valider avec apply_damage." },
       mode: { type: "string", enum: ["public", "mj", "aveugle", "prive"], default: "public" } } } },
+  { name: "apply_damage", description: "Validation de use_item avec cibles : applique la proposition (dégâts avec PV temporaires d'abord, soins plafonnés au max, PV temporaires, effets/états de l'activité copiés sur la cible comme le bouton du chat de dnd5e). Jetons non liés : modifie le jeton seul. 'manual' applique des valeurs libres sans proposition.",
+    inputSchema: { type: "object", properties: {
+      proposal: { type: "string", description: "Identifiant 'proposition' renvoyé par use_item" },
+      targets: { type: "array", items: { type: "string" }, description: "Limiter à ces cibles (UUID ou nom)" },
+      overrides: { type: "array", items: { type: "object", properties: { target: { type: "string" }, damage: { type: "number" }, healing: { type: "number" }, temp: { type: "number" },
+        multiplier: { type: "number", description: "Ex. 0.5 (moitié), 0 (aucun dégât), 2" }, effects: { type: "boolean" } } } },
+      manual: { type: "array", items: { type: "object", properties: { target: { type: "string" }, damage: { type: "number" }, healing: { type: "number" }, temp: { type: "number" } } } },
+      force: { type: "boolean", description: "Réappliquer une proposition déjà appliquée" },
+      chat: { type: "boolean", default: true }, mode: { type: "string", enum: ["public", "mj", "aveugle", "prive"], default: "public" } } } },
   { name: "rest", description: "Repos long (PV max, emplacements, utilisations, dés de vie récupérés à moitié) ou court (emplacements de pacte, utilisations 'sr').",
     inputSchema: { type: "object", required: ["actor", "type"], properties: { actor: { type: "string" }, type: { type: "string", enum: ["long", "court"] } } } },
   { name: "list_packs", description: "Liste les compendiums disponibles (id, nom, type, nombre d'entrées, traduction FR dispo).",
@@ -209,6 +221,7 @@ export const TOOLS = [
       uuid: { type: "string", description: "Ex. Compendium.dnd5e.spells24.Item.xxx, JournalEntry.abc, Actor.abc" },
       scope: { type: "string", enum: ["world", "packs", "all"], description: "Défaut : all pour un UUID de compendium, world sinon" },
       packs: { type: "array", items: { type: "string" } }, limit: { type: "number", default: 100 }, offset: { type: "number" } } } },
+  ...TABLE_TOOLS, ...CARD_TOOLS,
   ...GM_TOOLS,   // outils de MJ : listés seulement pour les comptes MJ / assistant MJ
 ];
 
@@ -356,6 +369,9 @@ async function runTool(fs, params) {
           const r = await fs.doc("delete", a.type, { ids: a.ids, modifiedTime: Date.now(), render: true, ...parentOpt(a.parent, a.pack) });
           return out({ supprimes: r, instantane: snap || undefined });
         }
+        case "apply_damage": return out(await applyDamage(fs, a, { postChat }));
+        case "roll_table": return out(await handleTable(fs, a, { postChat }));
+        case "cards": return out(await handleCards(fs, a, { postChat }));
         case "audit_translation": return out(await auditTranslation(fs, a, { packsOf, packIndex }));
         case "search_text": return out(await searchText(fs, a, { packsOf }));
         case "find_references": return out(await findReferences(fs, a, { packsOf }));
@@ -394,17 +410,22 @@ async function runTool(fs, params) {
         case "use_item": {
           const actor = await findActor(fs, a.actor);
           const item = findItem(actor, a.item);
+          const tgts = [];
+          for (const ref of (typeof a.targets === "string" ? [a.targets] : a.targets || [])) tgts.push(await resolveTarget(fs, ref));   // erreurs avant toute consommation
           const res = useItem(actor, item, { activityId: a.activity, slotLevel: a.slot_level, advantage: a.advantage, disadvantage: a.disadvantage, consume: a.consume !== false, versatile: a.versatile });
+          const prop = tgts.length ? await propose(fs, { attacker: actor, item, res, targets: tgts, mode: a.mode }) : null;
+          if (prop) { res.rolls.push(...prop.saveRolls); for (const r of prop.rows) res.lignes.push(`${r.cible} : ${[r.attaque, r.sauvegarde].filter(Boolean).join(" ; ") || "ciblé"}`); }
           if (Object.keys(res.actorUpdate).length) await fs.doc("update", "Actor", { updates: [{ _id: actor._id, ...res.actorUpdate }], diff: true, modifiedTime: Date.now() });
           if (res.deleteItem) await fs.doc("delete", "Item", { parentUuid: `Actor.${actor._id}`, ids: [item._id], modifiedTime: Date.now() });
           else if (Object.keys(res.itemUpdate).length) await fs.doc("update", "Item", { parentUuid: `Actor.${actor._id}`, updates: [{ _id: item._id, ...res.itemUpdate }], diff: true, modifiedTime: Date.now() });
           const desc = item.system?.description?.value || "";
           const card = `<div class="dnd5e2 chat-card"><h3><img src="${esc(item.img)}" width="32" height="32" style="vertical-align:middle;border:none"> ${esc(item.name)}${a.slot_level ? ` (niv. ${a.slot_level})` : ""}</h3>`
-            + (a.target ? `<p><b>Cible :</b> ${esc(a.target)}</p>` : "")
+            + (a.target || tgts.length ? `<p><b>Cible :</b> ${esc([a.target, ...tgts.map(t => t.label)].filter(Boolean).join(", "))}</p>` : "")
             + `<ul>${res.lignes.map(l => `<li>${esc(l)}</li>`).join("")}</ul>`
             + (desc ? `<details><summary>Description</summary>${desc}</details>` : "") + `</div>`;
           await postChat(fs, { actor, flavor: item.name, content: card, rolls: res.rolls, mode: a.mode });
-          return out({ objet: item.name, resultats: res.lignes });
+          return out({ objet: item.name, resultats: res.lignes, ...(prop ? { proposition: prop.id, cibles: prop.rows,
+            validation: "Rien n'est encore appliqué aux cibles : apply_damage {proposal: \"" + prop.id + "\"} (option targets pour un sous-ensemble, overrides pour corriger)." } : {}) });
         }
         case "rest": {
           const actor = await findActor(fs, a.actor);
