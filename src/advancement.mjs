@@ -5,7 +5,7 @@ import { translateDoc, SKILLS, ABIL, SKILLS_EN, ABIL_EN } from "./dnd5e.mjs";
 import { message } from "./i18n.mjs";
 import { fixId, sanitizeItemData } from "./repair.mjs";
 import { applyPatches } from "./patches.mjs";
-import { synthesize } from "./synth.mjs";
+import { synthesize, officialEquivalent, grantsFeatures } from "./synth.mjs";
 
 const advList = item => {
   const a = item?.system?.advancement;
@@ -56,6 +56,44 @@ async function findById(fs, type, id) {
     }
   }
   return null;
+}
+
+// ---------- classes des compendiums du monde (Plutonium) ----------
+/**
+ * Repli : classe d'un compendium du monde (importée par Plutonium) sans aucune aptitude, même après reconstruction
+ * (synth.mjs). On utilise à la place la classe officielle équivalente (même system.identifier dans un compendium
+ * du système dnd5e, ex. « fighter » -> dnd5e.classes24), et on le dit dans la réponse.
+ * @returns {{root, src, note}} root/src inchangés si rien à faire ; note = message à remonter (ou null)
+ */
+export async function preferOfficialClass(fs, root, src) {
+  if (root?.type !== "class" || !root.flags?.plutonium || grantsFeatures(root)) return { root, src, note: null };
+  const ident = root.system?.identifier || "";
+  const off = await officialEquivalent(fs, root);
+  if (!off) return { root, src, note: message(
+    `${root.name}: this world-compendium class grants no class feature and none could be rebuilt; no official class with identifier "${ident}" is installed — only hit points and proficiencies are applied.`,
+    `${root.name} : cette classe du compendium du monde n'accorde aucune aptitude et aucune n'a pu être reconstruite ; aucune classe officielle d'identifiant « ${ident} » n'est installée — seuls les PV et les maîtrises sont appliqués.`) };
+  const doc = await fetchUuid(fs, off.uuid);
+  return { root: doc, src: off.uuid, note: message(
+    `${root.name} (${src}) grants no class feature and none could be rebuilt from its Plutonium data: the official class "${doc.name}" (${off.uuid}, same identifier "${ident}") was used instead.`,
+    `${root.name} (${src}) n'accorde aucune aptitude et aucune n'a pu être reconstruite depuis ses données Plutonium : la classe officielle « ${doc.name} » (${off.uuid}, même identifiant « ${ident} ») a été utilisée à la place.`) };
+}
+
+/**
+ * Classe Plutonium déjà présente sur une fiche (importée avant la reconstruction) : avancements reconstruits
+ * absents de l'objet. Les identifiants étant déterministes, une classe importée avec ses avancements reconstruits
+ * ne renvoie rien.
+ * @returns {{item, added}|null} item = copie de la classe complétée ; added = avancements à enregistrer sur l'objet
+ */
+export async function retrofitClass(fs, item) {
+  if (item?.type !== "class" || !item.flags?.plutonium || grantsFeatures(item)) return null;
+  const p = parseUuid(item._stats?.compendiumSource || item.flags?.dnd5e?.sourceId);
+  if (!p) return null;
+  const raw = (await fs.doc("get", "Item", { pack: p.pack, query: { _id: p.id } }).catch(() => [])).find(x => x._id === p.id);
+  if (!raw?.flags?.plutonium) return null;
+  const syn = await synthesize(fs, structuredClone(item), raw);
+  const have = new Set(advList(item).map(a => a._id));
+  const added = advList(syn).filter(a => !have.has(a._id));
+  return added.length ? { item: syn, added } : null;
 }
 
 // ---------- listes de sorts de classe (pages de journal de type "spells") ----------

@@ -24,10 +24,19 @@ Highlights:
 - Write tools support non-mutating previews where indicated; updates and deletions create recoverable snapshots before writing. `snapshots` can inspect and restore earlier values.
 - `use_item` rolls attacks, damage and healing, consumes resources where applicable, and can generate per-target proposals (AC, saves, resistance, vulnerability, immunity). `apply_damage` applies an approved proposal or explicit values.
 - Compendium lookups can use French or English names when compatible Babele translations are installed. `localize_actor` can apply translations and metric units to an existing actor.
+- `advance` replays the dnd5e advancement workflow server-side (class, subclass, species, background, feat). Classes, subclasses, backgrounds and feats imported by Plutonium into world compendiums often lack dnd5e advancements; they are rebuilt on the fly from the Plutonium flags and the 5etools text (see [Plutonium content](#plutonium-content-in-world-compendiums)).
 - `gm_show` supports recipient selection and a preview. `gm_permissions` reports what players can view or modify.
 - `gm_sync_items` and `gm_patch_items` preview changes by default and require explicit application.
 
 Tool **names and discovery descriptions are in English**. Some response keys, legacy argument values, enum values, and Foundry-specific status labels remain in French for backward compatibility. Renaming those fields requires an explicitly versioned protocol migration. See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+### Plutonium content in world compendiums
+
+Plutonium imports classes, subclasses, backgrounds and feats into world compendiums without the dnd5e advancements its own importer applies. When `advance` reads such an entry (`flags.plutonium`), it rebuilds the missing advancements in memory (nothing is written to compendiums), with deterministic 16-character IDs (same entry, same IDs):
+
+- **Class** (only HitPoints / Trait / ScaleValue present): one `ItemGrant` per level with the class features found in any world `Item` compendium (`flags.plutonium.page = "classFeature"`, hash `<feature>_<class>_<source>_<level>_<source>` matched against the class hash `<class>_<source>`; subclass features are ignored; one entry per name and level); `AbilityScoreImprovement` at every 5etools section "Level N: Ability Score Improvement" or "… feat or another feat of your choice" (e.g. Epic Boon, which then is not granted as an item); `Subclass` at the "Level N: <Class> Subclass" section (or the first subclass-feature level); an `ItemChoice` for "gain a *X* feat of your choice" when dnd5e has that feat category (e.g. Fighting Style). Armor/weapon/tool `Trait`s and starting equipment are not in the Plutonium text: they are copied from the official class with the same `system.identifier` and rules version, if installed.
+- **Fallback**: if no class feature can be rebuilt, `advance` uses the official class with the same `system.identifier` from a dnd5e compendium (e.g. `fighter` → `dnd5e.classes24`) and says so in `avertissements`.
+- A Plutonium class already on a sheet, imported before this reconstruction, is completed on the next `advance`: missing advancements are stored on the item and missing features/proficiencies for levels already gained are added.
 
 ## Requirements
 
