@@ -643,12 +643,16 @@ function applyEffects(effects, map) {
   if (!map || !Array.isArray(effects)) return;
   for (const e of effects) { const te = subEntry(map, e); if (te?.name) e.name = te.name; if (te?.description) e.description = te.description; }
 }
+const ACTIVITY_FIELDS = [["name", "name"], ["condition", "activation.condition"], ["chatFlavor", "description.chatFlavor"],
+  ["description", "description.value"], ["duration", "duration.special"], ["roll", "roll.name"]];
 function applyActivities(activities, map) {
   if (!map || !activities || typeof activities !== "object") return;
   for (const act of Object.values(activities)) {
     const ta = subEntry(map, act);
-    if (typeof ta === "string") act.name = ta;
-    else if (ta?.name) act.name = ta.name;
+    if (typeof ta === "string") { act.name = ta; continue; }
+    if (!ta || typeof ta !== "object") continue;
+    // mêmes champs que le convertisseur « structured » de dnd5e_fr-FR (Babele)
+    for (const [key, path] of ACTIVITY_FIELDS) if (typeof ta[key] === "string" && ta[key]) setAt(act, path, ta[key]);
   }
 }
 function applyTr(doc, t, mapping = {}) {
