@@ -172,6 +172,13 @@ async function feat(fs, raw) {
         restriction: { list: lists, level: "1" }, spell: { ability: ["int", "wis", "cha"], method: "spell", prepared: 2, uses: { max: "1", per: "lr", requireSlot: false } } },
       value: { added: {}, replaced: {} } });
   }
+  // maîtrise de compétence au choix : « gain proficiency in one of the following skills of your choice: &Reference[skill=X], … »
+  const sk = /proficiency in (one|two|three) of the following skills(?: of your choice)?\s*:?(.*?)(?:\.\s|$)/i.exec(t);
+  if (sk) {
+    const pool = [...sk[2].matchAll(/Reference\[skill=([^\]]+)\]/gi)].map(x => SKILL_EN[norm(x[1])]).filter(Boolean).map(k => `skills:${k}`);
+    if (pool.length) adv.push({ _id: sid(raw._id, "skills"), type: "Trait", level: 0, title: "Skill Proficiency",
+      configuration: { mode: "default", allowReplacements: false, grants: [], choices: [{ count: { one: 1, two: 2, three: 3 }[sk[1].toLowerCase()], pool }] }, value: {} });
+  }
   return adv.length ? { advancement: adv } : null;
 }
 
