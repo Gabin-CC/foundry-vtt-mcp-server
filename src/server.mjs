@@ -20,6 +20,7 @@ import { applyPatches } from "./patches.mjs";
 import { resolveImportEntry } from "./edition.mjs";
 import { englishToolMetadata } from "./tool-english.mjs";
 import { message } from "./i18n.mjs";
+import { responseAliases } from "./response-aliases.mjs";
 import { scrollFromSpell } from "./scroll.mjs";
 import { render, nextPage, MAX_OUT } from "./paging.mjs";
 import { auditTranslation, searchText, findReferences } from "./corpus.mjs";
@@ -314,7 +315,7 @@ function makeServer(fs) {
 export async function handleTool(fs, params) {
   const r = await runTool(fs, params);
   if (!r?.[OUT]) return r;
-  return { content: [{ type: "text", text: r.value === undefined ? message("(empty)", "(vide)") : render(r.value, fs.userId) }] };
+  return { content: [{ type: "text", text: r.value === undefined ? message("(empty)", "(vide)") : render(responseAliases(params.name, r.value), fs.userId) }] };
 }
 
 async function runTool(fs, params) {
