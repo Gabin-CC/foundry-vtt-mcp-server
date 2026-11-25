@@ -2,6 +2,7 @@
 // dés, stats dérivées, utilisation d'objets/sorts, compendiums FR.
 import crypto from "node:crypto";
 import { FOUNDRY } from "./foundry.mjs";
+import { evaluateNumericFormula } from "./formula-numeric.mjs";
 import { setSafePath } from "./security.mjs";
 
 // ====================== DÉS ======================
@@ -9,7 +10,8 @@ import { setSafePath } from "./security.mjs";
 export function rollFormula(formula, { flavor } = {}) {
   // les étiquettes de dégâts entre crochets (« 1d6[radiant] », « 2d8[on hit] ») ne font pas partie du jet
   const src = String(formula).replace(/\[[^\]]*\]/g, "").replace(/\s+/g, "");
-  if (!/^[0-9dDkhl+\-*/]+$/.test(src)) throw new Error(`Formule non supportée : ${formula}`);
+  if (src.length > 4096) throw new Error("Formule de dés trop longue");
+  if (!/^[0-9dDkhl+\-*/.]+$/.test(src)) throw new Error(`Formule non supportée : ${formula}`);
   const tokens = src.match(/[+\-*/]|[^+\-*/]+/g) || [];
   const terms = [];
   const values = [], operators = [];
@@ -18,8 +20,10 @@ export function rollFormula(formula, { flavor } = {}) {
     const right = values.pop(), left = values.pop(), operator = operators.pop();
     if (left == null || right == null) throw new Error(`Formule incomplète : ${formula}`);
     if (operator === "/" && right === 0) throw new Error("Division par zéro dans la formule de dés");
-    values.push(operator === "+" ? left + right : operator === "-" ? left - right
-      : operator === "*" ? left * right : Math.floor(left / right));
+    const result = operator === "+" ? left + right : operator === "-" ? left - right
+      : operator === "*" ? left * right : Math.floor(left / right);
+    if (!Number.isFinite(result)) throw new Error("Résultat numérique hors limites");
+    values.push(result);
   };
   let expectingValue = true, unarySign = 1;
   const dice = [];
@@ -51,10 +55,17 @@ export function rollFormula(formula, { flavor } = {}) {
       }
       val = results.filter(r => r.active).reduce((s, r) => s + r.result, 0);
       const die = { class: "Die", options: {}, evaluated: true, number, faces, modifiers, results };
+      // Unary minus is a real arithmetic term, not just a change to the final total.
+      // The serialized terms shown in Foundry chat must produce the same result.
+      if (unarySign < 0) {
+        terms.push({ class: "NumericTerm", options: {}, evaluated: true, number: -1 });
+        terms.push({ class: "OperatorTerm", options: {}, evaluated: true, operator: "*" });
+      }
       terms.push(die); dice.push({ formula: t, results: results.map(r => r.active ? r.result : `(${r.result})`) , faces });
-    } else if (/^\d+$/.test(t)) {
+    } else if (/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(t)) {
       val = Number(t);
-      terms.push({ class: "NumericTerm", options: {}, evaluated: true, number: val });
+      if (!Number.isFinite(val)) throw new Error(`Terme numérique hors limites : ${t}`);
+      terms.push({ class: "NumericTerm", options: {}, evaluated: true, number: unarySign * val });
     } else throw new Error(`Terme non supporté : ${t}`);
     values.push(unarySign * val);
     unarySign = 1;
@@ -124,10 +135,9 @@ export function evalBonus(v, actor) {
     .replace(/@abilities\.(\w+)\.mod/g, (_, k) => Math.floor(((Number(abil[k]?.value) || 10) - 10) / 2))
     .replace(/@abilities\.(\w+)\.value/g, (_, k) => Number(abil[k]?.value) || 10)
     .replace(/@prof/g, Math.ceil(lvl / 4) + 1)
-    .replace(/@(details\.level|classes\.\w+\.levels)/g, lvl)
-    .replace(/\b(max|min|floor|ceil|round|abs)\(/g, "Math.$1(");
-  if (/@/.test(f) || !/^[\d\s+\-*/().,]*$/.test(f.replace(/Math\.(max|min|floor|ceil|round|abs)/g, ""))) return 0;
-  try { const r = Function(`"use strict";return (${f});`)(); return Number.isFinite(r) ? r : 0; } catch { return 0; }
+    .replace(/@(details\.level|classes\.\w+\.levels)/g, lvl);
+  const result = evaluateNumericFormula(f);
+  return Number.isFinite(result) ? result : 0;
 }
 
 // ====================== STATS DÉRIVÉES ======================
@@ -304,24 +314,9 @@ function mainWeapon(actor, kind) {
 
 /** Formule de dégâts/soins utilisable par rollFormula : « max(…) », floor/ceil et divisions ramenés à ses termes. */
 export function toRollFormula(f) {
-  const nums = s => String(s).split(",").map(v => {
-    const raw = String(v).trim();
-    const division = /^([+-]?(?:\d+\.?\d*|\.\d+))\/([+-]?(?:\d+\.?\d*|\.\d+))$/.exec(raw);
-    return division ? Number(division[1]) / Number(division[2]) : Number(raw);
-  });
-  const fn = (name, args) => {
-    const vals = nums(args);
-    if (vals.some(v => !Number.isFinite(v))) return NaN;
-    if (name === "max") return Math.max(...vals);
-    if (name === "min") return Math.min(...vals);
-    if (name === "floor") return Math.floor(vals[0]);
-    if (name === "ceil") return Math.ceil(vals[0]);
-    if (name === "round") return Math.round(vals[0]);
-    return Math.abs(vals[0]);
-  };
   const closeOf = (t, i) => { let d = 0; for (let j = i; j < t.length; j++) { if (t[j] === "(") d++; else if (t[j] === ")" && --d === 0) return j; } return -1; };
   let s = String(f ?? "").trim().replace(/\s+/g, "");
-  // la parenthèse la plus interne est évaluée (fonction appliquée), division « / n » incluse
+  // Evaluate only entirely numeric subexpressions; preserve any dice for rollFormula.
   for (let pass = 0; pass < 24 && s.includes("("); pass++) {
     let hit = null;
     for (let i = 0; i < s.length; i++) {
@@ -330,11 +325,8 @@ export function toRollFormula(f) {
       if (close < 0) break;
       const fm = /(floor|ceil|round|abs|max|min)$/.exec(s.slice(0, i));
       const start = fm ? i - fm[1].length : i;
-      const inner = s.slice(i + 1, close);            // sans parenthèses (la plus interne)
-      const rest = s.slice(close + 1);
-      const lead = rest.length - rest.replace(/^\s+/, "").length;
-      const div = /^\/(\d+)/.exec(rest.slice(lead));
-      let v = fm ? fn(fm[1], inner) : NaN;
+      const inner = s.slice(i + 1, close);
+      const v = evaluateNumericFormula(fm ? `${fm[1]}(${inner})` : inner);
       // floor(dice) and floor(dice / positiveInteger) are already handled
       // exactly by rollFormula. Keep the dice intact for chat serialization.
       if (!Number.isFinite(v) && fm?.[1] === "floor" &&
@@ -342,21 +334,14 @@ export function toRollFormula(f) {
         hit = { start, end: close + 1, rep: inner };
         break;
       }
-      if (!Number.isFinite(v) && !fm) {
-        // parenthèse numérique : « (5+0) », « (5) »… (somme simple)
-        if (/^[\d\s+*/-]+$/.test(inner)) {
-          try { const r = Function(`"use strict";return (${inner})`)(); v = Number(r); } catch { v = NaN; }
-        }
-      }
       if (!Number.isFinite(v)) continue;
-      if (div) v = Math.floor(v / (Number(div[1]) || 1));
-      hit = { start, end: close + 1 + lead + (div ? div[0].length : 0), rep: String(v) };
+      hit = { start, end: close + 1, rep: String(v) };
       break;
     }
     if (!hit) break;
     s = s.slice(0, hit.start) + hit.rep + s.slice(hit.end);
   }
-  return s.replace(/Math\.Math\./g, "Math.");
+  return s;
 }
 
 function partFormula(p, { actor, d, item, spellLevel, castLevel }) {
@@ -493,7 +478,7 @@ export function useItem(rawActor, item, { activityId, slotLevel, advantage, disa
 
   // --- soins ---
   if (act.type === "heal" && act.healing) {
-    const f = partFormula(act.healing, ctx);
+    const f = toRollFormula(partFormula(act.healing, ctx));
     const r = rollFormula(f, { flavor: `${item.name} — ${DMG_FR[act.healing.types?.[0]] || "soins"}` });
     out.rolls.push(r);
     out.healing = { total: r.total, temp: (act.healing.types || []).includes("temphp"), formula: r.formula };
@@ -502,7 +487,8 @@ export function useItem(rawActor, item, { activityId, slotLevel, advantage, disa
 
   // --- jet libre (activité utility avec formule) ---
   if (act.type === "utility" && act.roll?.formula) {
-    const r = rollFormula(resolveFormulaVars(act.roll.formula, actor, d, item), { flavor: `${item.name} — ${act.roll.name || "jet"}` });
+    const f = toRollFormula(resolveFormulaVars(act.roll.formula, actor, d, item));
+    const r = rollFormula(f, { flavor: `${item.name} — ${act.roll.name || "jet"}` });
     out.rolls.push(r);
     out.lignes.push(`${act.roll.name || "Jet"} : ${r.total} (${r.formula})`);
   }
