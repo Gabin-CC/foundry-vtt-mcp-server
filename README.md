@@ -293,9 +293,15 @@ Optional OAuth 2.1 support for ChatGPT is documented above; each player connects
 
 - `update_documents`, `delete_documents`, `gm_sync_items` and `gm_patch_items` now require a successful recovery snapshot **before** writing to Foundry. If the original documents cannot be retrieved or `SNAPSHOT_DIR` is unavailable, the operation returns an error without starting the requested mutation. Keep this directory writable and back it up independently.
 - `gm_sync_items` and `gm_patch_items` remain dry-run by default. Review the proposed changes before passing `apply: true`, especially for operations that affect multiple characters or compendiums.
-- This guarantee does **not yet** cover every mutation path: `gm_check_ids` still needs a snapshot-backed repair workflow before it is suitable for unattended bulk changes.
+- `gm_check_ids` also prepares a single recovery snapshot covering the full ID repair plan (including advancement references) before the first write.
 - Snapshots are per operation, not database transactions. A Foundry error midway through a multi-document update can still leave a partial application; use `snapshots` to inspect the original values and restore affected documents. Test migrations on a disposable world before applying them to your campaign.
 - Run `npm run check` for the security, OAuth, item-synchronization, combat, and snapshot-order regression tests. These unit tests use mock Foundry sessions and do not replace an integration test with a real Foundry server.
+
+### Rules editions and dice formulas (phase 3)
+
+- `add_from_compendium` uses the `rules` field (`"2014"` or `"2024"`) separately from `item_type` (`"spell"`, `"feat"`, etc.). When switching between installed editions it resolves the corresponding item by **name**, not by assuming the same `_id` exists in both compendiums. If the requested edition is unavailable or contradicts source metadata, the import fails rather than silently using a different ruleset. Custom packs with explicitly labelled source rules are supported without a separate `*24` pack.
+- Dice formulas now respect multiplication/division precedence. Division is rounded down for D&D integer results and applied to the **rolled total**, not by silently reducing the number of dice. Variable resolution distinguishes spell slot level from spell save DC.
+- `gm_sync_items` checks an item's identity when its recorded source compendium is absent, and refuses ambiguous fallback candidates; matching `_id` values alone are not considered sufficient evidence.
 
 ## Licence
 

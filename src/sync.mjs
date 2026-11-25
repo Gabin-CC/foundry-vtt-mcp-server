@@ -8,6 +8,7 @@ import { fixId, sanitizeItemData, itemWarnings, keyedCollection } from "./repair
 import { diffUpdates, saveSnapshot } from "./snapshots.mjs";
 
 const VALID = /^[A-Za-z0-9]{16}$/;
+const norm = value => String(value || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 const splitSource = src => {
   const m = String(src || "").match(/^Compendium\.(.+)\.Item\.([^.]+)$/);
   return m ? { pack: m[1], id: m[2] } : null;
@@ -118,12 +119,14 @@ export function syncUpdate(item, source, diff) {
 
 /** Document source brut. Compendium absent du serveur (ex. module premium « dnd-players-handbook » que les
  *  compendiums dnd5e citent comme origine) : même _id cherché dans les compendiums d'objets installés. */
-async function sourceDoc(fs, src) {
+async function sourceDoc(fs, src, target) {
   const packs = (fs._packs2 ??= ((await fs.worldData()).packs || []));
   if (packs.some(p => p.id === src.pack)) {
     const d = (await fs.doc("get", "Item", { pack: src.pack, query: { _id: src.id } })).find(x => x._id === src.id);
     if (d) return d;
   }
+  const originalRef = `Compendium.${src.pack}.Item.${src.id}`;
+  const matches = [];
   fs._syncIdx ??= new Map();
   for (const p of packs.filter(p => p.type === "Item")) {
     if (!fs._syncIdx.has(p.id)) {
@@ -133,10 +136,17 @@ async function sourceDoc(fs, src) {
     }
     if (fs._syncIdx.get(p.id).has(src.id)) {
       const d = (await fs.doc("get", "Item", { pack: p.id, query: { _id: src.id } })).find(x => x._id === src.id);
-      if (d) return d;
+      if (!d || d.type !== target.type) continue;
+      const provenance = d._stats?.compendiumSource === originalRef || d.flags?.dnd5e?.sourceId === originalRef;
+      const identifier = d.system?.identifier && target.system?.identifier
+        && d.system.identifier === target.system.identifier;
+      if (provenance || identifier || norm(d.name) === norm(target.name)) matches.push({ pack: p.id, doc: d, provenance });
     }
   }
-  return null;
+  const preferred = matches.filter(m => m.provenance);
+  const candidates = preferred.length ? preferred : matches;
+  if (candidates.length > 1) throw new Error(`Ambiguous compendium source: ${candidates.map(m => m.pack).join(", ")}`);
+  return candidates[0]?.doc || null;
 }
 
 /** Synchronise les objets d'un acteur avec leur source de compendium (résumé compact : le détail par page). */
@@ -153,7 +163,7 @@ export async function syncItems(fs, { actor, item: itemRef, apply = false, only,
     if (!src) { sansSource++; if (itemRef) detail.push({ nom: it.name, statut: "sans source (créé à la main)" }); continue; }
     if (onlyPack && src.pack !== onlyPack) continue;
     let source;
-    try { source = await sourceDoc(fs, src); }
+    try { source = await sourceDoc(fs, src, it); }
     catch (e) { detail.push({ nom: it.name, source: ref, probleme: e.message }); continue; }
     if (!source) { detail.push({ nom: it.name, source: ref, probleme: "source introuvable" }); continue; }
     const diff = itemDiff(it, source);

@@ -9,6 +9,7 @@
  * - scanAndRepair : outil MJ, contrôle (et corrige sur demande) compendiums du monde, objets du monde et fiches.
  */
 import crypto from "node:crypto";
+import { diffUpdates, saveSnapshot } from "./snapshots.mjs";
 
 export const VALID_ID = /^[A-Za-z0-9]{16}$/;
 
@@ -141,7 +142,8 @@ function repairUpdate(item) {
  */
 export async function scanAndRepair(fs, { apply = false, actors = true, items = true, packs = true } = {}) {
   const report = { compendiums: [], objets_du_monde: [], fiches: [], effets_a_refaire: [], corriges: 0 };
-  const handle = async (list, where, opts, bucket) => {
+  const tasks = [];
+  const handle = (list, where, opts, bucket) => {
     const ups = [];
     for (const it of list) {
       const iss = idIssues(it);
@@ -151,26 +153,23 @@ export async function scanAndRepair(fs, { apply = false, actors = true, items = 
       const u = repairUpdate(it);
       if (u) ups.push(u);
     }
-    if (apply && ups.length) {
-      await fs.doc("update", "Item", { ...opts, updates: ups, diff: true, modifiedTime: Date.now() });
-      report.corriges += ups.length;
-    }
+    if (ups.length) tasks.push({ list, opts, updates: ups, label: where, count: ups.length });
     return ups;
   };
   if (packs) {
     const world = ((await fs.worldData()).packs || []).filter(p => p.type === "Item" && String(p.id).startsWith("world."));
     for (const p of world) {
       const docs = await fs.doc("get", "Item", { pack: p.id, query: {} });
-      await handle(docs, p.id, { pack: p.id }, report.compendiums);
+      handle(docs, p.id, { pack: p.id }, report.compendiums);
     }
   }
-  if (items) await handle(await fs.doc("get", "Item", { query: {} }), "monde", {}, report.objets_du_monde);
+  if (items) handle(await fs.doc("get", "Item", { query: {} }), "monde", {}, report.objets_du_monde);
   if (actors) {
     for (const a of await fs.doc("get", "Actor", { query: {} })) {
       const its = await fs.doc("get", "Item", { parentUuid: `Actor.${a._id}`, query: {} });
-      const ups = await handle(its, a.name, { parentUuid: `Actor.${a._id}` }, report.fiches);
+      const ups = handle(its, a.name, { parentUuid: `Actor.${a._id}` }, report.fiches);
       // références d'avancement des autres objets de la fiche (« objet.avancement ») renommées de la même façon
-      if (apply && ups.length) {
+      if (ups.length) {
         const refUps = [];
         for (const it of its) {
           const f = it.flags?.dnd5e || {}, u = { _id: it._id };
@@ -180,11 +179,31 @@ export async function scanAndRepair(fs, { apply = false, actors = true, items = 
           }
           if (Object.keys(u).length > 1) refUps.push(u);
         }
-        if (refUps.length) await fs.doc("update", "Item", { parentUuid: `Actor.${a._id}`, updates: refUps, diff: true, modifiedTime: Date.now() });
+        if (refUps.length) tasks.push({ list: its, opts: { parentUuid: `Actor.${a._id}` }, updates: refUps, label: a.name, count: 0 });
       }
     }
   }
   report.total = report.compendiums.length + report.objets_du_monde.length + report.fiches.length;
   report.simulation = !apply;
+  if (apply && tasks.length) {
+    // Plan the entire migration and capture all originals before any Foundry mutation.
+    const ops = tasks.map(t => {
+      const diff = diffUpdates(t.list, t.updates);
+      if (diff.entries.length !== t.updates.length)
+        throw new Error(`Item ID repair aborted: cannot snapshot every update in ${t.label}`);
+      return { action: "update", type: "Item", ...(t.opts.pack ? { pack: t.opts.pack } : {}),
+        ...(t.opts.parentUuid ? { parent: t.opts.parentUuid } : {}), entries: diff.entries };
+    });
+    const snapshot = await saveSnapshot(fs, "gm_check_ids", "Item ID repair", ops);
+    if (!snapshot) throw new Error("Item ID repair aborted: no recovery snapshot was created");
+    report.instantane = snapshot;
+    for (const task of tasks) {
+      for (let i = 0; i < task.updates.length; i += 50) {
+        await fs.doc("update", "Item", { ...task.opts, updates: task.updates.slice(i, i + 50),
+          diff: true, modifiedTime: Date.now() });
+      }
+      report.corriges += task.count;
+    }
+  }
   return report;
 }

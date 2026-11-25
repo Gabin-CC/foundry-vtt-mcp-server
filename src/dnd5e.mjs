@@ -9,17 +9,33 @@ import { setSafePath } from "./security.mjs";
 export function rollFormula(formula, { flavor } = {}) {
   // les étiquettes de dégâts entre crochets (« 1d6[radiant] », « 2d8[on hit] ») ne font pas partie du jet
   const src = String(formula).replace(/\[[^\]]*\]/g, "").replace(/\s+/g, "");
-  if (!/^[0-9dDkhl+\-*]+$/.test(src)) throw new Error(`Formule non supportée : ${formula}`);
-  const tokens = src.match(/[+\-*]|[^+\-*]+/g) || [];
+  if (!/^[0-9dDkhl+\-*/]+$/.test(src)) throw new Error(`Formule non supportée : ${formula}`);
+  const tokens = src.match(/[+\-*/]|[^+\-*/]+/g) || [];
   const terms = [];
-  let total = 0, op = "+";
+  const values = [], operators = [];
+  const precedence = { "+": 1, "-": 1, "*": 2, "/": 2 };
+  const evaluate = () => {
+    const right = values.pop(), left = values.pop(), operator = operators.pop();
+    if (left == null || right == null) throw new Error(`Formule incomplète : ${formula}`);
+    if (operator === "/" && right === 0) throw new Error("Division par zéro dans la formule de dés");
+    values.push(operator === "+" ? left + right : operator === "-" ? left - right
+      : operator === "*" ? left * right : Math.floor(left / right));
+  };
+  let expectingValue = true, unarySign = 1;
   const dice = [];
   for (const t of tokens) {
-    if ("+-*".includes(t)) {
-      op = t;
+    if (Object.hasOwn(precedence, t)) {
+      if (expectingValue) {
+        if (t === "+" || t === "-") { if (t === "-") unarySign *= -1; continue; }
+        throw new Error(`Opérateur inattendu : ${t}`);
+      }
+      while (operators.length && precedence[operators.at(-1)] >= precedence[t]) evaluate();
+      operators.push(t);
       terms.push({ class: "OperatorTerm", options: {}, evaluated: true, operator: t });
+      expectingValue = true;
       continue;
     }
+    if (!expectingValue) throw new Error(`Opérateur manquant : ${formula}`);
     let val;
     const m = /^(\d*)[dD](\d+)(?:(kh|kl)(\d*))?$/.exec(t);
     if (m) {
@@ -40,9 +56,14 @@ export function rollFormula(formula, { flavor } = {}) {
       val = Number(t);
       terms.push({ class: "NumericTerm", options: {}, evaluated: true, number: val });
     } else throw new Error(`Terme non supporté : ${t}`);
-    total = op === "+" ? total + val : op === "-" ? total - val : total * val;
+    values.push(unarySign * val);
+    unarySign = 1;
+    expectingValue = false;
   }
-  const roll = { class: "Roll", options: flavor ? { flavor } : {}, dice: [], formula: src.replace(/([+\-*])/g, " $1 ").trim(), terms, total, evaluated: true };
+  if (expectingValue && tokens.length) throw new Error(`Formule incomplète : ${formula}`);
+  while (operators.length) evaluate();
+  const total = values[0] ?? 0;
+  const roll = { class: "Roll", options: flavor ? { flavor } : {}, dice: [], formula: src.replace(/([+\-*/])/g, " $1 ").trim(), terms, total, evaluated: true };
   return { roll, total, dice, formula: roll.formula };
 }
 
@@ -253,26 +274,10 @@ function estimateHpMax(actor, d) {
 function resolveFormulaVars(f, actor, d, item, castLevel = null) {
   return String(f ?? "").replace(/@mod/g, item?.type === "spell" ? d.scMod : d.mods[weaponAbility(item, d)] ?? 0)
     .replace(/@prof/g, d.prof).replace(/@abilities\.(\w+)\.mod/g, (_, k) => d.mods[k] ?? 0)
-    .replace(/@abilities\.(\w+)\.mod/g, (_, k) => d.mods[k] ?? 0)
     .replace(/@details\.level|@classes\.\w+\.levels/g, d.level)
-    .replace(/@attributes\.spell\.level|@attributes\.spell\.dc/g, castLevel ?? spellLevel ?? 0);
-  const fn = (name, args) => {
-    const vals = args.map(v => Number(String(v).trim()));
-    if (vals.some(v => !Number.isFinite(v))) return 0;
-    if (name === "max") return Math.max(...vals);
-    if (name === "min") return Math.min(...vals);
-    if (name === "floor") return Math.floor(vals[0]);
-    if (name === "ceil") return Math.ceil(vals[0]);
-    if (name === "round") return Math.round(vals[0]);
-    return Math.abs(vals[0]);
-  };
-  let s = String(f ?? "");
-  for (let i = 0; i < 6 && /\b(max|min|floor|ceil|round|abs)\s*\(/.test(s); i++) {
-    const next = s.replace(/\b(max|min|floor|ceil|round|abs)\s*\(([^()]*)\)/g, (_, name, args) => String(fn(name, args.split(","))));
-    if (next === s) break;
-    s = next;
-  }
-  return s.replace(/\s+/g, "");
+    .replace(/@attributes\.spell\.level/g, castLevel ?? 0)
+    .replace(/@attributes\.spell\.dc/g, d.spellDC)
+    .replace(/\s+/g, "");
 }
 
 function weaponAbility(item, d) {
@@ -310,14 +315,8 @@ export function toRollFormula(f) {
     if (name === "round") return Math.round(vals[0]);
     return Math.abs(vals[0]);
   };
-  // « 2d6/2 » → dés répartis
-  const diceDiv = txt => txt.replace(/(\d*)d(\d+)\/(\d+)/g, (_, n, faces, d) => {
-    const k = Number(d) || 1;
-    if (k <= 1) return `${n || 1}d${faces}`;
-    return (Number(n || 1) % k === 0) ? `${Number(n || 1) / k}d${faces}` : `${n || 1}d${faces}`;
-  });
   const closeOf = (t, i) => { let d = 0; for (let j = i; j < t.length; j++) { if (t[j] === "(") d++; else if (t[j] === ")" && --d === 0) return j; } return -1; };
-  let s = diceDiv(String(f ?? "").trim().replace(/\s+/g, ""));
+  let s = String(f ?? "").trim().replace(/\s+/g, "");
   // la parenthèse la plus interne est évaluée (fonction appliquée), division « / n » incluse
   for (let pass = 0; pass < 24 && s.includes("("); pass++) {
     let hit = null;
@@ -330,7 +329,7 @@ export function toRollFormula(f) {
       const inner = s.slice(i + 1, close);            // sans parenthèses (la plus interne)
       const rest = s.slice(close + 1);
       const lead = rest.length - rest.replace(/^\s+/, "").length;
-      const div = /^\/(\d+)/.exec(rest.slice(lead)) || /^(\d+)/.exec(rest.slice(lead));
+      const div = /^\/(\d+)/.exec(rest.slice(lead));
       let v = fm ? fn(fm[1], inner) : NaN;
       if (!Number.isFinite(v) && !fm) {
         // parenthèse numérique : « (5+0) », « (5) »… (somme simple)
@@ -344,17 +343,8 @@ export function toRollFormula(f) {
       break;
     }
     if (!hit) break;
-    s = diceDiv(s.slice(0, hit.start) + hit.rep + s.slice(hit.end));
+    s = s.slice(0, hit.start) + hit.rep + s.slice(hit.end);
   }
-  // divisions restantes : « 2d6/2 » → dés répartis ; « 8/2 » → entier
-  s = s.replace(/(\d*)d(\d+)\/(\d+)/g, (_, n, faces, d) => {
-    const k = Number(d) || 1;
-    if (k <= 1) return `${n || 1}d${faces}`;
-    return (Number(n || 1) % k === 0) ? `${Number(n || 1) / k}d${faces}` : `${n || 1}d${faces}`;
-  }).replace(/(\d+)\/(\d+)/g, (m, a, b) => {
-    const k = Number(b) || 1;
-    return k > 1 ? String(Math.floor(Number(a) / k)) : m;
-  });
   return s.replace(/Math\.Math\./g, "Math.");
 }
 

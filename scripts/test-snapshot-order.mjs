@@ -9,8 +9,8 @@ process.env.SNAPSHOT_DIR = temporary;
 process.env.NO_LISTEN = "1";
 after(() => fs.rmSync(temporary, { recursive: true, force: true }));
 
-const [{ handleTool }, { patchItems }, { syncItems }] = await Promise.all([
-  import("../src/server.mjs"), import("../src/patchrun.mjs"), import("../src/sync.mjs")
+const [{ handleTool }, { patchItems }, { syncItems }, { scanAndRepair }] = await Promise.all([
+  import("../src/server.mjs"), import("../src/patchrun.mjs"), import("../src/sync.mjs"), import("../src/repair.mjs")
 ]);
 
 const ACTOR_ID = "aaaaaaaaaaaaaaaa";
@@ -95,4 +95,30 @@ test("gm_sync_items records an original snapshot before applying a synchronizati
   });
   assert.ok(result.instantane);
   assert.ok(savedBeforeWrite);
+});
+
+test("gm_check_ids saves a complete multi-document repair plan before any write", async () => {
+  const broken = { _id: ITEM_ID, name: "Broken ID", type: "feat",
+    system: { activities: { "bad-id": { _id: "bad-id", type: "attack" } }, advancement: {} } };
+  const linked = { _id: "dddddddddddddddd", name: "Linked item", type: "feat", system: {},
+    flags: { dnd5e: { advancementOrigin: `${ITEM_ID}.bad-id` } } };
+  const items = [broken, linked];
+  const writes = [];
+  const session = { userId: "gm", user: { name: "GM" },
+    async doc(action, type, options) {
+      if (action === "get" && type === "Actor") return [{ _id: ACTOR_ID, name: "Hero" }];
+      if (action === "get" && type === "Item") return items;
+      if (action === "update") {
+        writes.push(options.updates);
+        assert.ok(snapshots().length >= 5, "all affected originals must be saved before the first repair");
+        return [];
+      }
+      return [];
+    } };
+  const result = await scanAndRepair(session, { apply: true, actors: true, items: false, packs: false });
+  assert.equal(result.corriges, 1);
+  assert.equal(writes.length, 2);
+  const snapshot = JSON.parse(fs.readFileSync(path.join(temporary, `${result.instantane}.json`)));
+  assert.equal(snapshot.ops.length, 2); // repaired ID + updated advancement reference
+  assert.equal(snapshot.ops[0].entries[0].avant["system.activities.bad-id"]._id, "bad-id");
 });
