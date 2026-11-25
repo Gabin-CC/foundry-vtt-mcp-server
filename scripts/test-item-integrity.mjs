@@ -182,7 +182,9 @@ test("source fallback refuses ambiguous equal-name matches across compendiums", 
     }
   };
   const report = await syncItems(session, { actor: { _id: ACTOR_ID, name: "Hero", items: [target] } });
-  assert.match(report.detail[0].probleme, /Ambiguous compendium source/);
+  assert.equal(report.detail[0].probleme, message(
+    "Ambiguous compendium source: world.a, world.b",
+    "Source de compendium ambiguë : world.a, world.b"));
 });
 
 test("gm_check_ids never begins bulk repairs if its combined snapshot fails", async () => {

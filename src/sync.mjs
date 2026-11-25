@@ -146,7 +146,8 @@ async function sourceDoc(fs, src, target) {
   }
   const preferred = matches.filter(m => m.provenance);
   const candidates = preferred.length ? preferred : matches;
-  if (candidates.length > 1) throw new Error(`Ambiguous compendium source: ${candidates.map(m => m.pack).join(", ")}`);
+  if (candidates.length > 1) throw new Error(message(`Ambiguous compendium source: ${candidates.map(m => m.pack).join(", ")}`,
+    `Source de compendium ambiguë : ${candidates.map(m => m.pack).join(", ")}`));
   return candidates[0]?.doc || null;
 }
 
@@ -178,9 +179,12 @@ export async function syncItems(fs, { actor, item: itemRef, apply = false, only,
   if (todo.length) {
     const cur = todo.length === 1 ? chosen.filter(i => i._id === todo[0]._id) : await fs.doc("get", "Item", { parentUuid: `Actor.${actor._id}`, query: {} });
     const diff = diffUpdates(cur, todo);
-    if (diff.entries.length !== todo.length) throw new Error("Item synchronization aborted: cannot snapshot every requested change");
+    if (diff.entries.length !== todo.length) throw new Error(message(
+      "Item synchronization aborted: cannot snapshot every requested change",
+      "Synchronisation des objets interrompue : impossible de sauvegarder toutes les modifications demandées"));
     instantane = await saveSnapshot(fs, "gm_sync_items", `synchronisation de ${actor.name}`, [{ action: "update", type: "Item", parent: `Actor.${actor._id}`, entries: diff.entries }]);
-    if (!instantane) throw new Error("Item synchronization aborted: no recovery snapshot was created");
+    if (!instantane) throw new Error(message("Item synchronization aborted: no recovery snapshot was created",
+      "Synchronisation des objets interrompue : aucun instantané de restauration créé"));
     for (let i = 0; i < todo.length; i += 50) {
       const r = await fs.doc("update", "Item", { parentUuid: `Actor.${actor._id}`, updates: todo.slice(i, i + 50), diff: true, recursive: true, modifiedTime: Date.now(), render: true });
       modifies += Array.isArray(r) ? r.length : 1;

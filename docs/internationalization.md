@@ -18,7 +18,7 @@ translations, or the Foundry world itself.
 | Tool discovery descriptions | English | Already English, regardless of locale |
 | Selected errors, pagination hints and GM/table/card feedback | `MCP_LOCALE=fr` (default) or `en` | Legacy French by default; opt-in English strings |
 | D&D 5e advancement choices, spell preparation, check labels, item-use feedback, resource errors and dice-parser errors | `MCP_LOCALE=fr` (default) or `en` | Text values only; existing response keys, choice identifiers and Foundry document data remain unchanged |
-| GM permissions explanations, item-repair warnings, synchronization diffs and dry-run guidance | `MCP_LOCALE=fr` (default) or `en` | Human-readable text only; permission-level/status values and snapshot metadata remain unchanged |
+| GM permissions explanations, item-repair warnings, synchronization diffs, dry-run guidance and snapshot-safety errors | `MCP_LOCALE=fr` (default) or `en` | Human-readable text only; permission-level/status values and snapshot metadata remain unchanged |
 | OAuth sign-in page and its validation feedback | Browser `Accept-Language` (English/French), then `MCP_LOCALE` | Same form fields, endpoints, PKCE flow and credentials handling |
 | Foundry names, journal text, dice rules, translations and data | Not translated by this layer | Unchanged |
 
@@ -104,8 +104,10 @@ This is not a claim that every message has been translated. In particular:
   `statut: "sans source (créé à la main)"`, the French JSON keys, and stored
   recovery snapshot labels remain unchanged. Renaming or translating these
   protocol **values** requires a separate, versioned compatibility step.
-- A few older internal repair/synchronization failures already use English in
-  both locales; this change preserves their historical wording.
+- Snapshot-safety failures in GM item repair/synchronization/patching and
+  document update/deletion now follow `MCP_LOCALE`. The English messages and
+  the no-write-on-failure behavior are preserved. Foundry-native errors
+  forwarded by the server may still use Foundry's own language.
 - End-to-end tests against a disposable Foundry v14 world remain necessary
   before changing stateful operations or making English the default.
 
