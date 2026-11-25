@@ -5,11 +5,12 @@
 import { applyPatches } from "./patches.mjs";
 import { sanitizeItemData } from "./repair.mjs";
 import { diffUpdates, saveSnapshot } from "./snapshots.mjs";
+import { message } from "./i18n.mjs";
 
 /** Applique les correctifs aux objets d'une liste (acteur ou compendium). */
 export async function patchItems(fs, { actor = null, parentUuid = null, pack = null, items, apply = false, itemRef = null }) {
   const list = itemRef ? items.filter(i => i._id === itemRef || i.name.toLowerCase() === String(itemRef).toLowerCase()) : items;
-  if (itemRef && !list.length) throw new Error(`Objet introuvable : ${itemRef}`);
+  if (itemRef && !list.length) throw new Error(message(`Item not found: ${itemRef}`, `Objet introuvable : ${itemRef}`));
   const where = actor ? actor.name : pack;
   const updates = [], detail = [];
   for (const it of list) {
@@ -34,7 +35,7 @@ export async function patchItems(fs, { actor = null, parentUuid = null, pack = n
     ou: where, objets: list.length, a_corriger: detail.length, modifies: apply ? updates.length : 0,
     simulation: !apply, ...(detail.length ? { detail } : {}),
     ...(instantane ? { instantane } : {}),
-    ...(!apply && detail.length ? { note: "Simulation : relancer avec apply=true pour écrire (un instantané de restauration est gardé)." } : {}),
+    ...(!apply && detail.length ? { note: message("Dry run: call again with apply=true to write changes (a recovery snapshot will be kept).", "Simulation : relancer avec apply=true pour écrire (un instantané de restauration est gardé).") } : {}),
   };
 }
 

@@ -6,6 +6,7 @@
  */
 import { fixId, sanitizeItemData, itemWarnings, keyedCollection } from "./repair.mjs";
 import { diffUpdates, saveSnapshot } from "./snapshots.mjs";
+import { message } from "./i18n.mjs";
 
 const VALID = /^[A-Za-z0-9]{16}$/;
 const norm = value => String(value || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
@@ -31,9 +32,9 @@ export function itemDiff(item, source) {
   const missingAdv = Object.keys(sAdv).filter(k => !adv[fixId(k)] || !adv[fixId(k)].type)
     .map(k => ({ id: k, name: sAdv[k]?.title || sAdv[k]?.type, keepValue: adv[fixId(k)]?.value ?? adv[k]?.value }));
   const changed = [];
-  if (missingActs.length) changed.push(`${missingActs.length} activité(s) : ${missingActs.map(a => a.name).join(", ")}`);
-  if (missingEff.length) changed.push(`${missingEff.length} effet(s) : ${missingEff.map(e => e.name).join(", ")}`);
-  if (missingAdv.length) changed.push(`${missingAdv.length} avancement(s) : ${missingAdv.map(a => a.name).join(", ")}`);
+  if (missingActs.length) changed.push(message(`${missingActs.length} ${missingActs.length === 1 ? "activity" : "activities"}: ${missingActs.map(a => a.name).join(", ")}`, `${missingActs.length} activité(s) : ${missingActs.map(a => a.name).join(", ")}`));
+  if (missingEff.length) changed.push(message(`${missingEff.length} ${missingEff.length === 1 ? "effect" : "effects"}: ${missingEff.map(e => e.name).join(", ")}`, `${missingEff.length} effet(s) : ${missingEff.map(e => e.name).join(", ")}`));
+  if (missingAdv.length) changed.push(message(`${missingAdv.length} ${missingAdv.length === 1 ? "advancement" : "advancements"}: ${missingAdv.map(a => a.name).join(", ")}`, `${missingAdv.length} avancement(s) : ${missingAdv.map(a => a.name).join(", ")}`));
   return { changed, missingActs, missingEff, missingAdv };
 }
 
@@ -154,7 +155,7 @@ export async function syncItems(fs, { actor, item: itemRef, apply = false, only,
   const items = actor.items?.length ? actor.items : await fs.doc("get", "Item", { parentUuid: `Actor.${actor._id}`, query: {} });
   const wanted = only?.length ? only.map(o => String(o).toLowerCase()) : null;
   const chosen = itemRef ? items.filter(it => it._id === itemRef || it.name.toLowerCase() === String(itemRef).toLowerCase()) : items;
-  if (itemRef && !chosen.length) throw new Error(`Objet introuvable sur ${actor.name} : ${itemRef}`);
+  if (itemRef && !chosen.length) throw new Error(message(`Item not found on ${actor.name}: ${itemRef}`, `Objet introuvable sur ${actor.name} : ${itemRef}`));
   const ups = [], detail = [];
   let complet = 0, sansSource = 0;
   for (const it of chosen) {
@@ -165,7 +166,7 @@ export async function syncItems(fs, { actor, item: itemRef, apply = false, only,
     let source;
     try { source = await sourceDoc(fs, src, it); }
     catch (e) { detail.push({ nom: it.name, source: ref, probleme: e.message }); continue; }
-    if (!source) { detail.push({ nom: it.name, source: ref, probleme: "source introuvable" }); continue; }
+    if (!source) { detail.push({ nom: it.name, source: ref, probleme: message("source not found", "source introuvable") }); continue; }
     const diff = itemDiff(it, source);
     if (!diff.changed.length) { complet++; continue; }
     const w = itemWarnings(it, [source]);
@@ -190,6 +191,6 @@ export async function syncItems(fs, { actor, item: itemRef, apply = false, only,
     a_completer: detail.length, modifies, simulation: !apply,
     ...(instantane ? { instantane } : {}),
     ...(detail.length ? { detail } : {}),
-    ...(!apply && detail.length ? { note: "Simulation : relancer avec apply=true pour compléter (un instantané de restauration est gardé)." } : {}),
+    ...(!apply && detail.length ? { note: message("Dry run: call again with apply=true to complete the items (a recovery snapshot will be kept).", "Simulation : relancer avec apply=true pour compléter (un instantané de restauration est gardé).") } : {}),
   };
 }

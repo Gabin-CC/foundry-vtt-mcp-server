@@ -135,7 +135,7 @@ async function permissionsOf(fs, uuid, userRef) {
   }
   if (type === "Scene") Object.assign(res, { active: !!doc.active, navigation: !!doc.navigation, image: sceneImage(doc),
     jetons_caches: (doc.tokens || []).filter(t => t.hidden).map(t => t.name),
-    note: "Un joueur voit la scène active, et dans la navigation les scènes marquées « navigation » dont il a au moins le droit limité." });
+    note: message("A player can see the active scene and, in the navigation bar, scenes marked for navigation where they have at least Limited permission.", "Un joueur voit la scène active, et dans la navigation les scènes marquées « navigation » dont il a au moins le droit limité.") });
   return res;
 }
 
@@ -248,7 +248,7 @@ export async function handleGm(fs, name, a) {
             droits: p.utilisateurs.filter(u => !dest.length || destIds.includes(u._id)).map(u => ({ nom: u.nom, niveau: u.niveau })) };
         } else {
           for (const u of (dest.length ? dest : players)) await fs.broadcast("pullToScene", sc._id, u._id, {});
-          done.push(`scène ${sc.name}`);
+          done.push(`${message("scene", "scène")} ${sc.name}`);
         }
       }
       if (a.preview) { if (!Object.keys(preview).length) throw new Error(message("Specify 'image', 'journal', or 'scene'", "Préciser 'image', 'journal' ou 'scene'")); return { apercu: preview, destinataires: destLabel, note: message("Nothing was shared (preview).", "Rien n'a été montré (preview).") }; }
