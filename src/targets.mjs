@@ -1,5 +1,5 @@
 /**
- * Cibles de use_item : jetons (UUID Scene.x.Token.y, _id ou nom sur la scène active) ou acteurs.
+ * Cibles de use_item : jetons (UUID Scene.x.Token.y, _id ou nom sur la scène active / du combat, _id sur toute scène) ou acteurs.
  * use_item calcule une proposition par cible (touché selon la CA, jet de sauvegarde de la cible, dégâts avec
  * résistances / immunités / vulnérabilités, soins, effets / états de l'activité) ; rien n'est appliqué avant
  * validation par apply_damage (proposition entière, sous-ensemble de cibles ou valeurs corrigées).
@@ -44,15 +44,37 @@ export async function resolveTarget(fs, ref) {
     if (!actor) throw new Error(message(`Actor not found: ${ref}`, `Acteur introuvable : ${ref}`));
     return { label: actor.name, uuid: ref, actor, write: { type: "Actor", _id: actor._id, parentUuid: null } };
   } else {
-    // jeton de la scène active par _id ou nom
+    // jeton par _id ou nom : scène active, puis scène du combat en cours ; un _id est aussi cherché sur les
+    // autres scènes (unique dans le monde en pratique), un nom non (homonymes probables d'une scène à l'autre).
     const scenes = await fs.doc("get", "Scene", { query: {} });
-    scene = scenes.find(s => s.active);
-    if (!scene) throw new Error(message(`No active scene to find token "${ref}": provide its UUID (Scene.x.Token.y)`, `Aucune scène active pour trouver le jeton « ${ref} » : donner son UUID (Scene.x.Token.y)`));
-    const tokens = await fs.doc("get", "Token", { parentUuid: `Scene.${scene._id}`, query: {} });
-    const hits = tokens.filter(t => t._id === ref).concat(tokens.filter(t => norm(t.name) === norm(ref)));
-    if (!hits.length) throw new Error(message(`Token "${ref}" not found on the active scene (${scene.name})`, `Jeton « ${ref} » introuvable sur la scène active (${scene.name})`));
-    if (hits.length > 1 && hits[0]._id !== ref) throw new Error(message(`Multiple tokens match "${ref}": ${hits.map(t => `Scene.${scene._id}.Token.${t._id}`).join(", ")}`, `Plusieurs jetons « ${ref} » : ${hits.map(t => `Scene.${scene._id}.Token.${t._id}`).join(", ")}`));
-    token = hits[0];
+    const active = scenes.find(s => s.active);
+    let combatScenes = [];
+    try {
+      const combats = await fs.doc("get", "Combat", { query: {} });
+      const ids = [...combats.filter(c => c.active), ...combats.filter(c => !c.active)].map(c => c.scene).filter(Boolean);
+      combatScenes = ids.map(id => scenes.find(s => s._id === id)).filter(Boolean);
+    } catch { /* combats illisibles */ }
+    const priority = [...new Set([active, ...combatScenes].filter(Boolean))];
+    const others = scenes.filter(s => !priority.includes(s));
+    const tokensOf = async sc => fs.doc("get", "Token", { parentUuid: `Scene.${sc._id}`, query: {} }).catch(() => []);
+    for (const sc of priority) {
+      const tokens = await tokensOf(sc);
+      const byId = tokens.find(t => t._id === ref);
+      if (byId) { scene = sc; token = byId; break; }
+      const named = tokens.filter(t => norm(t.name) === norm(ref));
+      if (named.length > 1) throw new Error(message(`Multiple tokens match "${ref}": ${named.map(t => `Scene.${sc._id}.Token.${t._id}`).join(", ")}`, `Plusieurs jetons « ${ref} » : ${named.map(t => `Scene.${sc._id}.Token.${t._id}`).join(", ")}`));
+      if (named.length) { scene = sc; token = named[0]; break; }
+    }
+    if (!token && /^[A-Za-z0-9]{16}$/.test(ref)) {
+      for (const sc of others) {
+        const t = (await tokensOf(sc)).find(x => x._id === ref);
+        if (t) { scene = sc; token = t; break; }
+      }
+    }
+    if (!token) {
+      if (!priority.length) throw new Error(message(`No active scene or combat to find token "${ref}": provide its UUID (Scene.x.Token.y)`, `Aucune scène active ni combat pour trouver le jeton « ${ref} » : donner son UUID (Scene.x.Token.y)`));
+      throw new Error(message(`Token "${ref}" not found on the active scene or the combat scene (${priority.map(s => s.name).join(", ")})`, `Jeton « ${ref} » introuvable sur la scène active ni sur celle du combat (${priority.map(s => s.name).join(", ")})`));
+    }
   }
   const base = token.actorId ? (await fs.doc("get", "Actor", { query: { _id: token.actorId } })).find(a => a._id === token.actorId) : null;
   if (!base) throw new Error(message(`Token ${token.name} has no actor`, `Le jeton ${token.name} n'a pas d'acteur`));

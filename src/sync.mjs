@@ -118,6 +118,28 @@ export function syncUpdate(item, source, diff) {
   return up;
 }
 
+// Index de repli (_id des objets de chaque compendium d'objets), construit seulement si une source est
+// introuvable à l'endroit indiqué : compendiums lus en parallèle, chacun une fois par processus (30 min),
+// par monde et par portée de droits (un compendium ajouté plus tard est indexé à son tour).
+const ID_INDEX = new Map();   // monde|portée|packId -> { at, p: Promise<Set<_id>> }
+const INDEX_TTL = 30 * 60 * 1000;
+export function resetSyncIndex() { ID_INDEX.clear(); }
+async function idIndex(fs, packs) {
+  const scope = `${fs.world?.id || ""}|${fs.restricted ? `user:${fs.userId}` : "gm"}`;
+  const entries = packs.filter(pk => pk.type === "Item").map(pk => {
+    const key = `${scope}|${pk.id}`;
+    let c = ID_INDEX.get(key);
+    if (!c || Date.now() - c.at > INDEX_TTL) {
+      c = { at: Date.now(), p: fs.doc("get", "Item", { pack: pk.id, query: {}, index: true, indexFields: ["_id"] })
+        .then(list => new Set((list || []).map(x => x._id)))
+        .catch(() => { ID_INDEX.delete(key); return new Set(); }) };
+      ID_INDEX.set(key, c);
+    }
+    return c.p.then(set => [pk.id, set]);
+  });
+  return new Map(await Promise.all(entries));
+}
+
 /** Document source brut. Compendium absent du serveur (ex. module premium « dnd-players-handbook » que les
  *  compendiums dnd5e citent comme origine) : même _id cherché dans les compendiums d'objets installés. */
 async function sourceDoc(fs, src, target) {
@@ -128,21 +150,14 @@ async function sourceDoc(fs, src, target) {
   }
   const originalRef = `Compendium.${src.pack}.Item.${src.id}`;
   const matches = [];
-  fs._syncIdx ??= new Map();
-  for (const p of packs.filter(p => p.type === "Item")) {
-    if (!fs._syncIdx.has(p.id)) {
-      let ids = [];
-      try { ids = (await fs.doc("get", "Item", { pack: p.id, query: {}, index: true, indexFields: ["_id"] })).map(x => x._id); } catch { /* */ }
-      fs._syncIdx.set(p.id, new Set(ids));
-    }
-    if (fs._syncIdx.get(p.id).has(src.id)) {
-      const d = (await fs.doc("get", "Item", { pack: p.id, query: { _id: src.id } })).find(x => x._id === src.id);
-      if (!d || d.type !== target.type) continue;
-      const provenance = d._stats?.compendiumSource === originalRef || d.flags?.dnd5e?.sourceId === originalRef;
-      const identifier = d.system?.identifier && target.system?.identifier
-        && d.system.identifier === target.system.identifier;
-      if (provenance || identifier || norm(d.name) === norm(target.name)) matches.push({ pack: p.id, doc: d, provenance });
-    }
+  const index = await idIndex(fs, packs);
+  for (const p of packs.filter(p => p.type === "Item" && index.get(p.id)?.has(src.id))) {
+    const d = (await fs.doc("get", "Item", { pack: p.id, query: { _id: src.id } })).find(x => x._id === src.id);
+    if (!d || d.type !== target.type) continue;
+    const provenance = d._stats?.compendiumSource === originalRef || d.flags?.dnd5e?.sourceId === originalRef;
+    const identifier = d.system?.identifier && target.system?.identifier
+      && d.system.identifier === target.system.identifier;
+    if (provenance || identifier || norm(d.name) === norm(target.name)) matches.push({ pack: p.id, doc: d, provenance });
   }
   const preferred = matches.filter(m => m.provenance);
   const candidates = preferred.length ? preferred : matches;
@@ -159,14 +174,18 @@ export async function syncItems(fs, { actor, item: itemRef, apply = false, only,
   if (itemRef && !chosen.length) throw new Error(message(`Item not found on ${actor.name}: ${itemRef}`, `Objet introuvable sur ${actor.name} : ${itemRef}`));
   const ups = [], detail = [];
   let complet = 0, sansSource = 0;
-  for (const it of chosen) {
-    const ref = srcOf(it);
-    const src = splitSource(ref);
+  // sources lues en parallèle (8 à la fois) : une fiche d'une centaine d'objets ne dépasse plus le délai
+  const lookups = chosen.map(it => ({ it, ref: srcOf(it), src: splitSource(srcOf(it)) }));
+  const todoLookups = lookups.filter(l => l.src && !(onlyPack && l.src.pack !== onlyPack));
+  for (let i = 0; i < todoLookups.length; i += 8) {
+    await Promise.all(todoLookups.slice(i, i + 8).map(async l => {
+      try { l.source = await sourceDoc(fs, l.src, l.it); } catch (e) { l.error = e; }
+    }));
+  }
+  for (const { it, ref, src, source, error } of lookups) {
     if (!src) { sansSource++; if (itemRef) detail.push({ nom: it.name, statut: "sans source (créé à la main)" }); continue; }
     if (onlyPack && src.pack !== onlyPack) continue;
-    let source;
-    try { source = await sourceDoc(fs, src, it); }
-    catch (e) { detail.push({ nom: it.name, source: ref, probleme: e.message }); continue; }
+    if (error) { detail.push({ nom: it.name, source: ref, probleme: error.message }); continue; }
     if (!source) { detail.push({ nom: it.name, source: ref, probleme: message("source not found", "source introuvable") }); continue; }
     const diff = itemDiff(it, source);
     if (!diff.changed.length) { complet++; continue; }

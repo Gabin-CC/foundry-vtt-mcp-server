@@ -210,7 +210,7 @@ test("handleTool adds aliases in EN while retaining exact FR wire response", asy
 
 test("handleTool never aliases real Foundry document fields in EN", async () => {
   const item = { _id: "abcdefghijklmnop", name: "Spell", system: { resultats: ["game data"], statut: "anglais" } };
-  const session = { userId: "gm", async doc() { return [item]; } };
+  const session = { userId: "gm", user: { role: 4 }, async doc() { return [item]; } };
   const result = await handleTool(session, { name: "get_document", arguments: { type: "Item", id: item._id } });
   const body = JSON.parse(result.content[0].text);
   assert.deepEqual(body.system, item.system);

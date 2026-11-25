@@ -5,6 +5,7 @@
 import { rollFormula, translations, trFor } from "./dnd5e.mjs";
 import { applyBabele, plain, norm } from "./texts.mjs";
 import { message as localizedMessage } from "./i18n.mjs";
+import { isStub, limitedError } from "./access.mjs";
 
 const esc = t => String(t ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;" }[c]));
 const now = () => Date.now();
@@ -36,12 +37,14 @@ async function resolveTable(fs, ref) {
   if (m) {
     const d = (await fs.doc("get", "RollTable", { pack: m[1], query: { _id: m[2] } })).find(x => x._id === m[2]);
     if (!d) throw new Error(localizedMessage(`Table not found: ${ref}`, `Table introuvable : ${ref}`));
+    if (isStub(d)) throw limitedError(d.name);
     const t = trFor(await translations(m[1]), d);
     return { table: t ? applyBabele(d, t, "RollTable") : d, pack: m[1], uuid: ref };
   }
   const id = ref.replace(/^RollTable\./, "");
   const list = await fs.doc("get", "RollTable", { query: {} });
   const table = byRef(list, id, "Table");
+  if (isStub(table)) throw limitedError(table.name);
   return { table, pack: null, uuid: `RollTable.${table._id}` };
 }
 
@@ -170,7 +173,7 @@ export async function handleCards(fs, a, { postChat }) {
   if (["draw", "deal", "pass", "discard", "shuffle", "recall"].includes(a.action) && !a.from) throw new Error(localizedMessage("Specify 'from'", "Préciser 'from'"));
   if (["draw", "deal", "pass"].includes(a.action) && !a.to?.length) throw new Error(localizedMessage("Specify 'to'", "Préciser 'to'"));
   const stacks = await fs.doc("get", "Cards", { query: {} });
-  const get = ref => byRef(stacks, ref, "Pile de cartes");
+  const get = ref => { const s = byRef(stacks, ref, "Pile de cartes"); if (isStub(s)) throw limitedError(s.name); return s; };
   const notify = async (src, text) => {
     if (a.chat === false) return;
     await postChat(fs, { content: `<div class="cards-notification flexrow"><img class="icon" src="${esc(src.img || "icons/svg/card-hand.svg")}" alt="${esc(src.name)}"><p>${text}</p></div>` });
@@ -184,7 +187,8 @@ export async function handleCards(fs, a, { postChat }) {
         const cards = (s.cards || []).slice().sort((x, y) => (x.sort || 0) - (y.sort || 0));
         return { _id: s._id, nom: s.name, type: s.type, disponibles: available(s).length, total: cards.length, cartes: cards.map(c => view(c, s)) };
       }
-      return stacks.map(s => ({ _id: s._id, nom: s.name, type: s.type, cartes: (s.cards || []).length, disponibles: available(s).length }));
+      return stacks.map(s => isStub(s) ? { _id: s._id, nom: s.name, type: s.type }
+        : { _id: s._id, nom: s.name, type: s.type, cartes: (s.cards || []).length, disponibles: available(s).length });
     }
     case "draw": {
       const from = get(a.from), to = get(a.to?.[0] || "");

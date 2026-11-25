@@ -27,8 +27,9 @@ import { auditTranslation, searchText, findReferences } from "./corpus.mjs";
 import { TABLE_TOOLS, CARD_TOOLS, handleTable, handleCards } from "./tables.mjs";
 import { resolveTarget, propose, applyDamage } from "./targets.mjs";
 import { diffUpdates, saveSnapshot, currentDocs, listSnapshots, showSnapshot, restoreSnapshot } from "./snapshots.mjs";
-import { rollFormula, derive, checkBonus, sheet, slotMax, useItem, translations, translateDoc, trFor, refreshUnits, localizeItem, actorMetricUpdates, ABIL, SKILLS } from "./dnd5e.mjs";
+import { rollFormula, derive, checkBonus, sheet, slotMax, useItem, translations, translateDoc, trFor, refreshUnits, localizeItem, actorTranslationContext, actorMetricUpdates, UNITS, ABIL, SKILLS } from "./dnd5e.mjs";
 import { setSafePath } from "./security.mjs";
+import { restrictedSession, isStub, limitedError } from "./access.mjs";
 import { decodeUploadBase64, downloadPublicFile, validateUploadContent, validateUploadDestination } from "./upload.mjs";
 
 const PORT = Number(process.env.PORT || 8808);
@@ -153,7 +154,7 @@ export const TOOL_DEFINITIONS = [
       advantage: { type: "boolean" }, disadvantage: { type: "boolean" }, versatile: { type: "boolean", description: "Arme polyvalente à deux mains" },
       consume: { type: "boolean", default: true, description: "Consommer emplacement/utilisation/quantité" },
       target: { type: "string", description: "Cible (texte libre affiché dans le chat)" },
-      targets: { type: "array", items: { type: "string" }, description: "Jetons ciblés : UUID (Scene.x.Token.y), _id ou nom d'un jeton de la scène active, ou Actor.x. Calcule touché/raté (CA), sauvegarde de chaque cible, dégâts (résistances, immunités, vulnérabilités), soins et effets/états de l'activité, et renvoie une proposition à valider avec apply_damage." },
+      targets: { type: "array", items: { type: "string" }, description: "Jetons ciblés : UUID (Scene.x.Token.y), _id ou nom d'un jeton de la scène active ou de celle du combat en cours (un _id est aussi cherché sur les autres scènes), ou Actor.x. Calcule touché/raté (CA), sauvegarde de chaque cible, dégâts (résistances, immunités, vulnérabilités), soins et effets/états de l'activité, et renvoie une proposition à valider avec apply_damage." },
       mode: { type: "string", enum: ["public", "mj", "aveugle", "prive"], default: "public" } } } },
   { name: "apply_damage", description: "Validation de use_item avec cibles : applique la proposition (dégâts avec PV temporaires d'abord, soins plafonnés au max, PV temporaires, effets/états de l'activité copiés sur la cible comme le bouton du chat de dnd5e). Jetons non liés : modifie le jeton seul. 'manual' applique des valeurs libres sans proposition.",
     inputSchema: { type: "object", properties: {
@@ -165,7 +166,8 @@ export const TOOL_DEFINITIONS = [
       force: { type: "boolean", description: "Réappliquer une proposition déjà appliquée" },
       chat: { type: "boolean", default: true }, mode: { type: "string", enum: ["public", "mj", "aveugle", "prive"], default: "public" } } } },
   { name: "rest", description: "Repos long (PV max, emplacements, utilisations, dés de vie récupérés à moitié) ou court (emplacements de pacte, utilisations 'sr').",
-    inputSchema: { type: "object", required: ["actor", "type"], properties: { actor: { type: "string" }, type: { type: "string", enum: ["long", "court"] } } } },
+    inputSchema: { type: "object", required: ["actor", "type"], properties: { actor: { type: "string" }, type: { type: "string", enum: ["long", "court"] },
+      mode: { type: "string", enum: ["public", "mj", "aveugle", "prive"], default: "public" } } } },
   { name: "list_packs", description: "Liste les compendiums disponibles (id, nom, type, nombre d'entrées, traduction FR dispo).",
     inputSchema: { type: "object", properties: { type: { type: "string", description: "Filtrer par type : Item, Actor, JournalEntry, RollTable..." } } } },
   { name: "search_compendium", description: "Cherche dans les compendiums par nom (français ou anglais). Renvoie pack, _id, nom FR, nom EN, type, niveau.",
@@ -181,15 +183,18 @@ export const TOOL_DEFINITIONS = [
     inputSchema: { type: "object", required: ["entries"], properties: {
       actor: { type: "string", description: "Acteur destinataire (nom ou _id). Absent = import dans le monde." },
       entries: { type: "array", items: { type: "object", properties: {
-        pack: { type: "string" }, id: { type: "string" }, name: { type: "string", description: "Alternative à id : nom exact (FR ou EN)" }, uuid: { type: "string", description: "Alternative à pack+id : UUID (Compendium.x.y.Item.id, Item.id, Actor.id.Item.id)" }, item_type: { type: "string" }, rules: { type: "string", enum: ["2014", "2024"], description: "Version de règles voulue : si le compendium demandé n'est pas un « 24 », l'entrée 2024 équivalente est prise si elle existe" }, quantity: { type: "number" }, levels: { type: "number" },
+        pack: { type: "string" }, id: { type: "string" }, name: { type: "string", description: "Alternative à id : nom exact (FR ou EN)" }, uuid: { type: "string", description: "Alternative à pack+id : UUID (Compendium.x.y.Item.id, Item.id, Actor.id.Item.id)" }, item_type: { type: "string" },
+        document_type: { type: "string", enum: ["Item", "Actor"], default: "Item", description: "Avec name sans pack : type de compendium où chercher (priorité : monde, puis dnd5e 2024, puis les autres)" }, rules: { type: "string", enum: ["2014", "2024"], description: "Version de règles voulue : si le compendium demandé n'est pas un « 24 », l'entrée 2024 équivalente est prise si elle existe" }, quantity: { type: "number" }, levels: { type: "number" },
         equipped: { type: "boolean" }, overrides: { type: "object", description: "Champs à surcharger (notation pointée)" },
         scroll: { type: "string", description: "Parchemin de sort (comme « Créer un parchemin » de dnd5e) : UUID du sort à mettre sur le parchemin ; le parchemin de base du niveau du sort est pris dans le compendium. Remplace pack/id/uuid." },
         enchant: { type: "object", description: "Applique un enchantement (activité « Enchanter » de dnd5e, ex. objets magiques 2024 « Armure +1, +2 ou +3 » sur une Cuirasse) : {uuid: objet source de l'enchantement, effect: nom ou _id de l'enchantement (ex. \"Armure +2\" ou \"+2\")}",
           properties: { uuid: { type: "string" }, effect: { type: "string" } } } } } },
       folder: { type: "string", description: "Dossier (_id) pour un import dans le monde" } } } },
-  { name: "give_loot", description: "Ajoute du butin à un acteur : pièces (pp, po, pe, pa, pc) et/ou objets créés à la volée (nom, type, description, valeur, quantité).",
+  { name: "give_loot", description: "Ajoute du butin à un acteur : pièces (pp, po, pe, pa, pc) et/ou objets créés à la volée (nom, type, description, valeur, quantité). Poids : unité du monde (kg si l'option métrique de dnd5e est active, sinon lb) sauf weight_unit ; une valeur en lb est convertie en kg comme le module dnd5e_fr-FR (÷ 2), et inversement.",
     inputSchema: { type: "object", required: ["actor"], properties: {
       actor: { type: "string" },
+      mode: { type: "string", enum: ["public", "mj", "aveugle", "prive"], default: "public" },
+      weight_unit: { type: "string", enum: ["kg", "lb"], description: "Unité des poids fournis (défaut : unité du monde)" },
       currency: { type: "object", description: "Ex. {\"gp\":50,\"sp\":20} (pp platine, gp or, ep électrum, sp argent, cp cuivre). Valeurs négatives pour retirer." },
       items: { type: "array", items: { type: "object", required: ["name"], properties: {
         name: { type: "string" }, type: { type: "string", default: "loot" }, quantity: { type: "number" },
@@ -242,9 +247,14 @@ export const TOOLS = TOOL_DEFINITIONS.map(englishToolMetadata);
 async function findActor(fs, ref) {
   if (!ref) throw new Error(message("Actor not specified", "Acteur non précisé"));
   const a = (await fs.doc("get", "Actor", { query: { _id: ref } })).find(x => x._id === ref);
+  if (a && isStub(a)) throw limitedError(a.name);
   if (a) return a;
-  const all = await fs.doc("get", "Actor", { query: {} });
+  // fiches réduites au titre (droit LIMITÉ, comptes non MJ) : visibles dans les listes, pas utilisables ici
+  const listed = await fs.doc("get", "Actor", { query: {} });
+  const all = listed.filter(x => !isStub(x));
   const low = String(ref).toLowerCase();
+  const limited = listed.find(x => isStub(x) && (x._id === ref || x.name.toLowerCase() === low));
+  if (limited && !all.some(x => x._id === ref || x.name.toLowerCase() === low)) throw limitedError(limited.name);
   const exact = all.filter(x => x.name.toLowerCase() === low);
   if (exact.length === 1) return exact[0];
   const part = exact.length ? exact : all.filter(x => x.name.toLowerCase().includes(low));
@@ -300,6 +310,27 @@ async function packIndex(fs, pack) {
   }
   return fs._idx.get(pack.id);
 }
+/** Surcharges (notation pointée) ; le nom du jeton suit le nom final de l'acteur s'il valait l'ancien nom. */
+function applyOverrides(d, overrides) {
+  const before = d.name;
+  const follows = d.prototypeToken && (!d.prototypeToken.name || d.prototypeToken.name === before);
+  for (const [k, v] of Object.entries(overrides || {})) setPath(d, k, v);
+  if (follows && !Object.keys(overrides || {}).some(k => k.startsWith("prototypeToken.name") || k === "prototypeToken")) d.prototypeToken.name = d.name;
+  return d;
+}
+/**
+ * Poids d'un objet de butin dans l'unité du monde (réglage dnd5e metricWeightUnits : kg, sinon lb).
+ * La valeur fournie est dans `unit` (défaut : unité du monde) ; lb → kg divise par 2 comme le module dnd5e_fr-FR
+ * (convention des traductions françaises), kg → lb multiplie par 2.
+ */
+export function lootWeight(value, unit, metric = UNITS.weight) {
+  const units = metric ? "kg" : "lb";
+  let v = Number(value) || 0;
+  const from = unit === "kg" || unit === "lb" ? unit : units;
+  if (from === "lb" && units === "kg") v = v / 2;
+  if (from === "kg" && units === "lb") v = v * 2;
+  return { value: Math.round(v * 100) / 100, units };
+}
 const randomId = () => { const c = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"; return Array.from(crypto.randomBytes(16), b => c[b % c.length]).join(""); };
 const norm = t => String(t || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
 const setPath = setSafePath;
@@ -318,7 +349,10 @@ export async function handleTool(fs, params) {
   return { content: [{ type: "text", text: r.value === undefined ? message("(empty)", "(vide)") : render(responseAliases(params.name, r.value), fs.userId) }] };
 }
 
-async function runTool(fs, params) {
+async function runTool(session, params) {
+  // comptes non MJ : lectures filtrées selon les droits Foundry (voir access.mjs) ; `session` (non filtrée) ne sert
+  // qu'au calcul des cibles de use_item / apply_damage (CA, sauvegardes), qui ne renvoie pas les fiches des cibles.
+  const fs = restrictedSession(session);
   try { await refreshUnits(fs); } catch { /* pas bloquant */ }
     const a = params.arguments || {};
     try {
@@ -357,6 +391,7 @@ async function runTool(fs, params) {
           // le filtre _id n'est pas appliqué par Foundry sur les collections embarquées : on filtre ici
           const d = (await fs.doc("get", a.type, { query: { _id: a.id }, ...parentOpt(a.parent, a.pack) })).find(x => x._id === a.id);
           if (!d) return out(message(`Not found: ${a.type} ${a.id}`, `Introuvable : ${a.type} ${a.id}`));
+          if (isStub(d) && a.path && !(a.path.split(".")[0] in d)) throw limitedError(d.name);
           return out(getPath(d, a.path));
         }
         case "create_documents": {
@@ -381,7 +416,8 @@ async function runTool(fs, params) {
             const pools = {};
             const fill = async p => { if (!pools[p]) { try { pools[p] = await fs.doc("get", "Item", { pack: p, query: {}, index: true, indexFields: ["name"] }); } catch { pools[p] = []; } } return pools[p]; };
             for (const d of created) {
-              for (const it of (d.type === "Actor" ? (d.items || []) : [d])) {
+              // acteur : seuls ses objets sont contrôlés (« aucune activité » ne concerne pas l'acteur lui-même)
+              for (const it of (a.type === "Actor" ? (d.items || []) : [d])) {
                 const w0 = itemWarnings(it);
                 if (!w0.length) continue;
                 const byName = [];
@@ -427,7 +463,7 @@ async function runTool(fs, params) {
           const r = await fs.doc("delete", a.type, { ids: a.ids, modifiedTime: Date.now(), render: true, ...parentOpt(a.parent, a.pack) });
           return out({ supprimes: r, instantane: snap });
         }
-        case "apply_damage": return out(await applyDamage(fs, a, { postChat }));
+        case "apply_damage": return out(await applyDamage(session, a, { postChat }));
         case "roll_table": return out(await handleTable(fs, a, { postChat }));
         case "cards": return out(await handleCards(fs, a, { postChat }));
         case "audit_translation": return out(await auditTranslation(fs, a, { packsOf, packIndex }));
@@ -469,9 +505,9 @@ async function runTool(fs, params) {
           const actor = await findActor(fs, a.actor);
           const item = findItem(actor, a.item);
           const tgts = [];
-          for (const ref of (typeof a.targets === "string" ? [a.targets] : a.targets || [])) tgts.push(await resolveTarget(fs, ref));   // erreurs avant toute consommation
+          for (const ref of (typeof a.targets === "string" ? [a.targets] : a.targets || [])) tgts.push(await resolveTarget(session, ref));   // erreurs avant toute consommation
           const res = useItem(actor, item, { activityId: a.activity, slotLevel: a.slot_level, advantage: a.advantage, disadvantage: a.disadvantage, consume: a.consume !== false, versatile: a.versatile });
-          const prop = tgts.length ? await propose(fs, { attacker: actor, item, res, targets: tgts, mode: a.mode }) : null;
+          const prop = tgts.length ? await propose(session, { attacker: actor, item, res, targets: tgts, mode: a.mode }) : null;
           if (prop) { res.rolls.push(...prop.saveRolls); for (const r of prop.rows) res.lignes.push(`${r.cible} : ${[r.attaque, r.sauvegarde].filter(Boolean).join(" ; ") || "ciblé"}`); }
           if (Object.keys(res.actorUpdate).length) await fs.doc("update", "Actor", { updates: [{ _id: actor._id, ...res.actorUpdate }], diff: true, modifiedTime: Date.now() });
           if (res.deleteItem) await fs.doc("delete", "Item", { parentUuid: `Actor.${actor._id}`, ids: [item._id], modifiedTime: Date.now() });
@@ -507,7 +543,7 @@ async function runTool(fs, params) {
             if (Object.keys(u).length) iu.push({ _id: i._id, ...u });
           }
           if (iu.length) { await fs.doc("update", "Item", { parentUuid: `Actor.${actor._id}`, updates: iu, diff: true, modifiedTime: Date.now() }); lines.push(`${iu.length} objet(s)/aptitude(s) rechargé(s)`); }
-          await postChat(fs, { actor, flavor: `Repos ${a.type}`, content: `<p>${esc(actor.name)} prend un repos ${a.type}.</p><ul>${lines.map(l => `<li>${esc(l)}</li>`).join("")}</ul>` });
+          await postChat(fs, { actor, flavor: `Repos ${a.type}`, content: `<p>${esc(actor.name)} prend un repos ${a.type}.</p><ul>${lines.map(l => `<li>${esc(l)}</li>`).join("")}</ul>`, mode: a.mode });
           return out({ repos: a.type, effets: lines });
         }
         case "list_packs": {
@@ -543,6 +579,7 @@ async function runTool(fs, params) {
           if (!pack) return out(`Compendium inconnu : ${a.pack}`);
           const d = (await fs.doc("get", pack.type, { pack: pack.id, query: { _id: a.id } })).find(x => x._id === a.id);
           if (!d) return out("Entrée introuvable");
+          if (isStub(d) && a.path && !(a.path.split(".")[0] in d)) throw limitedError(d.name);
           return out(getPath(await translateDoc(pack.id, d), a.path));
         }
         case "localize_actor": {
@@ -550,8 +587,11 @@ async function runTool(fs, params) {
           await refreshUnits(fs);
           const items = await fs.doc("get", "Item", { parentUuid: `Actor.${act._id}`, query: {} });
           const updates = [], noms = [], effUps = [];
+          // acteur venu d'un compendium d'acteurs (monstre…) : ses objets se traduisent par l'entrée de l'acteur source
+          const actorCtx = await actorTranslationContext(act, fs);
           for (const it of items) {
-            const up = await localizeItem(it, fs);
+            const fromActor = actorCtx?.forItem(it);
+            const up = await localizeItem(it, fs, fromActor ? { entry: fromActor.entry, sourceEffects: fromActor.sourceEffects } : {});
             if (up.__effects) { effUps.push([it._id, up.__effects]); noms.push(`${up.name || it.name} : ${up.__effects.length} effet(s)`); }
             if (Object.keys(up).length) { updates.push({ _id: it._id, ...up }); noms.push(up.name ? `${it.name} → ${up.name}` : `${it.name} (${up["system.description.value"] ? "description" : up["system.materials.value"] ? "composantes" : "unités"})`); }
           }
@@ -595,7 +635,7 @@ async function runTool(fs, params) {
               if (e.quantity != null && d.system) d.system.quantity = e.quantity;
               if (e.equipped != null && d.system) d.system.equipped = e.equipped;
               delete d.__pack;
-              for (const [k, v] of Object.entries(e.overrides || {})) setPath(d, k, v);
+              applyOverrides(d, e.overrides);
               const t = d.items || d.prototypeToken ? "Actor" : "Item";
               (byType[t] ??= []).push(d);
               if (e.enchant) { d._id = randomId(); enchants.push({ type: t, id: d._id, ...e.enchant }); }
@@ -624,7 +664,7 @@ async function runTool(fs, params) {
                 }
               }
             }
-            for (const [k, v] of Object.entries(e.overrides || {})) setPath(d, k, v);
+            applyOverrides(d, e.overrides);
             (byType[pack.type] ??= []).push(d);
             if (e.enchant) { d._id = randomId(); enchants.push({ type: pack.type, id: d._id, ...e.enchant }); }
           }
@@ -721,11 +761,11 @@ async function runTool(fs, params) {
           if (a.items?.length) {
             const data = a.items.map(i => ({ name: i.name, type: i.type || "loot", img: i.img || undefined,
               system: { quantity: i.quantity ?? 1, description: { value: i.description ? `<p>${esc(i.description)}</p>` : "" },
-                price: { value: i.price_gp ?? 0, denomination: "gp" }, weight: { value: i.weight ?? 0, units: "lb" }, rarity: i.rarity || "" } }));
+                price: { value: i.price_gp ?? 0, denomination: "gp" }, weight: lootWeight(i.weight, a.weight_unit), rarity: i.rarity || "" } }));
             const r = await fs.doc("create", "Item", { parentUuid: `Actor.${actor._id}`, data, modifiedTime: Date.now() });
             lines.push(...r.map(x => `${x.name}${x.system?.quantity > 1 ? " ×" + x.system.quantity : ""}`));
           }
-          await postChat(fs, { actor, flavor: "Butin", content: `<p><b>${esc(actor.name)}</b> reçoit :</p><ul>${lines.map(l => `<li>${esc(l)}</li>`).join("")}</ul>` });
+          await postChat(fs, { actor, flavor: "Butin", content: `<p><b>${esc(actor.name)}</b> reçoit :</p><ul>${lines.map(l => `<li>${esc(l)}</li>`).join("")}</ul>`, mode: a.mode });
           return out({ a: actor.name, recu: lines });
         }
         case "upload_file": {

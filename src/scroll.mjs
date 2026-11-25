@@ -37,6 +37,8 @@ export async function scrollFromSpell(fs, spellUuid, level) {
   scroll.system = { ...(scroll.system || {}), activities: { ...(scroll.system?.activities || {}), [ACTIVITY_ID]: activity },
     description: { ...(scroll.system?.description || {}), value: desc } };
   scroll._stats = { ...(scroll._stats || {}), compendiumSource: scrollUuid };
+  // marqueur : localize_actor ne retraduit jamais un parchemin de sort (sa source est le parchemin générique)
+  scroll.flags = { ...(scroll.flags || {}), mcp: { ...(scroll.flags?.mcp || {}), spellScroll: spellUuid } };
   sanitizeItemData(scroll);
   return scroll;
 }
