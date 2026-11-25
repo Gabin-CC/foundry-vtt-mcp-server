@@ -5,6 +5,7 @@
  * validation par apply_damage (proposition entière, sous-ensemble de cibles ou valeurs corrigées).
  */
 import crypto from "node:crypto";
+import { message } from "./i18n.mjs";
 import { sheet, checkBonus, rollFormula, ABIL } from "./dnd5e.mjs";
 import { norm } from "./texts.mjs";
 
@@ -37,24 +38,24 @@ export async function resolveTarget(fs, ref) {
   if (m) {
     scene = (await fs.doc("get", "Scene", { query: { _id: m[1] } })).find(s => s._id === m[1]);
     token = scene && (await fs.doc("get", "Token", { parentUuid: `Scene.${m[1]}`, query: {} })).find(t => t._id === m[2]);
-    if (!token) throw new Error(`Jeton introuvable : ${ref}`);
+    if (!token) throw new Error(message(`Token not found: ${ref}`, `Jeton introuvable : ${ref}`));
   } else if ((m = /^Actor\.([A-Za-z0-9]{16})$/.exec(ref))) {
     const actor = (await fs.doc("get", "Actor", { query: { _id: m[1] } })).find(a => a._id === m[1]);
-    if (!actor) throw new Error(`Acteur introuvable : ${ref}`);
+    if (!actor) throw new Error(message(`Actor not found: ${ref}`, `Acteur introuvable : ${ref}`));
     return { label: actor.name, uuid: ref, actor, write: { type: "Actor", _id: actor._id, parentUuid: null } };
   } else {
     // jeton de la scène active par _id ou nom
     const scenes = await fs.doc("get", "Scene", { query: {} });
     scene = scenes.find(s => s.active);
-    if (!scene) throw new Error(`Aucune scène active pour trouver le jeton « ${ref} » : donner son UUID (Scene.x.Token.y)`);
+    if (!scene) throw new Error(message(`No active scene to find token "${ref}": provide its UUID (Scene.x.Token.y)`, `Aucune scène active pour trouver le jeton « ${ref} » : donner son UUID (Scene.x.Token.y)`));
     const tokens = await fs.doc("get", "Token", { parentUuid: `Scene.${scene._id}`, query: {} });
     const hits = tokens.filter(t => t._id === ref).concat(tokens.filter(t => norm(t.name) === norm(ref)));
-    if (!hits.length) throw new Error(`Jeton « ${ref} » introuvable sur la scène active (${scene.name})`);
-    if (hits.length > 1 && hits[0]._id !== ref) throw new Error(`Plusieurs jetons « ${ref} » : ${hits.map(t => `Scene.${scene._id}.Token.${t._id}`).join(", ")}`);
+    if (!hits.length) throw new Error(message(`Token "${ref}" not found on the active scene (${scene.name})`, `Jeton « ${ref} » introuvable sur la scène active (${scene.name})`));
+    if (hits.length > 1 && hits[0]._id !== ref) throw new Error(message(`Multiple tokens match "${ref}": ${hits.map(t => `Scene.${scene._id}.Token.${t._id}`).join(", ")}`, `Plusieurs jetons « ${ref} » : ${hits.map(t => `Scene.${scene._id}.Token.${t._id}`).join(", ")}`));
     token = hits[0];
   }
   const base = token.actorId ? (await fs.doc("get", "Actor", { query: { _id: token.actorId } })).find(a => a._id === token.actorId) : null;
-  if (!base) throw new Error(`Le jeton ${token.name} n'a pas d'acteur`);
+  if (!base) throw new Error(message(`Token ${token.name} has no actor`, `Le jeton ${token.name} n'a pas d'acteur`));
   const actor = syntheticActor(base, token);
   const tokenUuid = `Scene.${scene._id}.Token.${token._id}`;
   const write = token.actorLink ? { type: "Actor", _id: base._id, parentUuid: null }
@@ -153,21 +154,21 @@ export async function applyDamage(fs, a, { postChat }) {
   let rows = [], effects = [], origin = null, label = "";
   if (a.proposal) {
     const p = proposals.get(a.proposal);
-    if (!p || p.owner !== fs.userId) throw new Error("Proposition inconnue ou expirée (1 h) : relancer use_item avec targets");
-    if (p.applied && !a.force) throw new Error("Proposition déjà appliquée (force=true pour recommencer)");
+    if (!p || p.owner !== fs.userId) throw new Error(message("Unknown or expired proposal (1 hour): run use_item with targets again", "Proposition inconnue ou expirée (1 h) : relancer use_item avec targets"));
+    if (p.applied && !a.force) throw new Error(message("Proposal already applied (use force=true to apply again)", "Proposition déjà appliquée (force=true pour recommencer)"));
     rows = p.rows; effects = p.effects; origin = p.itemUuid; label = p.item;
     if (a.targets?.length) rows = rows.filter(r => a.targets.some(x => x === r.uuid || norm(x) === norm(r.cible)));
     p.applied = true;
   }
   const manual = a.manual || [];
-  if (!rows.length && !manual.length) throw new Error("Rien à appliquer : préciser 'proposal' (issue de use_item) ou 'manual'");
+  if (!rows.length && !manual.length) throw new Error(message("Nothing to apply: provide a 'proposal' from use_item or use 'manual'", "Rien à appliquer : préciser 'proposal' (issue de use_item) ou 'manual'"));
   const todo = [
     ...rows.map(r => ({ ref: r.uuid, damage: r.degats || 0, healing: r.soins || 0, temp: r.pv_temporaires || 0, effects: !!r.effets?.length })),
     ...manual.map(m => ({ ref: m.target, damage: num(m.damage), healing: num(m.healing), temp: num(m.temp), effects: false })),
   ];
   for (const o of a.overrides || []) {
     const row = todo.find(x => x.ref === o.target) || todo.find(x => norm(rows.find(r => r.uuid === x.ref)?.cible) === norm(o.target));
-    if (!row) throw new Error(`Cible de correction inconnue : ${o.target}`);
+    if (!row) throw new Error(message(`Unknown override target: ${o.target}`, `Cible de correction inconnue : ${o.target}`));
     if (o.multiplier != null) row.damage = Math.floor(row.damage * Number(o.multiplier));
     for (const k of ["damage", "healing", "temp"]) if (o[k] != null) row[k] = num(o[k]);
     if (o.effects != null) row.effects = !!o.effects;

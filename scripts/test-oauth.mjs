@@ -7,6 +7,11 @@ import { test } from "node:test";
 import express from "express";
 import { mcpAuthRouter } from "@modelcontextprotocol/sdk/server/auth/router.js";
 import { createFoundryOAuth } from "../src/oauth.mjs";
+import { browserLocale, currentLocale, message, normalizeLocale } from "../src/i18n.mjs";
+import { render, nextPage } from "../src/paging.mjs";
+import { handleCards } from "../src/tables.mjs";
+import { handleGm } from "../src/gm.mjs";
+import { showSnapshot } from "../src/snapshots.mjs";
 
 const callback = "https://chatgpt.com/connector/oauth/test-foundry";
 const resource = "https://foundry.example.org/mcp";
@@ -41,11 +46,11 @@ async function register(base, override = {}) {
   return { status: response.status, data: await response.json() };
 }
 
-async function authorizePlayer({ base, client, username, password }) {
+async function authorizePlayer({ base, client, username, password, language }) {
   const verifier = crypto.randomBytes(40).toString("base64url");
   const challenge = crypto.createHash("sha256").update(verifier).digest("base64url");
   const query = new URLSearchParams({ client_id: client.client_id, response_type: "code", redirect_uri: callback, code_challenge: challenge, code_challenge_method: "S256", resource, state: "csrf-check", scope: "foundry:access" });
-  const page = await fetch(`${base}/authorize?${query}`);
+  const page = await fetch(`${base}/authorize?${query}`, language ? { headers: { "Accept-Language": language } } : {});
   assert.equal(page.status, 200);
   assert.match(page.headers.get("content-security-policy") || "", /form-action 'self' https:\/\/chatgpt\.com/,
     "La CSP doit autoriser la redirection du formulaire vers l'origine OAuth");
@@ -56,7 +61,7 @@ async function authorizePlayer({ base, client, username, password }) {
     method: "POST", redirect: "manual", headers: { "content-type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({ request_id: requestId, username, password })
   });
-  return { approval, requestId, verifier };
+  return { approval, requestId, verifier, form };
 }
 
 async function exchange(base, client, code, verifier) {
@@ -133,7 +138,7 @@ test("OAuth MCP : découverte, DCR, connexion distincte de deux joueurs, rafraî
 test("OAuth MCP : refus des mauvais identifiants et du mauvais public", async t => {
   const { base, oauth } = await setup(t);
   const { data: client } = await register(base);
-  const bad = await authorizePlayer({ base, client, username: "Gabin", password: "incorrect" });
+  const bad = await authorizePlayer({ base, client, username: "Gabin", password: "incorrect", language: "fr-FR" });
   assert.equal(bad.approval.status, 401);
   assert.match(await bad.approval.text(), /Identifiants Foundry incorrects/);
   const outsider = await fetch(`${base}/authorize?${new URLSearchParams({
@@ -143,4 +148,65 @@ test("OAuth MCP : refus des mauvais identifiants et du mauvais public", async t 
   assert.equal(outsider.status, 302);
   assert.equal(new URL(outsider.headers.get("location")).searchParams.get("error"), "invalid_target");
   await assert.rejects(oauth.credentialsForToken("un-faux-jeton"));
+});
+
+test("MCP human-readable localization is opt-in and preserves legacy protocol keys", t => {
+  const prior = process.env.MCP_LOCALE;
+  t.after(() => {
+    if (prior === undefined) delete process.env.MCP_LOCALE;
+    else process.env.MCP_LOCALE = prior;
+  });
+  delete process.env.MCP_LOCALE;
+  assert.equal(currentLocale(), "fr");
+  assert.equal(message("Not found", "Introuvable"), "Introuvable");
+  assert.equal(normalizeLocale("en-US"), "en");
+  assert.equal(browserLocale("de;q=1, en-GB;q=0.8, fr;q=0.6"), "en");
+  assert.equal(browserLocale("fr-FR, en;q=0.8"), "fr");
+  assert.equal(browserLocale("de;q=1", "en"), "en");
+  assert.equal(browserLocale("fr;q=0, en;q=0.5"), "en");
+
+  process.env.MCP_LOCALE = "en";
+  assert.equal(currentLocale(), "en");
+  assert.equal(message("Not found", "Introuvable"), "Not found");
+  const payload = { documents: Array.from({ length: 1500 }, (_, i) => ({ _id: String(i), name: "x".repeat(100) })) };
+  const first = JSON.parse(render(payload, "test-user"));
+  assert.ok(first.curseur_suivant, "The legacy cursor field remains present in English mode");
+  assert.ok(first.contenu, "The legacy content field remains present in English mode");
+  assert.match(first.note, /Response split into valid JSON pages/);
+  assert.ok(nextPage(first.curseur_suivant, "test-user").contenu);
+  assert.throws(() => nextPage("invalid", "test-user"), /Unknown or expired cursor/);
+});
+
+test("OAuth login page and validation errors follow the browser language", async t => {
+  const { base } = await setup(t);
+  const { data: client } = await register(base);
+  const english = await authorizePlayer({ base, client, username: "Gabin", password: "incorrect", language: "en-US,en;q=0.9" });
+  assert.match(english.form, /<html lang="en">/);
+  assert.match(english.form, /Sign in and authorize/);
+  assert.equal(english.approval.status, 401);
+  assert.match(await english.approval.text(), /Invalid Foundry credentials/);
+
+  const french = await authorizePlayer({ base, client, username: "Gabin", password: "incorrect", language: "fr-FR,fr;q=0.9" });
+  assert.match(french.form, /<html lang="fr">/);
+  assert.match(french.form, /Se connecter et autoriser/);
+  assert.equal(french.approval.status, 401);
+  assert.match(await french.approval.text(), /Identifiants Foundry incorrects/);
+});
+
+test("GM, cards and snapshot errors switch language without changing tool inputs", async t => {
+  const prior = process.env.MCP_LOCALE;
+  t.after(() => {
+    if (prior === undefined) delete process.env.MCP_LOCALE;
+    else process.env.MCP_LOCALE = prior;
+  });
+  const fakeFoundry = { doc: async () => [] };
+  process.env.MCP_LOCALE = "en";
+  await assert.rejects(handleCards(fakeFoundry, { action: "draw" }, {}), /Specify 'from'/);
+  await assert.rejects(handleGm(fakeFoundry, "gm_scene", { action: "activate" }), /Specify 'scene'/);
+  await assert.rejects(showSnapshot(fakeFoundry, false, "invalid"), /Invalid snapshot ID/);
+
+  process.env.MCP_LOCALE = "fr";
+  await assert.rejects(handleCards(fakeFoundry, { action: "draw" }, {}), /Préciser 'from'/);
+  await assert.rejects(handleGm(fakeFoundry, "gm_scene", { action: "activate" }), /Préciser 'scene'/);
+  await assert.rejects(showSnapshot(fakeFoundry, false, "invalid"), /Identifiant d'instantané invalide/);
 });

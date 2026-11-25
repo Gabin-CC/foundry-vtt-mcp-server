@@ -6,6 +6,7 @@
 import { scanAndRepair } from "./repair.mjs";
 import { syncItems } from "./sync.mjs";
 import { patchActor, patchPack } from "./patchrun.mjs";
+import { message } from "./i18n.mjs";
 export const GM_ROLE = 3;   // 3 = assistant MJ, 4 = MJ
 
 const sceneProp = { type: "string", description: "Scène (nom ou _id). Défaut : la scène active." };
@@ -65,13 +66,14 @@ const norm = s => String(s || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ
 function byRef(list, ref, what) {
   if (!ref) return null;
   const d = list.find(x => x._id === ref) || list.find(x => norm(x.name) === norm(ref)) || list.find(x => norm(x.name).includes(norm(ref)));
-  if (!d) throw new Error(`${what} introuvable : ${ref}`);
+  const englishWhat = { "Scène": "Scene", "Utilisateur": "User", "Acteur": "Actor", "Jeton": "Token", "Morceau": "Track" }[what] || what;
+  if (!d) throw new Error(message(`${englishWhat} not found: ${ref}`, `${what} introuvable : ${ref}`));
   return d;
 }
 async function sceneOf(fs, ref) {
   const scenes = await fs.doc("get", "Scene", { query: {} });
   const s = ref ? byRef(scenes, ref, "Scène") : scenes.find(x => x.active);
-  if (!s) throw new Error("Aucune scène active : préciser 'scene'");
+  if (!s) throw new Error(message("No active scene: specify 'scene'", "Aucune scène active : préciser 'scene'"));
   return s;
 }
 const grid = s => Number(s.grid?.size) || 100;
@@ -99,7 +101,7 @@ async function permissionsOf(fs, uuid, userRef) {
     const pack = `${parts[1]}.${parts[2]}`; type = parts[3];
     const packs = (await fs.worldData()).packs || [];
     const pk = packs.find(p => p.id === pack);
-    if (!pk) throw new Error(`Compendium inconnu : ${pack}`);
+    if (!pk) throw new Error(message(`Unknown compendium: ${pack}`, `Compendium inconnu : ${pack}`));
     packOwn = pk.ownership || { PLAYER: "OBSERVER", ASSISTANT: "OWNER" };
     doc = (await fs.doc("get", type, { pack, query: { _id: parts[4] } })).find(d => d._id === parts[4]);
   } else {
@@ -112,7 +114,7 @@ async function permissionsOf(fs, uuid, userRef) {
       type = parts[2];
     }
   }
-  if (!doc) throw new Error(`Document introuvable : ${uuid}`);
+  if (!doc) throw new Error(message(`Document not found: ${uuid}`, `Document introuvable : ${uuid}`));
   const rows = list.map(u => {
     let lvl;
     if (packOwn) {   // compendium : droit selon le rôle (réglage du compendium)
@@ -160,17 +162,17 @@ export async function handleGm(fs, name, a) {
       const scenes = await fs.doc("get", "Scene", { query: {} });
       if (a.action === "list") return { active: scenes.find(s => s.active)?.name || null, scenes: scenes.map(s => ({ _id: s._id, nom: s.name, active: !!s.active, navigation: !!s.navigation })) };
       const s = a.scene ? byRef(scenes, a.scene, "Scène") : scenes.find(x => x.active);
-      if (!s) throw new Error("Préciser 'scene'");
-      if (a.action === "activate") { await fs.doc("update", "Scene", { updates: [{ _id: s._id, active: true }], modifiedTime: now() }); return `Scène active : ${s.name}`; }
+      if (!s) throw new Error(message("Specify 'scene'", "Préciser 'scene'"));
+      if (a.action === "activate") { await fs.doc("update", "Scene", { updates: [{ _id: s._id, active: true }], modifiedTime: now() }); return message(`Active scene: ${s.name}`, `Scène active : ${s.name}`); }
       if (a.action === "pull") {
         const users = await fs.doc("get", "User", { query: {} });
         for (const u of users) if (u._id !== fs.userId) await fs.broadcast("pullToScene", s._id, u._id, {});
-        return `Joueurs connectés amenés sur : ${s.name}`;
+        return message(`Connected players moved to: ${s.name}`, `Joueurs connectés amenés sur : ${s.name}`);
       }
       if (a.action === "darkness") {
         const v = Math.max(0, Math.min(1, Number(a.darkness)));
         await fs.doc("update", "Scene", { updates: [{ _id: s._id, "environment.darknessLevel": v }], modifiedTime: now() });
-        return `Obscurité de ${s.name} : ${v}`;
+        return message(`Darkness for ${s.name}: ${v}`, `Obscurité de ${s.name} : ${v}`);
       }
       break;
     }
@@ -183,10 +185,10 @@ export async function handleGm(fs, name, a) {
           const on = (p.sounds || []).filter(s => s.playing).map(s => ({ _id: s._id, playing: false }));
           if (on.length) await fs.doc("update", "PlaylistSound", { parentUuid: `Playlist.${p._id}`, updates: on, modifiedTime: now() });
         }
-        return "Musique arrêtée";
+        return message("Music stopped", "Musique arrêtée");
       }
       const p = byRef(pls, a.playlist, "Playlist");
-      if (!p) throw new Error("Préciser 'playlist'");
+      if (!p) throw new Error(message("Specify 'playlist'", "Préciser 'playlist'"));
       const snd = a.sound ? byRef(p.sounds || [], a.sound, "Morceau") : null;
       if (a.action === "play") {
         if (snd) await fs.doc("update", "PlaylistSound", { parentUuid: `Playlist.${p._id}`, updates: [{ _id: snd._id, playing: true }], modifiedTime: now() });
@@ -197,13 +199,13 @@ export async function handleGm(fs, name, a) {
           const targets = p.mode === 2 ? first : first.slice(0, 1);   // 2 = simultané
           if (targets.length) await fs.doc("update", "PlaylistSound", { parentUuid: `Playlist.${p._id}`, updates: targets.map(s => ({ _id: s._id, playing: true })), modifiedTime: now() });
         }
-        return `Lecture : ${snd ? snd.name + " (" + p.name + ")" : p.name}`;
+        return message(`Playing: ${snd ? snd.name + " (" + p.name + ")" : p.name}`, `Lecture : ${snd ? snd.name + " (" + p.name + ")" : p.name}`);
       }
       if (a.action === "stop") {
         const on = (snd ? [snd] : (p.sounds || []).filter(s => s.playing)).map(s => ({ _id: s._id, playing: false }));
         if (on.length) await fs.doc("update", "PlaylistSound", { parentUuid: `Playlist.${p._id}`, updates: on, modifiedTime: now() });
         if (!snd) await fs.doc("update", "Playlist", { updates: [{ _id: p._id, playing: false }], modifiedTime: now() });
-        return `Arrêt : ${snd ? snd.name : p.name}`;
+        return message(`Stopped: ${snd ? snd.name : p.name}`, `Arrêt : ${snd ? snd.name : p.name}`);
       }
       if (a.action === "volume") {
         const v = Math.max(0, Math.min(1, Number(a.volume)));
@@ -219,7 +221,7 @@ export async function handleGm(fs, name, a) {
       const players = users.filter(u => u._id !== fs.userId);
       const dest = a.users?.length ? a.users.map(r => byRef(users, r, "Utilisateur")) : [];
       const destIds = dest.map(u => u._id);
-      const destLabel = dest.length ? dest.map(u => u.name).join(", ") : "tous les joueurs connectés";
+      const destLabel = dest.length ? dest.map(u => u.name).join(", ") : message("all connected players", "tous les joueurs connectés");
       if (a.image) {
         if (a.preview) preview.image = { image: a.image, titre: a.title || null };
         else { await fs.broadcast("shareImage", { image: a.image, title: a.title || "", users: destIds, showTitle: !!a.title }); done.push(`image ${a.image}`); }
@@ -231,7 +233,7 @@ export async function handleGm(fs, name, a) {
           const p = await permissionsOf(fs, uuid, null);
           const who = (dest.length ? dest : players);
           preview.journal = { uuid, nom: p.nom, type: p.type, apercu: p.apercu, pages: p.pages?.map(x => x.nom),
-            destinataires: who.map(u => { const r = p.utilisateurs.find(x => x._id === u._id); return { nom: u.name, peut_deja_lire: r?.contenu_lisible, verra: a.force !== false ? "tout (force)" : r?.contenu_lisible ? "tout" : r?.titre_visible ? "titre seulement" : "rien" }; }) };
+            destinataires: who.map(u => { const r = p.utilisateurs.find(x => x._id === u._id); return { nom: u.name, peut_deja_lire: r?.contenu_lisible, verra: a.force !== false ? message("all (forced)", "tout (force)") : r?.contenu_lisible ? message("all", "tout") : r?.titre_visible ? message("title only", "titre seulement") : message("nothing", "rien") }; }) };
         } else { await fs.broadcast("showEntry", uuid, { force: a.force !== false, users: destIds }); done.push(`journal ${uuid}`); }
       }
       if (a.scene) {
@@ -249,9 +251,9 @@ export async function handleGm(fs, name, a) {
           done.push(`scène ${sc.name}`);
         }
       }
-      if (a.preview) { if (!Object.keys(preview).length) throw new Error("Préciser 'image', 'journal' ou 'scene'"); return { apercu: preview, destinataires: destLabel, note: "Rien n'a été montré (preview)." }; }
-      if (!done.length) throw new Error("Préciser 'image', 'journal' ou 'scene'");
-      return `Montré à ${destLabel} : ${done.join(", ")}`;
+      if (a.preview) { if (!Object.keys(preview).length) throw new Error(message("Specify 'image', 'journal', or 'scene'", "Préciser 'image', 'journal' ou 'scene'")); return { apercu: preview, destinataires: destLabel, note: message("Nothing was shared (preview).", "Rien n'a été montré (preview).") }; }
+      if (!done.length) throw new Error(message("Specify 'image', 'journal', or 'scene'", "Préciser 'image', 'journal' ou 'scene'"));
+      return message(`Shown to ${destLabel}: ${done.join(", ")}`, `Montré à ${destLabel} : ${done.join(", ")}`);
     }
     case "gm_permissions": return permissionsOf(fs, a.uuid, a.user);
     case "gm_tile": {
@@ -260,7 +262,7 @@ export async function handleGm(fs, name, a) {
       const x = a.x != null ? Number(a.x) * g : Math.round((Number(s.width) || 4000) / 2 - w / 2);
       const y = a.y != null ? Number(a.y) * g : Math.round((Number(s.height) || 3000) / 2 - h / 2);
       const [t] = await fs.doc("create", "Tile", { parentUuid: `Scene.${s._id}`, data: [{ texture: { src: a.image }, x, y, width: w, height: h, hidden: !!a.hidden }], modifiedTime: now() });
-      return `Tuile posée sur ${s.name} (${t?._id})`;
+      return message(`Tile placed on ${s.name} (${t?._id})`, `Tuile posée sur ${s.name} (${t?._id})`);
     }
     case "gm_token": {
       const s = await sceneOf(fs, a.scene); const g = grid(s);
@@ -272,16 +274,16 @@ export async function handleGm(fs, name, a) {
         const pt = structuredClone(act.prototypeToken || {});
         const data = { ...pt, actorId: act._id, name: pt.name || act.name, x: (Number(a.x) || 0) * g, y: (Number(a.y) || 0) * g, hidden: !!a.hidden };
         const [t] = await fs.doc("create", "Token", { parentUuid: `Scene.${s._id}`, data: [data], modifiedTime: now() });
-        return `Jeton de ${act.name} posé sur ${s.name} (${t?._id})`;
+        return message(`Token for ${act.name} placed on ${s.name} (${t?._id})`, `Jeton de ${act.name} posé sur ${s.name} (${t?._id})`);
       }
       const t = byRef(tokens, a.token, "Jeton");
-      if (a.action === "remove") { await fs.doc("delete", "Token", { parentUuid: `Scene.${s._id}`, ids: [t._id], modifiedTime: now() }); return `Jeton retiré : ${t.name}`; }
+      if (a.action === "remove") { await fs.doc("delete", "Token", { parentUuid: `Scene.${s._id}`, ids: [t._id], modifiedTime: now() }); return message(`Token removed: ${t.name}`, `Jeton retiré : ${t.name}`); }
       const upd = { _id: t._id };
       if (a.action === "move") { if (a.x != null) upd.x = Number(a.x) * g; if (a.y != null) upd.y = Number(a.y) * g; }
       if (a.action === "hide") upd.hidden = true;
       if (a.action === "show") upd.hidden = false;
       await fs.doc("update", "Token", { parentUuid: `Scene.${s._id}`, updates: [upd], modifiedTime: now() });
-      return `Jeton ${t.name} : ${a.action}`;
+      return message(`Token ${t.name}: ${a.action}`, `Jeton ${t.name} : ${a.action}`);
     }
     case "gm_combat": {
       const combats = await fs.doc("get", "Combat", { query: {} });
@@ -291,24 +293,24 @@ export async function handleGm(fs, name, a) {
         const chosen = a.tokens?.length ? a.tokens.map(r => byRef(tokens, r, "Jeton")) : tokens;
         const [c] = await fs.doc("create", "Combat", { data: [{ scene: s._id, active: true, round: 0, turn: null }], modifiedTime: now() });
         if (chosen.length) await fs.doc("create", "Combatant", { parentUuid: `Combat.${c._id}`, data: chosen.map(t => ({ tokenId: t._id, sceneId: s._id, actorId: t.actorId, hidden: !!t.hidden })), modifiedTime: now() });
-        return `Combat créé sur ${s.name} avec ${chosen.length} combattant(s). Lancer l'initiative : check kind=initiative ; puis gm_combat next pour commencer.`;
+        return message(`Combat created on ${s.name} with ${chosen.length} combatant(s). Roll initiative with check kind=initiative, then use gm_combat next to start.`, `Combat créé sur ${s.name} avec ${chosen.length} combattant(s). Lancer l'initiative : check kind=initiative ; puis gm_combat next pour commencer.`);
       }
       const c = combats.find(x => x.active) || combats[0];
-      if (!c) throw new Error("Aucun combat en cours");
+      if (!c) throw new Error(message("No combat in progress", "Aucun combat en cours"));
       const cbs = (await fs.doc("get", "Combatant", { parentUuid: `Combat.${c._id}`, query: {} }))
         .sort((x, y) => (Number(y.initiative) || -99) - (Number(x.initiative) || -99));
       if (a.action === "status") return { round: c.round, tour: c.turn, ordre: cbs.map(x => `${x.name || x.actorId} (${x.initiative ?? "—"})`) };
-      if (a.action === "end") { await fs.doc("delete", "Combat", { ids: [c._id], modifiedTime: now() }); return "Combat terminé"; }
+      if (a.action === "end") { await fs.doc("delete", "Combat", { ids: [c._id], modifiedTime: now() }); return message("Combat ended", "Combat terminé"); }
       let round = Number(c.round) || 0, turn = c.turn == null ? -1 : Number(c.turn);
       if (a.action === "next") { turn++; if (round === 0 || turn >= cbs.length) { round++; turn = 0; } }
       if (a.action === "previous") { turn--; if (turn < 0) { round = Math.max(1, round - 1); turn = cbs.length - 1; } }
       await fs.doc("update", "Combat", { updates: [{ _id: c._id, round, turn }], modifiedTime: now() });
-      return `Round ${round}, au tour de : ${cbs[turn]?.name || cbs[turn]?.actorId || "?"}`;
+      return message(`Round ${round}, current turn: ${cbs[turn]?.name || cbs[turn]?.actorId || "?"}`, `Round ${round}, au tour de : ${cbs[turn]?.name || cbs[turn]?.actorId || "?"}`);
     }
     case "gm_pause": {
       await fs.broadcast("pause", !!a.paused, { broadcast: true, userId: fs.userId });
-      return a.paused ? "Partie en pause" : "Partie reprise";
+      return a.paused ? message("Game paused", "Partie en pause") : message("Game resumed", "Partie reprise");
     }
   }
-  throw new Error(`Action non prise en charge : ${a.action}`);
+  throw new Error(message(`Unsupported action: ${a.action}`, `Action non prise en charge : ${a.action}`));
 }

@@ -27,7 +27,7 @@ Highlights:
 - `gm_show` supports recipient selection and a preview. `gm_permissions` reports what players can view or modify.
 - `gm_sync_items` and `gm_patch_items` preview changes by default and require explicit application.
 
-Tool **names are stable**. Some existing argument values, response fields, descriptions and errors are still in French; those form part of the current client-facing API and will only be migrated with explicit compatibility/versioning work. See [CONTRIBUTING.md](CONTRIBUTING.md).
+Tool **names and discovery descriptions are in English**. Some response keys, legacy argument values, enum values, and Foundry-specific status labels remain in French for backward compatibility. Renaming those fields requires an explicitly versioned protocol migration. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Requirements
 
@@ -63,11 +63,14 @@ sudo systemctl enable --now foundry-mcp
 | `TRUSTED_PROXY` | empty | Exact proxy IP trusted for `X-Forwarded-For` |
 | `PUBLIC_URL` | empty | Public Foundry URL used for uploaded-file links |
 | `IDLE_SECONDS` | `10` | Release an idle Foundry socket session so its user can return to the browser |
+| `MCP_LOCALE` | `fr` | Locale for supported server-owned messages: `fr` (legacy default) or `en` (opt-in English) |
 | `TRANSLATION_SOURCES` | `dnd5e_fr-FR/compendium_fr` | Ordered, comma-separated Babele translation directories (relative to Foundry's modules directory), e.g. `vecna-phb-fr/compendium` |
 | `UPLOAD_ALLOWED_ORIGINS` | empty | Comma-separated HTTPS origins allowed as remote upload sources; empty disables remote URLs |
 | `SNAPSHOT_DIR` | `data/snapshots` | Recovery snapshots; must be writable and backed up |
 | `SNAPSHOT_KEEP` / `SNAPSHOT_DAYS` | `500` / `90` | Snapshot retention |
 | `MAX_OUT` | `60000` | Response-size threshold for JSON pagination |
+
+**Language migration (incremental):** set `MCP_LOCALE=en` to receive English text for supported OAuth errors, dispatcher errors, pagination hints, snapshots, target diagnostics and selected GM / table / card feedback. The OAuth sign-in page additionally honors the browser's `Accept-Language` (English or French), independently for each player. This option deliberately **does not translate JSON keys, enum values, Foundry document content or user-entered names**. Some messages are still French; see [internationalization and compatibility](docs/internationalization.md) for current coverage, migration rules and future work.
 
 If the proxy is in a separate container or host, bind `HOST` to a suitable **private** interface and apply firewall rules. Never expose the MCP HTTP port directly to the public internet.
 
