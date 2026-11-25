@@ -17,11 +17,16 @@ export const GM_TOOLS = [
       action: { type: "string", enum: ["list", "play", "stop", "stop_all", "volume"] },
       playlist: { type: "string", description: "Playlist (nom ou _id)" }, sound: { type: "string", description: "Morceau de la playlist (nom ou _id), optionnel" },
       volume: { type: "number", description: "0 à 1, pour action=volume" } } } },
-  { name: "gm_show", gm: true, description: "MJ : montrer aux joueurs une image (fenêtre plein écran chez eux) ou un journal / une page de journal. Pour une image locale, l'envoyer d'abord avec upload_file.",
+  { name: "gm_show", gm: true, description: "MJ : montrer aux joueurs une image (fenêtre plein écran chez eux), un journal / une page de journal, ou amener sur une scène. 'users' choisit les destinataires (défaut : tous). preview=true : aperçu sans rien montrer (contenu, image, jetons de la scène, qui peut déjà lire quoi). Pour une image locale, l'envoyer d'abord avec upload_file.",
     inputSchema: { type: "object", properties: {
       image: { type: "string", description: "Chemin ou URL de l'image (ex. images/pnj/x.webp)" }, title: { type: "string" },
       journal: { type: "string", description: "Journal (nom ou _id), ou UUID d'une page (JournalEntry.x.JournalEntryPage.y)" },
-      force: { type: "boolean", description: "Montrer le journal à tous, même sans droit de lecture", default: true } } } },
+      scene: { type: "string", description: "Scène (nom ou _id) : amène les destinataires dessus (sans l'activer)" },
+      users: { type: "array", items: { type: "string" }, description: "Destinataires (noms ou _id d'utilisateurs) ; défaut : tous" },
+      preview: { type: "boolean", description: "Aperçu seulement : rien n'est montré" },
+      force: { type: "boolean", description: "Montrer le journal même aux destinataires sans droit de lecture", default: true } } } },
+  { name: "gm_permissions", gm: true, description: "MJ : ce que chaque joueur peut voir d'un document (UUID : JournalEntry.x, page JournalEntry.x.JournalEntryPage.y, Actor.x, Actor.x.Item.y, Scene.x, Item.x, RollTable.x, Cards.x, Compendium.pack.Type.id) : niveau de droit (aucun / limité / observateur / propriétaire), titre visible, contenu lisible, modifiable ; pages d'un journal détaillées ; scène : active / navigation / jetons cachés.",
+    inputSchema: { type: "object", required: ["uuid"], properties: { uuid: { type: "string" }, user: { type: "string", description: "Limiter à un utilisateur (nom ou _id)" } } } },
   { name: "gm_tile", gm: true, description: "MJ : poser une image sur le plateau (tuile) de la scène, en cases depuis le coin haut-gauche. Sans position : centrée.",
     inputSchema: { type: "object", required: ["image"], properties: {
       image: { type: "string" }, scene: sceneProp, x: { type: "number", description: "Colonne (cases)" }, y: { type: "number", description: "Ligne (cases)" },
@@ -57,6 +62,66 @@ async function sceneOf(fs, ref) {
 }
 const grid = s => Number(s.grid?.size) || 100;
 const now = () => Date.now();
+
+// ---------- droits de lecture ----------
+const LEVELS = { "-1": "hérité", 0: "aucun", 1: "limité", 2: "observateur", 3: "propriétaire" };
+const ROLE_NAMES = { 1: "PLAYER", 2: "TRUSTED", 3: "ASSISTANT", 4: "GAMEMASTER" };
+const LEVEL_OF = { NONE: 0, LIMITED: 1, OBSERVER: 2, OWNER: 3 };
+const sceneImage = s => s.levels?.[0]?.background?.src || s.background?.src || s.img || null;
+const plainText = h => String(h || "").replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/\s+/g, " ").trim();
+function levelFor(doc, user, inherited = 0) {
+  if ((Number(user.role) || 0) >= GM_ROLE) return 3;
+  const o = doc?.ownership || {};
+  const v = o[user._id] ?? o.default ?? 0;
+  return v === -1 ? inherited : v;
+}
+async function permissionsOf(fs, uuid, userRef) {
+  uuid = String(uuid || "").trim();
+  const users = await fs.doc("get", "User", { query: {} });
+  const list = userRef ? [byRef(users, userRef, "Utilisateur")] : users;
+  const parts = uuid.split(".");
+  let doc, parent = null, type, packOwn = null;
+  if (parts[0] === "Compendium") {
+    const pack = `${parts[1]}.${parts[2]}`; type = parts[3];
+    const packs = (await fs.worldData()).packs || [];
+    const pk = packs.find(p => p.id === pack);
+    if (!pk) throw new Error(`Compendium inconnu : ${pack}`);
+    packOwn = pk.ownership || { PLAYER: "OBSERVER", ASSISTANT: "OWNER" };
+    doc = (await fs.doc("get", type, { pack, query: { _id: parts[4] } })).find(d => d._id === parts[4]);
+  } else {
+    type = parts[0];
+    doc = (await fs.doc("get", type, { query: { _id: parts[1] } })).find(d => d._id === parts[1]);
+    if (doc && parts.length >= 4) {   // document embarqué : page, objet, effet…
+      parent = doc;
+      const coll = { JournalEntryPage: "pages", Item: "items", ActiveEffect: "effects", Token: "tokens", TableResult: "results", Card: "cards" }[parts[2]];
+      doc = (parent[coll] || []).find(d => d._id === parts[3]);
+      type = parts[2];
+    }
+  }
+  if (!doc) throw new Error(`Document introuvable : ${uuid}`);
+  const rows = list.map(u => {
+    let lvl;
+    if (packOwn) {   // compendium : droit selon le rôle (réglage du compendium)
+      let best = 0;
+      for (let r = 1; r <= (Number(u.role) || 0); r++) best = Math.max(best, LEVEL_OF[packOwn[ROLE_NAMES[r]]] ?? 0);
+      lvl = (Number(u.role) || 0) >= GM_ROLE ? 3 : best;
+    } else lvl = parent ? levelFor(doc, u, levelFor(parent, u)) : levelFor(doc, u);
+    if (type === "Item" && parent && !doc.ownership) lvl = levelFor(parent, u);
+    return { _id: u._id, nom: u.name, role: u.role, niveau: LEVELS[lvl], titre_visible: lvl >= 1, contenu_lisible: lvl >= 2, modifiable: lvl >= 3 };
+  });
+  const res = { uuid, type, nom: doc.name, utilisateurs: rows };
+  if (type === "JournalEntryPage") res.apercu = doc.type === "image" ? doc.src : plainText(doc.text?.content).slice(0, 300);
+  if (type === "JournalEntry") {
+    res.pages = (doc.pages || []).map(p => ({ _id: p._id, nom: p.name, type: p.type,
+      lisible_par: list.filter(u => levelFor(p, u, levelFor(doc, u)) >= 2).map(u => u.name),
+      titre_seulement: list.filter(u => levelFor(p, u, levelFor(doc, u)) === 1).map(u => u.name) }));
+    res.apercu = plainText(doc.pages?.[0]?.text?.content).slice(0, 300) || undefined;
+  }
+  if (type === "Scene") Object.assign(res, { active: !!doc.active, navigation: !!doc.navigation, image: sceneImage(doc),
+    jetons_caches: (doc.tokens || []).filter(t => t.hidden).map(t => t.name),
+    note: "Un joueur voit la scène active, et dans la navigation les scènes marquées « navigation » dont il a au moins le droit limité." });
+  return res;
+}
 
 export async function handleGm(fs, name, a) {
   switch (name) {
@@ -119,17 +184,46 @@ export async function handleGm(fs, name, a) {
       break;
     }
     case "gm_show": {
-      const done = [];
-      if (a.image) { await fs.broadcast("shareImage", { image: a.image, title: a.title || "", users: [], showTitle: !!a.title }); done.push(`image ${a.image}`); }
+      const done = [], preview = {};
+      const users = await fs.doc("get", "User", { query: {} });
+      const players = users.filter(u => u._id !== fs.userId);
+      const dest = a.users?.length ? a.users.map(r => byRef(users, r, "Utilisateur")) : [];
+      const destIds = dest.map(u => u._id);
+      const destLabel = dest.length ? dest.map(u => u.name).join(", ") : "tous les joueurs connectés";
+      if (a.image) {
+        if (a.preview) preview.image = { image: a.image, titre: a.title || null };
+        else { await fs.broadcast("shareImage", { image: a.image, title: a.title || "", users: destIds, showTitle: !!a.title }); done.push(`image ${a.image}`); }
+      }
       if (a.journal) {
         let uuid = a.journal;
         if (!uuid.includes(".")) { const j = byRef(await fs.doc("get", "JournalEntry", { query: {} }), a.journal, "Journal"); uuid = `JournalEntry.${j._id}`; }
-        await fs.broadcast("showEntry", uuid, { force: a.force !== false, users: [] });
-        done.push(`journal ${uuid}`);
+        if (a.preview) {
+          const p = await permissionsOf(fs, uuid, null);
+          const who = (dest.length ? dest : players);
+          preview.journal = { uuid, nom: p.nom, type: p.type, apercu: p.apercu, pages: p.pages?.map(x => x.nom),
+            destinataires: who.map(u => { const r = p.utilisateurs.find(x => x._id === u._id); return { nom: u.name, peut_deja_lire: r?.contenu_lisible, verra: a.force !== false ? "tout (force)" : r?.contenu_lisible ? "tout" : r?.titre_visible ? "titre seulement" : "rien" }; }) };
+        } else { await fs.broadcast("showEntry", uuid, { force: a.force !== false, users: destIds }); done.push(`journal ${uuid}`); }
       }
-      if (!done.length) throw new Error("Préciser 'image' ou 'journal'");
-      return `Montré aux joueurs : ${done.join(", ")}`;
+      if (a.scene) {
+        const scenes = await fs.doc("get", "Scene", { query: {} });
+        const sc = byRef(scenes, a.scene, "Scène");
+        if (a.preview) {
+          const tokens = await fs.doc("get", "Token", { parentUuid: `Scene.${sc._id}`, query: {} });
+          const p = await permissionsOf(fs, `Scene.${sc._id}`, null);
+          preview.scene = { _id: sc._id, nom: sc.name, active: !!sc.active, navigation: !!sc.navigation, image: sceneImage(sc), vignette: sc.thumb || null,
+            dimensions: `${sc.width}×${sc.height} px, case ${grid(sc)} px`, jetons_visibles: tokens.filter(t => !t.hidden).map(t => t.name), jetons_caches: tokens.filter(t => t.hidden).map(t => t.name),
+            notes: (sc.notes || []).length, obscurite: sc.environment?.darknessLevel ?? null,
+            droits: p.utilisateurs.filter(u => !dest.length || destIds.includes(u._id)).map(u => ({ nom: u.nom, niveau: u.niveau })) };
+        } else {
+          for (const u of (dest.length ? dest : players)) await fs.broadcast("pullToScene", sc._id, u._id, {});
+          done.push(`scène ${sc.name}`);
+        }
+      }
+      if (a.preview) { if (!Object.keys(preview).length) throw new Error("Préciser 'image', 'journal' ou 'scene'"); return { apercu: preview, destinataires: destLabel, note: "Rien n'a été montré (preview)." }; }
+      if (!done.length) throw new Error("Préciser 'image', 'journal' ou 'scene'");
+      return `Montré à ${destLabel} : ${done.join(", ")}`;
     }
+    case "gm_permissions": return permissionsOf(fs, a.uuid, a.user);
     case "gm_tile": {
       const s = await sceneOf(fs, a.scene); const g = grid(s);
       const w = (Number(a.width) || 4) * g, h = (Number(a.height) || Number(a.width) || 4) * g;
