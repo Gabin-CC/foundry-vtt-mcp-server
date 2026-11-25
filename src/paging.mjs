@@ -61,10 +61,11 @@ export function split(v, budget = Math.floor(MAX_OUT * 0.9)) {
     const flush = () => { if (Object.keys(cur).length) pages.push(cur); cur = {}; curSize = 2; };
     for (const k of keys) {
       const n = size(v[k]) + k.length + 6;
-      if (n > budget) {
-        flush();
-        const parts = split(v[k], budget - k.length - 200);
-        parts.forEach((p, j) => pages.push({ [k]: p, _partie: `${j + 1}/${parts.length}` }));
+      if (n > budget) {   // champ trop gros : découpé ; les petits champs en attente restent avec sa première partie
+        const head = curSize < budget / 4 ? cur : (flush(), {});
+        const parts = split(v[k], budget - k.length - 200 - (Object.keys(head).length ? size(head) : 0));
+        parts.forEach((p, j) => pages.push({ ...(j === 0 ? head : {}), [k]: p, _partie: `${j + 1}/${parts.length}` }));
+        cur = {}; curSize = 2;
         continue;
       }
       if (curSize + n > budget) flush();
