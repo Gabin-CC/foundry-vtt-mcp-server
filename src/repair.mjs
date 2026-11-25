@@ -191,12 +191,14 @@ export async function scanAndRepair(fs, { apply = false, actors = true, items = 
     const ops = tasks.map(t => {
       const diff = diffUpdates(t.list, t.updates);
       if (diff.entries.length !== t.updates.length)
-        throw new Error(`Item ID repair aborted: cannot snapshot every update in ${t.label}`);
+        throw new Error(message(`Item ID repair aborted: cannot snapshot every update in ${t.label}`,
+          `Réparation des identifiants d'objets interrompue : impossible de sauvegarder toutes les mises à jour dans ${t.label}`));
       return { action: "update", type: "Item", ...(t.opts.pack ? { pack: t.opts.pack } : {}),
         ...(t.opts.parentUuid ? { parent: t.opts.parentUuid } : {}), entries: diff.entries };
     });
     const snapshot = await saveSnapshot(fs, "gm_check_ids", "Item ID repair", ops);
-    if (!snapshot) throw new Error("Item ID repair aborted: no recovery snapshot was created");
+    if (!snapshot) throw new Error(message("Item ID repair aborted: no recovery snapshot was created",
+      "Réparation des identifiants d'objets interrompue : aucun instantané de restauration créé"));
     report.instantane = snapshot;
     for (const task of tasks) {
       for (let i = 0; i < task.updates.length; i += 50) {
