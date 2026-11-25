@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Met à jour le serveur depuis GitHub puis le redémarre.
-# À lancer en root (ou avec un utilisateur ayant sudo).
+# Update the server from GitHub, then restart it.
+# Run as root (or a user with sudo privileges).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 SUDO=""; [ "$(id -u)" -ne 0 ] && SUDO="sudo"
@@ -10,4 +10,4 @@ $SUDO git pull --ff-only
 $SUDO npm ci --omit=dev --no-audit --no-fund
 $SUDO chown -R "$OWNER:$OWNER" .
 $SUDO systemctl restart foundry-mcp
-echo "Mis à jour : $(git log -1 --format='%h %s')"
+echo "Updated: $(git log -1 --format='%h %s')"
