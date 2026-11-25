@@ -36,9 +36,20 @@ export function idIssues(item) {
 }
 
 /** Corrige en place les données d'un objet avant création. Renvoie la liste des identifiants changés. */
+/** Collection stockée en liste dans certains compendiums (ex. avancements de dnd5e.origins24 / feats24) :
+ *  objet indexé par _id, comme Foundry la conserve sur un objet de fiche. Sans conversion, la première
+ *  mise à jour « system.advancement.<id>.value » remplace la liste par un objet ne gardant que les valeurs. */
+export function keyedCollection(v) {
+  if (!Array.isArray(v)) return v;
+  const out = {};
+  for (const e of v) if (e && typeof e === "object" && e._id) out[e._id] = e;
+  return out;
+}
+
 export function sanitizeItemData(d) {
   const changed = [];
   for (const coll of KEYED) {
+    if (Array.isArray(d.system?.[coll])) { d.system[coll] = keyedCollection(d.system[coll]); changed.push(`${coll}: liste -> objet`); }
     const obj = d.system?.[coll];
     if (!obj || typeof obj !== "object" || Array.isArray(obj)) continue;
     let dirty = false;

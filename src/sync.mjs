@@ -4,7 +4,7 @@
  * ou créée avant que le serveur ne recopie tout) et les complète comme le ferait un import.
  * dry_run par défaut ; apply=true écrit (un instantané de restauration est gardé, outil snapshots).
  */
-import { fixId, sanitizeItemData, itemWarnings } from "./repair.mjs";
+import { fixId, sanitizeItemData, itemWarnings, keyedCollection } from "./repair.mjs";
 import { diffUpdates, saveSnapshot } from "./snapshots.mjs";
 
 const VALID = /^[A-Za-z0-9]{16}$/;
@@ -17,13 +17,15 @@ const srcOf = it => it._stats?.compendiumSource || it.flags?.dnd5e?.sourceId || 
 /** Comparaison d'un objet de fiche avec sa source de compendium : ce qui manque. */
 export function itemDiff(item, source) {
   const acts = item.system?.activities || {}, sActs = source.system?.activities || {};
-  const adv = item.system?.advancement || {}, sAdv = source.system?.advancement || {};
+  const adv = keyedCollection(item.system?.advancement || {}), sAdv = keyedCollection(source.system?.advancement || {});
   // activités manquantes, ou présentes mais à identifiant invalide (Foundry les ignore)
   const missingActs = Object.entries(sActs).filter(([k]) => !acts[k] || !VALID.test(k)).map(([k, v]) => ({ id: k, name: v.name || v.type }));
   const effIds = new Set((item.effects || []).map(e => e._id));
   const actEffIds = new Set(Object.values(acts).flatMap(a => (a.effects || []).map(r => r._id)));
   const missingEff = (source.effects || []).filter(e => !effIds.has(e._id) && !actEffIds.has(e._id)).map(e => ({ id: e._id, name: e.name, type: e.type }));
-  const missingAdv = Object.keys(sAdv).filter(k => !adv[k] || !VALID.test(k)).map(k => ({ id: k, name: sAdv[k]?.title || sAdv[k]?.type }));
+  // absent, à identifiant invalide, ou réduit à sa valeur (type/configuration perdus) : à compléter depuis la source
+  const missingAdv = Object.keys(sAdv).filter(k => !adv[k] || !VALID.test(k) || !adv[k].type)
+    .map(k => ({ id: k, name: sAdv[k]?.title || sAdv[k]?.type, keepValue: adv[k]?.value }));
   const changed = [];
   if (missingActs.length) changed.push(`${missingActs.length} activité(s) : ${missingActs.map(a => a.name).join(", ")}`);
   if (missingEff.length) changed.push(`${missingEff.length} effet(s) : ${missingEff.map(e => e.name).join(", ")}`);
@@ -39,8 +41,10 @@ export function syncUpdate(item, source, diff) {
     sanitizeItemData({ system: { activities: { [a.id]: d } } });
     up[`system.activities.${a.id}`] = d;
   }
+  const srcAdv = keyedCollection(source.system?.advancement || {});
   for (const a of diff.missingAdv) {
-    const d = structuredClone(source.system.advancement[a.id]);
+    const d = structuredClone(srcAdv[a.id]);
+    if (a.keepValue && Object.keys(a.keepValue).length) d.value = a.keepValue; // choix déjà faits conservés
     sanitizeItemData({ system: { advancement: { [a.id]: d } } });
     up[`system.advancement.${a.id}`] = d;
   }
@@ -94,6 +98,29 @@ export function syncUpdate(item, source, diff) {
   return up;
 }
 
+/** Document source brut. Compendium absent du serveur (ex. module premium « dnd-players-handbook » que les
+ *  compendiums dnd5e citent comme origine) : même _id cherché dans les compendiums d'objets installés. */
+async function sourceDoc(fs, src) {
+  const packs = (fs._packs2 ??= ((await fs.worldData()).packs || []));
+  if (packs.some(p => p.id === src.pack)) {
+    const d = (await fs.doc("get", "Item", { pack: src.pack, query: { _id: src.id } })).find(x => x._id === src.id);
+    if (d) return d;
+  }
+  fs._syncIdx ??= new Map();
+  for (const p of packs.filter(p => p.type === "Item")) {
+    if (!fs._syncIdx.has(p.id)) {
+      let ids = [];
+      try { ids = (await fs.doc("get", "Item", { pack: p.id, query: {}, index: true, indexFields: ["_id"] })).map(x => x._id); } catch { /* */ }
+      fs._syncIdx.set(p.id, new Set(ids));
+    }
+    if (fs._syncIdx.get(p.id).has(src.id)) {
+      const d = (await fs.doc("get", "Item", { pack: p.id, query: { _id: src.id } })).find(x => x._id === src.id);
+      if (d) return d;
+    }
+  }
+  return null;
+}
+
 /** Synchronise les objets d'un acteur avec leur source de compendium (résumé compact : le détail par page). */
 export async function syncItems(fs, { actor, item: itemRef, apply = false, only, pack: onlyPack } = {}) {
   const items = actor.items?.length ? actor.items : await fs.doc("get", "Item", { parentUuid: `Actor.${actor._id}`, query: {} });
@@ -108,7 +135,7 @@ export async function syncItems(fs, { actor, item: itemRef, apply = false, only,
     if (!src) { sansSource++; if (itemRef) detail.push({ nom: it.name, statut: "sans source (créé à la main)" }); continue; }
     if (onlyPack && src.pack !== onlyPack) continue;
     let source;
-    try { source = (await fs.doc("get", "Item", { pack: src.pack, query: { _id: src.id } })).find(x => x._id === src.id); }
+    try { source = await sourceDoc(fs, src); }
     catch (e) { detail.push({ nom: it.name, source: ref, probleme: e.message }); continue; }
     if (!source) { detail.push({ nom: it.name, source: ref, probleme: "source introuvable" }); continue; }
     const diff = itemDiff(it, source);
