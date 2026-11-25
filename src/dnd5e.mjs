@@ -321,6 +321,7 @@ export function useItem(rawActor, item, { activityId, slotLevel, advantage, disa
   }
 
   if (!act) { out.lignes.push("(Aucune activité : rien à lancer)"); return out; }
+  out.activity = { _id: act._id, type: act.type, effects: (act.effects || []).map(e => e._id).filter(Boolean) };
   const ctx = { actor, d, item, spellLevel, castLevel };
 
   // --- attaque ---
@@ -337,6 +338,7 @@ export function useItem(rawActor, item, { activityId, slotLevel, advantage, disa
     const r = rollFormula(`${dice}${sign(bonus)}`, { flavor: `${item.name} — attaque` });
     const nat = r.roll.terms[0].results.filter(x => x.active)[0].result;
     out.crit = nat >= num(act.attack?.critical?.threshold || 20);
+    out.attack = { total: r.total, nat, crit: out.crit };
     out.rolls.push(r);
     out.lignes.push(`Attaque : ${r.total} (d20=${nat}${sign(bonus)})${out.crit ? " — CRITIQUE !" : nat === 1 ? " — échec critique" : ""}`);
   }
@@ -346,6 +348,7 @@ export function useItem(rawActor, item, { activityId, slotLevel, advantage, disa
     const dc = act.save?.dc?.calculation === "spellcasting" || (!act.save?.dc?.formula && item.type === "spell") ? d.spellDC
       : act.save?.dc?.calculation && ABIL[act.save.dc.calculation] ? 8 + d.prof + d.mods[act.save.dc.calculation]
       : num(resolveFormulaVars(act.save?.dc?.formula, actor, d, item)) || d.spellDC;
+    out.save = { abilities: toList(act.save?.ability), dc, onSave: act.damage?.onSave || "none" };
     out.lignes.push(`Jet de sauvegarde de ${toList(act.save?.ability).map(a => ABIL[a] || a).join("/")} DD ${dc}${act.damage?.onSave === "half" ? " (moitié des dégâts si réussi)" : ""}`);
   }
 
@@ -365,6 +368,7 @@ export function useItem(rawActor, item, { activityId, slotLevel, advantage, disa
     const types = (p.types || []).map(t => DMG_FR[t] || t).join("/");
     const r = rollFormula(f, { flavor: `${item.name} — dégâts ${types}` });
     out.rolls.push(r);
+    (out.damage ??= []).push({ total: r.total, types: p.types || [], formula: r.formula });
     out.lignes.push(`Dégâts : ${r.total} ${types} (${r.formula})`);
   }
 
@@ -373,6 +377,7 @@ export function useItem(rawActor, item, { activityId, slotLevel, advantage, disa
     const f = partFormula(act.healing, ctx);
     const r = rollFormula(f, { flavor: `${item.name} — ${DMG_FR[act.healing.types?.[0]] || "soins"}` });
     out.rolls.push(r);
+    out.healing = { total: r.total, temp: (act.healing.types || []).includes("temphp"), formula: r.formula };
     out.lignes.push(`Soins : ${r.total} (${r.formula})`);
   }
 
