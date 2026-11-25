@@ -8,7 +8,8 @@
 const clone = o => structuredClone(o);
 const AID = n => (n + "0000000000000").slice(0, 16);   // identifiant valide 16 alphanumériques
 const isWeaponCantrip = name => /^(booming blade|lame retentissante|green-flame blade|lame des flammes vertes)$/i.test(String(name || "").trim());
-const hasWeaponAttack = doc => Object.values(doc.system?.activities || {}).some(a => a.type === "attack" && a.attack?.classification === "weapon");
+const hasWeaponAttack = doc => Object.values(doc.system?.activities || {}).some(a => a.type === "attack"
+  && (a.attack?.type?.classification === "weapon" || a.attack?.classification === "weapon"));
 const hasDamage = doc => Object.values(doc.system?.activities || {}).some(a => a.type === "damage");
 
 /** Un cantrip d'arme : dégâts « on hit » sans attaque → activité d'attaque (arme de mêlée) + dégâts de l'arme. */

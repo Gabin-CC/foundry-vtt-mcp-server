@@ -397,22 +397,24 @@ async function runTool(fs, params) {
         }
         case "update_documents": {
           const o = { type: a.type, pack: a.pack, parent: a.parent };
-          let diff = null, note;
-          try { diff = diffUpdates(await currentDocs(fs, o, a.updates.map(u => u._id)), a.updates); }
-          catch (e) { note = `Avant/après indisponible : ${e.message}`; }
-          if (a.dry_run) return out({ simulation: true, documents: diff?.preview, note });
+          const diff = diffUpdates(await currentDocs(fs, o, a.updates.map(u => u._id)), a.updates);
+          if (a.dry_run) return out({ simulation: true, documents: diff.preview });
+          if (diff.preview.some(p => p.erreur)) throw new Error("Document update aborted: original document unavailable for snapshot");
+          if (!diff.entries.length) return out({ modifies: 0, resultat: [], note: "Aucune modification nécessaire" });
+          const snap = await saveSnapshot(fs, "update_documents", `${a.type} : ${diff.entries.map(e => e.nom || e._id).slice(0, 5).join(", ")}${diff.entries.length > 5 ? "…" : ""}`, [{ action: "update", ...o, entries: diff.entries }]);
+          if (!snap) throw new Error("Document update aborted: no recovery snapshot was created");
           const r = await fs.doc("update", a.type, { updates: a.updates, diff: true, recursive: true, modifiedTime: Date.now(), render: true, ...parentOpt(a.parent, a.pack) });
-          const snap = diff ? await saveSnapshot(fs, "update_documents", `${a.type} : ${diff.entries.map(e => e.nom || e._id).slice(0, 5).join(", ")}${diff.entries.length > 5 ? "…" : ""}`, [{ action: "update", ...o, entries: diff.entries }]) : null;
-          return out({ modifies: r.length, instantane: snap || undefined, resultat: r, note });
+          return out({ modifies: r.length, instantane: snap, resultat: r });
         }
         case "delete_documents": {
           const o = { type: a.type, pack: a.pack, parent: a.parent };
-          let docs = [];
-          try { docs = await currentDocs(fs, o, a.ids); } catch { /* instantané impossible : suppression quand même */ }
+          const docs = await currentDocs(fs, o, a.ids);
           if (a.dry_run) return out({ simulation: true, seraient_supprimes: docs.map(d => ({ _id: d._id, nom: d.name, type: d.type })), introuvables: a.ids.filter(id => !docs.some(d => d._id === id)) });
+          if (docs.length !== new Set(a.ids).size) throw new Error("Document deletion aborted: original document unavailable for snapshot");
           const snap = await saveSnapshot(fs, "delete_documents", `suppression ${a.type} : ${docs.map(d => d.name || d._id).slice(0, 5).join(", ")}`, [{ action: "delete", ...o, docs }]);
+          if (!snap) throw new Error("Document deletion aborted: no recovery snapshot was created");
           const r = await fs.doc("delete", a.type, { ids: a.ids, modifiedTime: Date.now(), render: true, ...parentOpt(a.parent, a.pack) });
-          return out({ supprimes: r, instantane: snap || undefined });
+          return out({ supprimes: r, instantane: snap });
         }
         case "apply_damage": return out(await applyDamage(fs, a, { postChat }));
         case "roll_table": return out(await handleTable(fs, a, { postChat }));

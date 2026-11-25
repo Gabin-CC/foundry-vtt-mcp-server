@@ -421,11 +421,13 @@ export function useItem(rawActor, item, { activityId, slotLevel, advantage, disa
   const ctx = { actor, d, item, spellLevel, castLevel };
 
   // --- attaque ---
-  const weapon = act.type === "attack" && act.attack?.classification === "weapon" ? mainWeapon(actor, act.attack?.type?.value) : null;
+  const weaponClassified = act.type === "attack"
+    && (act.attack?.type?.classification === "weapon" || act.attack?.classification === "weapon");
+  const weapon = weaponClassified ? mainWeapon(actor, act.attack?.type?.value) : null;
   if (act.type === "attack") {
     // classification « weapon » (dnd5e 5/6 : True Strike, Shillelagh, Booming Blade…) : jet et dégâts de l'arme
     let bonus;
-    if (act.attack?.classification === "weapon") {
+    if (weaponClassified) {
       const ab = act.attack?.ability && act.attack.ability !== "none" ? act.attack.ability : (weapon ? weaponAbility(weapon, d) : (d.scAbility || "dex"));
       const prof = weapon ? weapon.system?.proficient !== 0 : true;
       bonus = d.mods[ab] + (prof ? d.prof : 0) + num(act.attack?.bonus)
