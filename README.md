@@ -289,6 +289,14 @@ Optional OAuth 2.1 support for ChatGPT is documented above; each player connects
 - Property overrides and active-effect updates reject prototype-related keys. This prevents a malicious document key from modifying the Node.js process-wide object prototype.
 - Existing `upload_file` clients that used arbitrary URLs must either switch to base64 or configure explicitly trusted CDN origins. The current release remains French-first; a versioned English API migration is planned separately.
 
+### Data-integrity safeguards (phase 2)
+
+- `update_documents`, `delete_documents`, `gm_sync_items` and `gm_patch_items` now require a successful recovery snapshot **before** writing to Foundry. If the original documents cannot be retrieved or `SNAPSHOT_DIR` is unavailable, the operation returns an error without starting the requested mutation. Keep this directory writable and back it up independently.
+- `gm_sync_items` and `gm_patch_items` remain dry-run by default. Review the proposed changes before passing `apply: true`, especially for operations that affect multiple characters or compendiums.
+- This guarantee does **not yet** cover every mutation path: `gm_check_ids` still needs a snapshot-backed repair workflow before it is suitable for unattended bulk changes.
+- Snapshots are per operation, not database transactions. A Foundry error midway through a multi-document update can still leave a partial application; use `snapshots` to inspect the original values and restore affected documents. Test migrations on a disposable world before applying them to your campaign.
+- Run `npm run check` for the security, OAuth, item-synchronization, combat, and snapshot-order regression tests. These unit tests use mock Foundry sessions and do not replace an integration test with a real Foundry server.
+
 ## Licence
 
 MIT — not affiliated with Foundry Gaming LLC or Anthropic.

@@ -24,10 +24,10 @@ export async function patchItems(fs, { actor = null, parentUuid = null, pack = n
   }
   let instantane = null;
   if (apply && updates.length) {
-    try {
-      const diff = diffUpdates(list.filter(i => updates.some(u => u._id === i._id)), updates);
-      instantane = await saveSnapshot(fs, "gm_patch_items", `correctifs de ${where}`, [{ action: "update", type: "Item", ...(parentUuid ? { parent: parentUuid } : {}), ...(pack ? { pack } : {}), entries: diff.entries }]);
-    } catch { /* instantané impossible : on écrit quand même */ }
+    const diff = diffUpdates(list.filter(i => updates.some(u => u._id === i._id)), updates);
+    if (diff.entries.length !== updates.length) throw new Error("Item patch aborted: cannot snapshot every requested change");
+    instantane = await saveSnapshot(fs, "gm_patch_items", `correctifs de ${where}`, [{ action: "update", type: "Item", ...(parentUuid ? { parent: parentUuid } : {}), ...(pack ? { pack } : {}), entries: diff.entries }]);
+    if (!instantane) throw new Error("Item patch aborted: no recovery snapshot was created");
     await fs.doc("update", "Item", { ...(parentUuid ? { parentUuid } : {}), ...(pack ? { pack } : {}), updates, diff: true, recursive: true, modifiedTime: Date.now(), render: true });
   }
   return {

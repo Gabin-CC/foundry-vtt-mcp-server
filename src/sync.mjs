@@ -16,16 +16,19 @@ const srcOf = it => it._stats?.compendiumSource || it.flags?.dnd5e?.sourceId || 
 
 /** Comparaison d'un objet de fiche avec sa source de compendium : ce qui manque. */
 export function itemDiff(item, source) {
-  const acts = item.system?.activities || {}, sActs = source.system?.activities || {};
+  const acts = keyedCollection(item.system?.activities || {}), sActs = keyedCollection(source.system?.activities || {});
   const adv = keyedCollection(item.system?.advancement || {}), sAdv = keyedCollection(source.system?.advancement || {});
   // activités manquantes, ou présentes mais à identifiant invalide (Foundry les ignore)
-  const missingActs = Object.entries(sActs).filter(([k]) => !acts[k] || !VALID.test(k)).map(([k, v]) => ({ id: k, name: v.name || v.type }));
+  const missingActs = Object.entries(sActs).filter(([k]) => {
+    const current = acts[fixId(k)];
+    return !current || (current._id && !VALID.test(current._id));
+  }).map(([k, v]) => ({ id: k, name: v.name || v.type }));
   const effIds = new Set((item.effects || []).map(e => e._id));
-  const actEffIds = new Set(Object.values(acts).flatMap(a => (a.effects || []).map(r => r._id)));
-  const missingEff = (source.effects || []).filter(e => !effIds.has(e._id) && !actEffIds.has(e._id)).map(e => ({ id: e._id, name: e.name, type: e.type }));
+  // An activity can reference an effect whose embedded document is missing.
+  const missingEff = (source.effects || []).filter(e => !effIds.has(e._id)).map(e => ({ id: e._id, name: e.name, type: e.type }));
   // absent, à identifiant invalide, ou réduit à sa valeur (type/configuration perdus) : à compléter depuis la source
-  const missingAdv = Object.keys(sAdv).filter(k => !adv[k] || !VALID.test(k) || !adv[k].type)
-    .map(k => ({ id: k, name: sAdv[k]?.title || sAdv[k]?.type, keepValue: adv[k]?.value }));
+  const missingAdv = Object.keys(sAdv).filter(k => !adv[fixId(k)] || !adv[fixId(k)].type)
+    .map(k => ({ id: k, name: sAdv[k]?.title || sAdv[k]?.type, keepValue: adv[fixId(k)]?.value ?? adv[k]?.value }));
   const changed = [];
   if (missingActs.length) changed.push(`${missingActs.length} activité(s) : ${missingActs.map(a => a.name).join(", ")}`);
   if (missingEff.length) changed.push(`${missingEff.length} effet(s) : ${missingEff.map(e => e.name).join(", ")}`);
@@ -36,17 +39,29 @@ export function itemDiff(item, source) {
 /** Mise à jour (notation pointée) qui ajoute ce qui manque, avec des identifiants valides. */
 export function syncUpdate(item, source, diff) {
   const up = { _id: item._id };
+  const sourceActivities = keyedCollection(source.system?.activities || {});
+  const sourceAdvancements = keyedCollection(source.system?.advancement || {});
+  const fragment = { system: { activities: {}, advancement: {} } };
   for (const a of diff.missingActs) {
-    const d = structuredClone(source.system.activities[a.id]);
-    sanitizeItemData({ system: { activities: { [a.id]: d } } });
-    up[`system.activities.${a.id}`] = d;
+    fragment.system.activities[a.id] = structuredClone(sourceActivities[a.id]);
   }
-  const srcAdv = keyedCollection(source.system?.advancement || {});
   for (const a of diff.missingAdv) {
-    const d = structuredClone(srcAdv[a.id]);
-    if (a.keepValue && Object.keys(a.keepValue).length) d.value = a.keepValue; // choix déjà faits conservés
-    sanitizeItemData({ system: { advancement: { [a.id]: d } } });
-    up[`system.advancement.${a.id}`] = d;
+    const d = structuredClone(sourceAdvancements[a.id]);
+    if (a.keepValue != null && (typeof a.keepValue !== "object" || Object.keys(a.keepValue).length)) {
+      d.value = structuredClone(a.keepValue); // Preserve already selected advancement choices.
+    }
+    fragment.system.advancement[a.id] = d;
+  }
+  sanitizeItemData(fragment);
+  for (const a of diff.missingActs) {
+    const id = fixId(a.id);
+    if (id !== a.id && Object.hasOwn(item.system?.activities || {}, a.id)) up[`system.activities.-=${a.id}`] = null;
+    up[`system.activities.${id}`] = fragment.system.activities[id];
+  }
+  for (const a of diff.missingAdv) {
+    const id = fixId(a.id);
+    if (id !== a.id && Object.hasOwn(item.system?.advancement || {}, a.id)) up[`system.advancement.-=${a.id}`] = null;
+    up[`system.advancement.${id}`] = fragment.system.advancement[id];
   }
   // effets manquants : identifiant valide et unique, origine = la source, _stats retiré
   const effMap = {};
@@ -71,7 +86,10 @@ export function syncUpdate(item, source, diff) {
     up.effects = [...(item.effects || []), ...added];
     // activités (existantes ou ajoutées) : références d'effet à re-pointer
     const allActs = { ...(item.system?.activities || {}) };
-    for (const a of diff.missingActs) allActs[a.id] = up[`system.activities.${a.id}`];
+    for (const a of diff.missingActs) {
+      if (fixId(a.id) !== a.id) delete allActs[a.id];
+      allActs[fixId(a.id)] = up[`system.activities.${fixId(a.id)}`];
+    }
     for (const [k, a] of Object.entries(allActs)) {
       if (!a?.effects?.length) continue;
       let dirty = false;
@@ -148,10 +166,10 @@ export async function syncItems(fs, { actor, item: itemRef, apply = false, only,
   let modifies = 0, instantane = null;
   if (todo.length) {
     const cur = todo.length === 1 ? chosen.filter(i => i._id === todo[0]._id) : await fs.doc("get", "Item", { parentUuid: `Actor.${actor._id}`, query: {} });
-    try {
-      const diff = diffUpdates(cur, todo);
-      instantane = await saveSnapshot(fs, "gm_sync_items", `synchronisation de ${actor.name}`, [{ action: "update", type: "Item", parent: `Actor.${actor._id}`, entries: diff.entries }]);
-    } catch { /* instantané impossible : on écrit quand même */ }
+    const diff = diffUpdates(cur, todo);
+    if (diff.entries.length !== todo.length) throw new Error("Item synchronization aborted: cannot snapshot every requested change");
+    instantane = await saveSnapshot(fs, "gm_sync_items", `synchronisation de ${actor.name}`, [{ action: "update", type: "Item", parent: `Actor.${actor._id}`, entries: diff.entries }]);
+    if (!instantane) throw new Error("Item synchronization aborted: no recovery snapshot was created");
     for (let i = 0; i < todo.length; i += 50) {
       const r = await fs.doc("update", "Item", { parentUuid: `Actor.${actor._id}`, updates: todo.slice(i, i + 50), diff: true, recursive: true, modifiedTime: Date.now(), render: true });
       modifies += Array.isArray(r) ? r.length : 1;
