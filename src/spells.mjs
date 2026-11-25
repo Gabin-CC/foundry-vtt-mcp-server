@@ -25,6 +25,14 @@ function scaleBonus(actor, clsId, identifier) {
   return b;
 }
 
+/** Nom anglais normalisé, sans le possessif d'un sorcier célèbre en tête (« Tenser's », « Mordenkainen’s »…). */
+// (seulement s'il reste au moins deux mots : « Hunter's Mark » reste tel quel)
+export const spellKey = name => {
+  const n = String(name || "");
+  const stripped = n.replace(/^\s*[A-Z][\w-]*['’]s?\s+(?=\S)/, "");
+  return norm(stripped !== n && norm(stripped).includes(" ") ? stripped : n);
+};
+
 const listCache = new Map();
 /** Tous les sorts de la classe, dédoublonnés (préférence : même édition de règles que la classe). */
 export async function classSpellList(fs, cls) {
@@ -46,7 +54,9 @@ export async function classSpellList(fs, cls) {
       const uuid = `Compendium.${pk.id}.Item.${e._id}`;
       const declared = e.flags?.plutonium?.spellClassNames || [];
       if (!(official.has(uuid) || declared.includes(className) || e.system?.sourceClass === id)) continue;
-      const k = e.system?.identifier || norm(e.name);
+      // clé = nom anglais sans possessif : « Tasha's Hideous Laughter » (2014) et « Hideous Laughter » (2024),
+      // « Leomund's Tiny Hut » / « Tiny Hut »… sont le même sort (la version 2024 officielle est gardée par le rang)
+      const k = spellKey(e.name) || e.system?.identifier;
       const cand = { uuid, name: trFor(tr, e)?.name || e.name, name_en: e.name, level: Number(e.system?.level) || 0, key: k, rank: rank(pk) };
       const cur = best.get(k);
       if (!cur || cand.rank < cur.rank) best.set(k, cand);
