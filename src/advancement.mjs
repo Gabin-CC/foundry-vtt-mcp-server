@@ -293,6 +293,7 @@ export async function plan(fs, actor, item, { fromLevel, toLevel, choices = {}, 
         const chosen = [...(c.grants || [])];
         let missing = false;
         for (const [i, ch] of (c.choices || []).entries()) {
+          if (!(ch.pool || []).length) continue; // choix sans liste (défaut de données) : ignoré, comme dans Foundry
           const pool = expandPool(ch.pool);
           const val = choice(adv, l);
           const picks = Array.isArray(val) ? val.filter(v => matchPool(v, ch.pool) || pool.includes(v)) : [];
