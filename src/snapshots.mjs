@@ -9,6 +9,7 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { message } from "./i18n.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const DIR = process.env.SNAPSHOT_DIR || path.join(ROOT, "data", "snapshots");
@@ -95,12 +96,12 @@ export async function saveSnapshot(fs, tool, label, ops) {
 }
 
 async function load(id) {
-  if (!/^\d{13}-[0-9a-f]{6}$/.test(String(id))) throw new Error(`Identifiant d'instantané invalide : ${id}`);
-  try { return JSON.parse(await fsp.readFile(file(id), "utf8")); } catch { throw new Error(`Instantané introuvable : ${id}`); }
+  if (!/^\d{13}-[0-9a-f]{6}$/.test(String(id))) throw new Error(message(`Invalid snapshot ID: ${id}`, `Identifiant d'instantané invalide : ${id}`));
+  try { return JSON.parse(await fsp.readFile(file(id), "utf8")); } catch { throw new Error(message(`Snapshot not found: ${id}`, `Instantané introuvable : ${id}`)); }
 }
 const canSee = (fs, s, isGM) => isGM || s.user === fs.userId;
 const summary = s => ({ id: s.id, date: s.date, utilisateur: s.user_name, outil: s.tool, libelle: s.label,
-  operations: s.ops.map(o => `${o.action} ${o.type}${o.parent ? ` (dans ${o.parent})` : ""}${o.pack ? ` [${o.pack}]` : ""} : ${(o.entries || o.docs).length} document(s)`),
+  operations: s.ops.map(o => message(`${o.action} ${o.type}${o.parent ? ` (in ${o.parent})` : ""}${o.pack ? ` [${o.pack}]` : ""}: ${(o.entries || o.docs).length} document(s)`, `${o.action} ${o.type}${o.parent ? ` (dans ${o.parent})` : ""}${o.pack ? ` [${o.pack}]` : ""} : ${(o.entries || o.docs).length} document(s)`)),
   restaure: s.restored || undefined });
 
 export async function listSnapshots(fs, isGM, { limit = 30, tool } = {}) {
@@ -120,11 +121,11 @@ export async function listSnapshots(fs, isGM, { limit = 30, tool } = {}) {
 
 export async function showSnapshot(fs, isGM, id) {
   const s = await load(id);
-  if (!canSee(fs, s, isGM)) throw new Error("Instantané d'un autre utilisateur");
+  if (!canSee(fs, s, isGM)) throw new Error(message("Snapshot belongs to another user", "Instantané d'un autre utilisateur"));
   return { ...summary(s), detail: s.ops.map(o => ({ action: o.action, type: o.type, parent: o.parent, pack: o.pack,
     documents: o.action === "update"
       ? o.entries.map(e => ({ _id: e._id, nom: e.nom, champs: [...Object.entries(e.avant).map(([k, v]) => ({ champ: k, valeur_sauvegardee: excerpt(v), valeur_apres: excerpt(e.apres?.[k]) })),
-          ...e.absents.map(k => ({ champ: k, valeur_sauvegardee: "(absent)", valeur_apres: excerpt(e.apres?.[k]) }))] }))
+          ...e.absents.map(k => ({ champ: k, valeur_sauvegardee: message("(missing)", "(absent)"), valeur_apres: excerpt(e.apres?.[k]) }))] }))
       : o.docs.map(d => ({ _id: d._id, nom: d.name })) })) };
 }
 
@@ -142,7 +143,7 @@ export async function currentDocs(fs, o, ids) {
 /** Restaure un instantané (ou le simule avec dryRun). La restauration est elle-même enregistrée comme instantané. */
 export async function restoreSnapshot(fs, isGM, id, { dryRun = false } = {}) {
   const s = await load(id);
-  if (!canSee(fs, s, isGM)) throw new Error("Instantané d'un autre utilisateur");
+  if (!canSee(fs, s, isGM)) throw new Error(message("Snapshot belongs to another user", "Instantané d'un autre utilisateur"));
   const report = [], undoOps = [];
   // ordre inverse : la dernière opération est annulée en premier
   for (const o of [...s.ops].reverse()) {

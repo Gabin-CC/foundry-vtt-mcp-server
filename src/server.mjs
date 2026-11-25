@@ -19,6 +19,7 @@ import { sanitizeItemData, itemWarnings } from "./repair.mjs";
 import { applyPatches } from "./patches.mjs";
 import { resolveImportEntry } from "./edition.mjs";
 import { englishToolMetadata } from "./tool-english.mjs";
+import { message } from "./i18n.mjs";
 import { scrollFromSpell } from "./scroll.mjs";
 import { render, nextPage, MAX_OUT } from "./paging.mjs";
 import { auditTranslation, searchText, findReferences } from "./corpus.mjs";
@@ -238,7 +239,7 @@ export const TOOLS = TOOL_DEFINITIONS.map(englishToolMetadata);
 
 // ---------- helpers D&D / Foundry ----------
 async function findActor(fs, ref) {
-  if (!ref) throw new Error("Acteur non précisé");
+  if (!ref) throw new Error(message("Actor not specified", "Acteur non précisé"));
   const a = (await fs.doc("get", "Actor", { query: { _id: ref } })).find(x => x._id === ref);
   if (a) return a;
   const all = await fs.doc("get", "Actor", { query: {} });
@@ -247,8 +248,8 @@ async function findActor(fs, ref) {
   if (exact.length === 1) return exact[0];
   const part = exact.length ? exact : all.filter(x => x.name.toLowerCase().includes(low));
   if (part.length === 1) return part[0];
-  if (!part.length) throw new Error(`Aucun acteur ne correspond à « ${ref} »`);
-  throw new Error(`Plusieurs acteurs correspondent à « ${ref} » : ${part.slice(0, 10).map(x => `${x.name} (${x._id})`).join(", ")}`);
+  if (!part.length) throw new Error(message(`No actor matches "${ref}"`, `Aucun acteur ne correspond à « ${ref} »`));
+  throw new Error(message(`Multiple actors match "${ref}": ${part.slice(0, 10).map(x => `${x.name} (${x._id})`).join(", ")}`, `Plusieurs acteurs correspondent à « ${ref} » : ${part.slice(0, 10).map(x => `${x.name} (${x._id})`).join(", ")}`));
 }
 function findItem(actor, ref) {
   const items = actor.items || [];
@@ -257,8 +258,8 @@ function findItem(actor, ref) {
   if (hit) return hit;
   const part = items.filter(i => i.name.toLowerCase().includes(low));
   if (part.length === 1) return part[0];
-  if (!part.length) throw new Error(`« ${ref} » introuvable sur ${actor.name}`);
-  throw new Error(`Plusieurs objets correspondent : ${part.slice(0, 10).map(i => `${i.name} (${i._id})`).join(", ")}`);
+  if (!part.length) throw new Error(message(`"${ref}" was not found on ${actor.name}`, `« ${ref} » introuvable sur ${actor.name}`));
+  throw new Error(message(`Multiple items match: ${part.slice(0, 10).map(i => `${i.name} (${i._id})`).join(", ")}`, `Plusieurs objets correspondent : ${part.slice(0, 10).map(i => `${i.name} (${i._id})`).join(", ")}`));
 }
 async function whisperFor(fs, mode) {
   if (!mode || mode === "public") return {};
@@ -313,7 +314,7 @@ function makeServer(fs) {
 export async function handleTool(fs, params) {
   const r = await runTool(fs, params);
   if (!r?.[OUT]) return r;
-  return { content: [{ type: "text", text: r.value === undefined ? "(vide)" : render(r.value, fs.userId) }] };
+  return { content: [{ type: "text", text: r.value === undefined ? message("(empty)", "(vide)") : render(r.value, fs.userId) }] };
 }
 
 async function runTool(fs, params) {
@@ -428,10 +429,10 @@ async function runTool(fs, params) {
         case "snapshots": {
           const isGM = (Number(fs.user?.role) || 0) >= GM_ROLE;
           if (!a.action || a.action === "list") return out(await listSnapshots(fs, isGM, { limit: a.limit || 30, tool: a.tool }));
-          if (!a.id) throw new Error("Préciser 'id'");
+          if (!a.id) throw new Error(message("Specify 'id'", "Préciser 'id'"));
           if (a.action === "show") return out(await showSnapshot(fs, isGM, a.id));
           if (a.action === "restore") return out(await restoreSnapshot(fs, isGM, a.id, { dryRun: !!a.dry_run }));
-          throw new Error(`Action inconnue : ${a.action}`);
+          throw new Error(message(`Unknown action: ${a.action}`, `Action inconnue : ${a.action}`));
         }
 
         case "actor_sheet": return out(sheet(await findActor(fs, a.actor)));
@@ -629,7 +630,7 @@ async function runTool(fs, params) {
           }
           const created = [], createdBy = {};
           for (const [type, data] of Object.entries(byType)) {
-            if (actor && type !== "Item") throw new Error(`Impossible d'ajouter un ${type} à un acteur`);
+            if (actor && type !== "Item") throw new Error(message(`Cannot add a ${type} to an actor`, `Impossible d'ajouter un ${type} à un acteur`));
             if (!actor && a.folder) data.forEach(d => d.folder = a.folder);
             const r = await fs.doc("create", type, { data, keepId: data.some(d => d._id), modifiedTime: Date.now(), ...(actor ? { parentUuid: `Actor.${actor._id}` } : {}) });
             createdBy[type] = r;
@@ -647,7 +648,7 @@ async function runTool(fs, params) {
             const pool = (src.effects || []).filter(x => x.type === "enchantment" && acts.some(ac => (ac.effects || []).some(r => r._id === x._id)));
             const eff = pool.find(x => x._id === en.effect) || pool.find(x => norm(x.name) === q) || pool.find(x => q && norm(x.name).endsWith(q))
               || (pool.length === 1 ? pool[0] : null);
-            if (!eff) throw new Error(`Enchantement « ${en.effect} » introuvable dans ${en.uuid} (disponibles : ${pool.map(x => x.name).join(", ")})`);
+            if (!eff) throw new Error(message(`Enchantment "${en.effect}" not found in ${en.uuid} (available: ${pool.map(x => x.name).join(", ")})`, `Enchantement « ${en.effect} » introuvable dans ${en.uuid} (disponibles : ${pool.map(x => x.name).join(", ")})`));
             const act = acts.find(ac => (ac.effects || []).some(r => r._id === eff._id));
             const ed = structuredClone(eff); delete ed._id; delete ed._stats; delete ed.folder;
             // gabarit de nom en mots anglais (« {} of the War Mage, +1 ») : la traduction ne couvre pas les changements ;
@@ -763,14 +764,14 @@ async function runTool(fs, params) {
             root = await fetchUuid(fs, a.source.uuid); root.__src = a.source.uuid; isNew = true;
           } else if (a.source) {
             const pack = (await packsOf(fs)).find(p => p.id === a.source.pack);
-            if (!pack) throw new Error(`Compendium inconnu : ${a.source.pack}`);
+            if (!pack) throw new Error(message(`Unknown compendium: ${a.source.pack}`, `Compendium inconnu : ${a.source.pack}`));
             let id = a.source.id;
             if (!id && a.source.name) { const q = norm(a.source.name); id = (await packIndex(fs, pack)).find(x => norm(x.name) === q || norm(x.name_fr) === q)?._id; }
-            if (!id) throw new Error(`Introuvable dans ${pack.id} : ${a.source.name}`);
+            if (!id) throw new Error(message(`Not found in ${pack.id}: ${a.source.name}`, `Introuvable dans ${pack.id} : ${a.source.name}`));
             root = await fetchUuid(fs, `Compendium.${pack.id}.${pack.type}.${id}`);
             root.__src = `Compendium.${pack.id}.${pack.type}.${id}`; isNew = true;
           } else if (a.item) root = findItem(actor, a.item);
-          else throw new Error("Précise 'source' (import) ou 'item' (classe à faire monter)");
+          else throw new Error(message("Specify 'source' (import) or 'item' (class to advance)", "Précise 'source' (import) ou 'item' (classe à faire monter)"));
           const isClass = root.type === "class";
           const current = isNew ? 0 : Number(root.system?.levels) || 0;
           const charLevel = classes.reduce((t, c) => t + (Number(c.system?.levels) || 0), 0);
@@ -863,7 +864,7 @@ async function runTool(fs, params) {
           return out(`Outil inconnu : ${params.name}`);
       }
     } catch (e) {
-      return { isError: true, content: [{ type: "text", text: `Erreur Foundry : ${e.message}` }] };
+      return { isError: true, content: [{ type: "text", text: message(`Foundry error: ${e.message}`, `Erreur Foundry : ${e.message}`) }] };
     }
 }
 

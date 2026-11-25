@@ -4,17 +4,19 @@
  */
 import { rollFormula, translations, trFor } from "./dnd5e.mjs";
 import { applyBabele, plain, norm } from "./texts.mjs";
+import { message as localizedMessage } from "./i18n.mjs";
 
 const esc = t => String(t ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;" }[c]));
 const now = () => Date.now();
 
 function byRef(list, ref, what) {
+  const englishWhat = { "Table": "Table", "Pile de cartes": "Card stack" }[what] || what;
   const d = list.find(x => x._id === ref) || list.find(x => norm(x.name) === norm(ref)) || (() => {
     const part = list.filter(x => norm(x.name).includes(norm(ref)));
-    if (part.length > 1) throw new Error(`Plusieurs ${what} correspondent à « ${ref} » : ${part.slice(0, 10).map(x => `${x.name} (${x._id})`).join(", ")}`);
+    if (part.length > 1) throw new Error(localizedMessage(`Multiple ${englishWhat} entries match "${ref}": ${part.slice(0, 10).map(x => `${x.name} (${x._id})`).join(", ")}`, `Plusieurs ${what} correspondent à « ${ref} » : ${part.slice(0, 10).map(x => `${x.name} (${x._id})`).join(", ")}`));
     return part[0];
   })();
-  if (!d) throw new Error(`${what} introuvable : ${ref}`);
+  if (!d) throw new Error(localizedMessage(`${englishWhat} not found: ${ref}`, `${what} introuvable : ${ref}`));
   return d;
 }
 
@@ -33,7 +35,7 @@ async function resolveTable(fs, ref) {
   const m = /^Compendium\.([^.]+\.[^.]+)\.(?:RollTable\.)?([A-Za-z0-9]{16})$/.exec(ref);
   if (m) {
     const d = (await fs.doc("get", "RollTable", { pack: m[1], query: { _id: m[2] } })).find(x => x._id === m[2]);
-    if (!d) throw new Error(`Table introuvable : ${ref}`);
+    if (!d) throw new Error(localizedMessage(`Table not found: ${ref}`, `Table introuvable : ${ref}`));
     const t = trFor(await translations(m[1]), d);
     return { table: t ? applyBabele(d, t, "RollTable") : d, pack: m[1], uuid: ref };
   }
@@ -52,16 +54,16 @@ function normalized(table) {
 }
 
 async function rollOnce(fs, table, pack, depth, drawnNow) {
-  if (depth > 5) throw new Error("Profondeur maximale de tables imbriquées atteinte");
+  if (depth > 5) throw new Error(localizedMessage("Maximum nested-table depth exceeded", "Profondeur maximale de tables imbriquées atteinte"));
   const { formula, results } = normalized(table);
   const available = results.filter(r => !r.drawn && !drawnNow.has(r._id));
-  if (!available.length) throw new Error(`Plus aucun résultat disponible sur « ${table.name} » (table sans remise épuisée : action=reset)`);
+  if (!available.length) throw new Error(localizedMessage(`No results left in "${table.name}" (table without replacement is exhausted: action=reset)`, `Plus aucun résultat disponible sur « ${table.name} » (table sans remise épuisée : action=reset)`));
   let roll, hits = [];
   for (let i = 0; i < 1000 && !hits.length; i++) {
     roll = rollFormula(formula, { flavor: table.name });
     hits = available.filter(r => roll.total >= r.range[0] && roll.total <= r.range[1]);
   }
-  if (!hits.length) throw new Error(`Aucun résultat atteignable avec ${formula} sur « ${table.name} »`);
+  if (!hits.length) throw new Error(localizedMessage(`No reachable result with ${formula} on "${table.name}"`, `Aucun résultat atteignable avec ${formula} sur « ${table.name} »`));
   const out = [];
   for (const r of hits) {
     if (!table.replacement && !pack) drawnNow.add(r._id);
@@ -86,13 +88,13 @@ function resultHtml(r) {
 
 export async function handleTable(fs, a, { postChat }) {
   const { table, pack, uuid } = await resolveTable(fs, a.table);
-  if (a.action === "show") return { uuid, nom: table.name, formule: table.formula || "(normalisée)", remise: !!table.replacement,
+  if (a.action === "show") return { uuid, nom: table.name, formule: table.formula || localizedMessage("(normalized)", "(normalisée)"), remise: !!table.replacement,
     resultats: (table.results || []).map(r => ({ ...resultView(r), tire: !!r.drawn })) };
   if (a.action === "reset") {
-    if (pack) throw new Error("Les tables de compendium ne gardent pas les tirages");
+    if (pack) throw new Error(localizedMessage("Compendium tables do not persist draws", "Les tables de compendium ne gardent pas les tirages"));
     const ups = (table.results || []).filter(r => r.drawn).map(r => ({ _id: r._id, drawn: false }));
     if (ups.length) await fs.doc("update", "TableResult", { parentUuid: uuid, updates: ups, modifiedTime: now() });
-    return `Table « ${table.name} » réinitialisée (${ups.length} résultat(s) remis en jeu)`;
+    return localizedMessage(`Table "${table.name}" reset (${ups.length} result(s) restored)`, `Table « ${table.name} » réinitialisée (${ups.length} résultat(s) remis en jeu)`);
   }
   const n = Math.max(1, Math.min(Number(a.count) || 1, 100));
   const drawnNow = new Set(), draws = [];
@@ -103,7 +105,7 @@ export async function handleTable(fs, a, { postChat }) {
   if (a.chat !== false) {
     const desc = table.description ? `<div class="table-description">${table.description}</div>` : "";
     const content = `<div class="table-draw" data-table-id="${esc(table._id)}">${desc}<ul class="table-results">${all.map(resultHtml).join("")}</ul></div>`;
-    message = await postChat(fs, { flavor: `Tirage de ${all.length} résultat${all.length > 1 ? "s" : ""} sur ${esc(table.name)}`, content,
+    message = await postChat(fs, { flavor: localizedMessage(`Drew ${all.length} result${all.length > 1 ? "s" : ""} from ${esc(table.name)}`, `Tirage de ${all.length} résultat${all.length > 1 ? "s" : ""} sur ${esc(table.name)}`), content,
       rolls: table.displayRoll === false ? [] : draws.map(d => d.roll), mode: a.mode, extra: { flags: { core: { RollTable: table._id } } } });
   }
   return { table: table.name, uuid, tirages: draws.map(d => ({ jet: d.roll.total, formule: d.roll.formula, resultats: d.results.map(resultView) })),
@@ -129,7 +131,7 @@ const isHome = (c, stack) => stack.type === "deck" || c.origin === stack._id;
 
 function drawCards(stack, number, how) {
   const av = available(stack);
-  if (av.length < number) throw new Error(`Seulement ${av.length} carte(s) disponible(s) dans « ${stack.name} »`);
+  if (av.length < number) throw new Error(localizedMessage(`Only ${av.length} card(s) available in "${stack.name}"`, `Seulement ${av.length} carte(s) disponible(s) dans « ${stack.name} »`));
   av.sort((x, y) => (x.sort || 0) - (y.sort || 0));
   if (how === "bottom") return av.slice(-number);
   if (how === "random") return av.map(c => [Math.random(), c]).sort((x, y) => x[0] - y[0]).slice(-number).map(x => x[1]);
@@ -142,7 +144,7 @@ async function pass(fs, from, to, cards, updateData = {}) {
   let maxSort = (to.cards || []).reduce((m, c) => Math.max(m, c.sort || 0), 0);
   for (const card of cards) {
     const home = isHome(card, from);
-    if (from.type === "deck" && home && card.drawn) throw new Error(`La carte ${cardName(card)} a déjà été tirée`);
+    if (from.type === "deck" && home && card.drawn) throw new Error(localizedMessage(`Card ${cardName(card)} has already been drawn`, `La carte ${cardName(card)} a déjà été tirée`));
     if (card.origin === to._id) toUpdate.push({ _id: card._id, drawn: false });   // retour à son paquet
     else {
       const d = { ...structuredClone(card), ...updateData };
@@ -151,7 +153,7 @@ async function pass(fs, from, to, cards, updateData = {}) {
       else if (home || !d.origin) d.origin = from._id;
       if (!copyCard) { maxSort += 100000; d.sort = maxSort; }
       d.drawn = !copyCard;
-      if ((to.cards || []).some(c => c._id === d._id)) throw new Error(`La carte ${cardName(card)} est déjà dans « ${to.name} »`);
+      if ((to.cards || []).some(c => c._id === d._id)) throw new Error(localizedMessage(`Card ${cardName(card)} is already in "${to.name}"`, `La carte ${cardName(card)} est déjà dans « ${to.name} »`));
       toCreate.push(d);
     }
     if (home && to.type !== "deck") fromUpdate.push({ _id: card._id, drawn: true });
@@ -165,8 +167,8 @@ async function pass(fs, from, to, cards, updateData = {}) {
 
 export async function handleCards(fs, a, { postChat }) {
   if (typeof a.to === "string") a.to = [a.to];
-  if (["draw", "deal", "pass", "discard", "shuffle", "recall"].includes(a.action) && !a.from) throw new Error("Préciser 'from'");
-  if (["draw", "deal", "pass"].includes(a.action) && !a.to?.length) throw new Error("Préciser 'to'");
+  if (["draw", "deal", "pass", "discard", "shuffle", "recall"].includes(a.action) && !a.from) throw new Error(localizedMessage("Specify 'from'", "Préciser 'from'"));
+  if (["draw", "deal", "pass"].includes(a.action) && !a.to?.length) throw new Error(localizedMessage("Specify 'to'", "Préciser 'to'"));
   const stacks = await fs.doc("get", "Cards", { query: {} });
   const get = ref => byRef(stacks, ref, "Pile de cartes");
   const notify = async (src, text) => {
@@ -189,40 +191,40 @@ export async function handleCards(fs, a, { postChat }) {
       const n = Math.max(1, Number(a.number) || 1);
       const picked = drawCards(from, n, a.how);
       await pass(fs, from, to, picked, upd);
-      await notify(to, `${n} carte${n > 1 ? "s" : ""} piochée${n > 1 ? "s" : ""} depuis @UUID[Cards.${from._id}]{${esc(from.name)}} par ${esc(to.name)}.`);
+      await notify(to, localizedMessage(`${n} card(s) drawn from @UUID[Cards.${from._id}]{${esc(from.name)}} by ${esc(to.name)}.`, `${n} carte${n > 1 ? "s" : ""} piochée${n > 1 ? "s" : ""} depuis @UUID[Cards.${from._id}]{${esc(from.name)}} par ${esc(to.name)}.`));
       return { de: from.name, vers: to.name, cartes: picked.map(view) };
     }
     case "deal": {
       const from = get(a.from), dests = (a.to || []).map(get);
-      if (!dests.length) throw new Error("Préciser 'to' (piles destinataires)");
+      if (!dests.length) throw new Error(localizedMessage("Specify 'to' (destination stacks)", "Préciser 'to' (piles destinataires)"));
       const n = Math.max(1, Number(a.number) || 1);
       const picked = drawCards(from, n * dests.length, a.how);
       const per = dests.map(() => []);
       picked.forEach((c, i) => per[i % dests.length].push(c));
       for (let i = 0; i < dests.length; i++) await pass(fs, from, dests[i], per[i], upd);
-      await notify(from, `${n} carte${n > 1 ? "s" : ""} distribuée${n > 1 ? "s" : ""} depuis ${esc(from.name)} à ${dests.map(d => `@UUID[Cards.${d._id}]{${esc(d.name)}}`).join(", ")}.`);
+      await notify(from, localizedMessage(`${n} card(s) dealt from ${esc(from.name)} to ${dests.map(d => `@UUID[Cards.${d._id}]{${esc(d.name)}}`).join(", ")}.`, `${n} carte${n > 1 ? "s" : ""} distribuée${n > 1 ? "s" : ""} depuis ${esc(from.name)} à ${dests.map(d => `@UUID[Cards.${d._id}]{${esc(d.name)}}`).join(", ")}.`));
       return { de: from.name, distribution: dests.map((d, i) => ({ vers: d.name, cartes: per[i].map(view) })) };
     }
     case "pass": case "discard": {
       const from = get(a.from);
       const to = a.to?.[0] ? get(a.to[0]) : a.action === "discard" ? stacks.find(s => s.type === "pile") : null;
-      if (!to) throw new Error(a.action === "discard" ? "Aucune défausse (pile) dans le monde : préciser 'to'" : "Préciser 'to'");
-      if (!a.cards?.length) throw new Error("Préciser 'cards'");
+      if (!to) throw new Error(a.action === "discard" ? localizedMessage("No discard pile in the world: specify 'to'", "Aucune défausse (pile) dans le monde : préciser 'to'") : localizedMessage("Specify 'to'", "Préciser 'to'"));
+      if (!a.cards?.length) throw new Error(localizedMessage("Specify 'cards'", "Préciser 'cards'"));
       const picked = a.cards.map(r => {
         const c = (from.cards || []).find(x => x._id === r) || (from.cards || []).find(x => norm(cardName(x)) === norm(r) && (from.type !== "deck" || !x.drawn));
-        if (!c) throw new Error(`Carte introuvable dans « ${from.name} » : ${r}`);
+        if (!c) throw new Error(localizedMessage(`Card not found in "${from.name}": ${r}`, `Carte introuvable dans « ${from.name} » : ${r}`));
         return c;
       });
       await pass(fs, from, to, picked, upd);
-      await notify(from, `${picked.length} carte${picked.length > 1 ? "s" : ""} ${a.action === "discard" ? "défaussée" : "passée"}${picked.length > 1 ? "s" : ""} de ${esc(from.name)} vers @UUID[Cards.${to._id}]{${esc(to.name)}}.`);
+      await notify(from, localizedMessage(`${picked.length} card(s) ${a.action === "discard" ? "discarded" : "passed"} from ${esc(from.name)} to @UUID[Cards.${to._id}]{${esc(to.name)}}.`, `${picked.length} carte${picked.length > 1 ? "s" : ""} ${a.action === "discard" ? "défaussée" : "passée"}${picked.length > 1 ? "s" : ""} de ${esc(from.name)} vers @UUID[Cards.${to._id}]{${esc(to.name)}}.`));
       return { de: from.name, vers: to.name, cartes: picked.map(view) };
     }
     case "shuffle": {
       const s = get(a.from);
       const order = (s.cards || []).map(c => [Math.random(), c]).sort((x, y) => x[0] - y[0]);
       await fs.doc("update", "Card", { parentUuid: `Cards.${s._id}`, updates: order.map(([, c], i) => ({ _id: c._id, sort: i, ...upd })), modifiedTime: now() });
-      await notify(s, `@UUID[Cards.${s._id}]{${esc(s.name)}} a été mélangé.`);
-      return `« ${s.name} » mélangé (${order.length} cartes)`;
+      await notify(s, localizedMessage(`@UUID[Cards.${s._id}]{${esc(s.name)}} was shuffled.`, `@UUID[Cards.${s._id}]{${esc(s.name)}} a été mélangé.`));
+      return localizedMessage(`"${s.name}" shuffled (${order.length} cards)`, `« ${s.name} » mélangé (${order.length} cartes)`);
     }
     case "recall": {
       const s = get(a.from);
@@ -235,8 +237,8 @@ export async function handleCards(fs, a, { postChat }) {
         }
         const ups = (s.cards || []).map(c => ({ _id: c._id, drawn: false, ...upd }));
         if (ups.length) await fs.doc("update", "Card", { parentUuid: `Cards.${s._id}`, updates: ups, modifiedTime: now() });
-        await notify(s, `@UUID[Cards.${s._id}]{${esc(s.name)}} a été réinitialisé.`);
-        return `Paquet « ${s.name} » réinitialisé (${back} carte(s) récupérée(s))`;
+        await notify(s, localizedMessage(`@UUID[Cards.${s._id}]{${esc(s.name)}} was reset.`, `@UUID[Cards.${s._id}]{${esc(s.name)}} a été réinitialisé.`));
+        return localizedMessage(`Deck "${s.name}" reset (${back} card(s) recovered)`, `Paquet « ${s.name} » réinitialisé (${back} carte(s) récupérée(s))`);
       }
       const byOrigin = {}, del = [];
       for (const c of s.cards || []) {
@@ -247,9 +249,9 @@ export async function handleCards(fs, a, { postChat }) {
       }
       for (const [oid, ups] of Object.entries(byOrigin)) await fs.doc("update", "Card", { parentUuid: `Cards.${oid}`, updates: ups, modifiedTime: now() });
       if (del.length) await fs.doc("delete", "Card", { parentUuid: `Cards.${s._id}`, ids: del, modifiedTime: now() });
-      await notify(s, `Les cartes de @UUID[Cards.${s._id}]{${esc(s.name)}} ont été rendues à leur paquet.`);
-      return `${del.length} carte(s) de « ${s.name} » rendue(s) à leur paquet`;
+      await notify(s, localizedMessage(`Cards from @UUID[Cards.${s._id}]{${esc(s.name)}} were returned to their deck.`, `Les cartes de @UUID[Cards.${s._id}]{${esc(s.name)}} ont été rendues à leur paquet.`));
+      return localizedMessage(`${del.length} card(s) from "${s.name}" returned to their deck`, `${del.length} carte(s) de « ${s.name} » rendue(s) à leur paquet`);
     }
   }
-  throw new Error(`Action inconnue : ${a.action}`);
+  throw new Error(localizedMessage(`Unknown action: ${a.action}`, `Action inconnue : ${a.action}`));
 }

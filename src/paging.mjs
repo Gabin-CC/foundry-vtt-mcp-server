@@ -4,6 +4,7 @@
  * 30 min ; la première page est renvoyée avec un curseur à passer à l'outil next_page.
  */
 import crypto from "node:crypto";
+import { message } from "./i18n.mjs";
 
 export const MAX_OUT = Number(process.env.MAX_OUT) || 60000;
 const TTL = 30 * 60 * 1000;
@@ -86,13 +87,13 @@ function prune() {
 const wrap = (id, pages, i) => ({
   page: i + 1, pages: pages.length,
   curseur_suivant: i + 1 < pages.length ? `${id}:${i + 2}` : null,
-  note: i + 1 < pages.length ? "Réponse découpée en pages JSON valides : appelle next_page avec curseur_suivant pour la suite." : undefined,
+  note: i + 1 < pages.length ? message("Response split into valid JSON pages: call next_page with the curseur_suivant field to continue.", "Réponse découpée en pages JSON valides : appelle next_page avec curseur_suivant pour la suite.") : undefined,
   contenu: pages[i],
 });
 
 /** Texte d'une réponse MCP : tel quel s'il tient, sinon première page + curseur. */
 export function render(v, owner) {
-  const t = typeof v === "string" ? v : (json(v) || "(vide)");
+  const t = typeof v === "string" ? v : (json(v) || message("(empty)", "(vide)"));
   if (t.length <= MAX_OUT) return t;
   const pages = split(v);
   if (pages.length <= 1) return t;   // indivisible (cas extrême) : renvoyé entier plutôt que coupé
@@ -106,9 +107,9 @@ export function render(v, owner) {
 export function nextPage(cursor, owner) {
   const m = /^([0-9a-f]+):(\d+)$/.exec(String(cursor || ""));
   const e = m && store.get(m[1]);
-  if (!e || e.owner !== owner) throw new Error("Curseur inconnu ou expiré (30 min) : relance l'appel d'origine.");
+  if (!e || e.owner !== owner) throw new Error(message("Unknown or expired cursor (30 minutes): retry the original tool call.", "Curseur inconnu ou expiré (30 min) : relance l'appel d'origine."));
   const i = Number(m[2]) - 1;
-  if (i < 0 || i >= e.pages.length) throw new Error(`Page hors limites (1–${e.pages.length})`);
+  if (i < 0 || i >= e.pages.length) throw new Error(message(`Page out of range (1–${e.pages.length})`, `Page hors limites (1–${e.pages.length})`));
   e.at = Date.now();
   return wrap(m[1], e.pages, i);
 }
