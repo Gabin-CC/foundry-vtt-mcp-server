@@ -26,9 +26,12 @@ export async function patchItems(fs, { actor = null, parentUuid = null, pack = n
   let instantane = null;
   if (apply && updates.length) {
     const diff = diffUpdates(list.filter(i => updates.some(u => u._id === i._id)), updates);
-    if (diff.entries.length !== updates.length) throw new Error("Item patch aborted: cannot snapshot every requested change");
+    if (diff.entries.length !== updates.length) throw new Error(message(
+      "Item patch aborted: cannot snapshot every requested change",
+      "Correction des objets interrompue : impossible de sauvegarder toutes les modifications demandées"));
     instantane = await saveSnapshot(fs, "gm_patch_items", `correctifs de ${where}`, [{ action: "update", type: "Item", ...(parentUuid ? { parent: parentUuid } : {}), ...(pack ? { pack } : {}), entries: diff.entries }]);
-    if (!instantane) throw new Error("Item patch aborted: no recovery snapshot was created");
+    if (!instantane) throw new Error(message("Item patch aborted: no recovery snapshot was created",
+      "Correction des objets interrompue : aucun instantané de restauration créé"));
     await fs.doc("update", "Item", { ...(parentUuid ? { parentUuid } : {}), ...(pack ? { pack } : {}), updates, diff: true, recursive: true, modifiedTime: Date.now(), render: true });
   }
   return {
