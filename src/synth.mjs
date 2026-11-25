@@ -202,9 +202,9 @@ async function subclass(fs, raw) {
   }
   for (const [lv, list] of Object.entries(byLevel))
     adv.push(grant(sid(raw._id, "feat", lv), list.map(x => `Compendium.world.capacites-de-classe.Item.${x._id}`), Number(lv), null, "Features"));
-  // sorts de sous-classe : table « <Classe> Level | Spells » de la description
+  // sorts de sous-classe : table « <Classe> Level | Spells » de la description (« 3 » ou « 3rd »)
   const html = raw.system?.description?.value || "";
-  for (const row of html.matchAll(/<tr[^>]*>\s*<td[^>]*>\s*(\d+)\s*<\/td>\s*<td[^>]*>(.*?)<\/td>\s*<\/tr>/gis)) {
+  for (const row of html.matchAll(/<tr[^>]*>\s*<td[^>]*>\s*(\d+)(?:st|nd|rd|th)?\s*<\/td>\s*<td[^>]*>(.*?)<\/td>\s*<\/tr>/gis)) {
     const spells = refs(row[2], "spell");
     if (!spells.length) continue;
     const uuids = [];

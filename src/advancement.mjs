@@ -200,8 +200,10 @@ export async function plan(fs, actor, item, { fromLevel, toLevel, choices = {}, 
         }
       }
       // catégorie de dons (ex. manifestations occultes : type « class », sous-type « eldritchInvocation ») :
-      // tous les dons de cette catégorie des compendiums dnd5e, dont le niveau prérequis est atteint
-      if (!options.length && c.type === "feat" && c.restriction?.subtype) {
+      // tous les dons de cette catégorie des compendiums dnd5e, dont le niveau prérequis est atteint.
+      // Aussi quand la liste n'est pas vide mais que l'avancement accepte les dépôts (allowDrops) : ex. Style de
+      // combat du paladin 2024 = « Combattant béni » OU n'importe quel don de style de combat.
+      if ((!options.length || c.allowDrops) && c.type === "feat" && c.restriction?.subtype) {
         const packs = ((fs._packs2 ??= ((await fs.worldData()).packs || []))).filter(p => p.type === "Item" && p.packageName === "dnd5e");
         const taken = new Set((actor.items || []).map(i => i.system?.identifier).filter(Boolean));
         for (const pk of packs) {
@@ -211,7 +213,8 @@ export async function plan(fs, actor, item, { fromLevel, toLevel, choices = {}, 
             if (c.restriction.type && e.system?.type?.value !== c.restriction.type) continue;
             if (Number(e.system?.prerequisites?.level || 0) > l) continue;
             if (taken.has(e.system?.identifier) && !e.system?.prerequisites?.repeatable) continue;
-            options.push(`Compendium.${pk.id}.Item.${e._id}`);
+            const u = `Compendium.${pk.id}.Item.${e._id}`;
+            if (!options.includes(u)) options.push(u);
           }
         }
       }
