@@ -19,6 +19,7 @@ translations, or the Foundry world itself.
 | Selected errors, pagination hints and GM/table/card feedback | `MCP_LOCALE=fr` (default) or `en` | Legacy French by default; opt-in English strings |
 | D&D 5e advancement choices, spell preparation, check labels, item-use feedback, resource errors and dice-parser errors | `MCP_LOCALE=fr` (default) or `en` | Text values only; existing response keys, choice identifiers and Foundry document data remain unchanged |
 | GM permissions explanations, item-repair warnings, synchronization diffs, dry-run guidance and snapshot-safety errors | `MCP_LOCALE=fr` (default) or `en` | Human-readable text only; permission-level/status values and snapshot metadata remain unchanged |
+| Remaining MCP-owned user feedback: search/compendium/edition errors, file-upload and path-safety diagnostics, Foundry connection errors, chat cards (item use, rests, loot, damage/healing), and HTTP authentication errors | `MCP_LOCALE=fr` (default) or `en` | No argument, response key, enum, HTTP status, security check, or Foundry document is changed |
 | OAuth sign-in page and its validation feedback | Browser `Accept-Language` (English/French), then `MCP_LOCALE` | Same form fields, endpoints, PKCE flow and credentials handling |
 | Foundry names, journal text, dice rules, translations and data | Not translated by this layer | Unchanged |
 
@@ -81,35 +82,41 @@ introduced in this rollout.
    explicit, scoped to MCP-owned output objects and covered by tests.
 3. For browser-facing text, pass an explicit locale selected from
    `Accept-Language` using `browserLocale`; escape all untrusted data.
-4. Test both `npm run check` and `MCP_LOCALE=en npm run check`. Keep the
+4. Test both `MCP_LOCALE=fr npm run check` and `MCP_LOCALE=en npm run check`. Keep the
    documented legacy response keys unchanged in both modes; FR shape is exact.
 5. Preserve Foundry internal API constants and class names unchanged.
 
-## Remaining migration work
+## Final user-facing audit and deliberate exclusions
 
-This is not a claim that every message has been translated. In particular:
+The latest audit covers MCP-owned text from search/reference and compendium
+lookups, edition selection, security guards, uploads (including HTTPS/DNS
+rejections), Foundry session establishment, chat cards and rest/loot/damage
+messages, as well as HTTP authentication responses. The dedicated regression
+tests exercise FR and EN and verify the unchanged result structure. The
+translation layer never relaxes the existing validation/security checks.
 
-- D&D advancement, spell-preparation, resource-consumption feedback and
-  dice-parser errors are bilingual. Further Foundry-facing error messages
-  still need a separate audit before they can be migrated safely.
-- Foundry-sourced names, advancement titles/hints, synthesized Plutonium
-  advancement labels and spell/scroll document content remain in the source
-  language (this setting does not retranslate game data). The legacy keys
-  inside character sheets and pending choice objects remain unchanged.
+The following are intentionally **not** translated by this layer:
+
+- Foundry-provided errors and names, advancement titles/hints, synthesized
+  Plutonium advancement labels, and spell/scroll or journal content. These
+  belong to the running world and should be forwarded faithfully, even when
+  the originating Foundry module sends English text.
 - Translation audits and search responses retain stable fields such as
   `resultats`, `portee`, `statut`, and stable values such as `anglais` and
   `mixte`. English mode adds the mapped keys without changing these values.
-- GM repair/synchronization diagnostics and permissions explanations now have
-  opt-in English feedback. Stable values such as `niveau: "observateur"`,
-  `statut: "sans source (créé à la main)"`, the French JSON keys, and stored
-  recovery snapshot labels remain unchanged. Renaming or translating these
-  protocol **values** requires a separate, versioned compatibility step.
-- Snapshot-safety failures in GM item repair/synchronization/patching and
-  document update/deletion now follow `MCP_LOCALE`. The English messages and
-  the no-write-on-failure behavior are preserved. Foundry-native errors
-  forwarded by the server may still use Foundry's own language.
+- GM repair/synchronization protocol values (`niveau: "observateur"`,
+  `statut: "sans source (créé à la main)"`), historical snapshot metadata,
+  diff preview markers and recovery payloads. Translating stored or compared
+  values may break recovery or automation and requires a versioned migration.
+- Internal numeric-formula exceptions which are caught by the evaluator and
+  never exposed as user-facing text, plus build-time/tool-metadata validation
+  errors. Tool discovery metadata is already English and remains unchanged.
+- Raw item-use roll results and stat labels returned by the D&D rules engine
+  where the values may be treated as structured/historical output; these are
+  left unchanged pending a separate compatibility review.
 - End-to-end tests against a disposable Foundry v14 world remain necessary
-  before changing stateful operations or making English the default.
+  before changing stateful operations or making English the default. Unit tests
+  use mocked Foundry sessions and do not deploy or modify the live world.
 
 When the coverage is complete, the default locale can be reconsidered in a
 separate release with a clear upgrade note.

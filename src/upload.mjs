@@ -2,6 +2,7 @@
 import { lookup } from "node:dns";
 import { request } from "node:https";
 import { BlockList, isIP } from "node:net";
+import { message } from "./i18n.mjs";
 
 export const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
 const DOWNLOAD_TIMEOUT_MS = 15_000;
@@ -47,22 +48,22 @@ const safeFolderSegment = /^[\p{L}\p{N}][\p{L}\p{N} ._-]*$/u;
 
 export function validateUploadDestination(filename, folder = "images/uploads") {
   if (typeof filename !== "string" || filename.length > 128 || !safeName.test(filename) || filename.includes("..")) {
-    throw new Error("Unsafe upload filename");
+    throw new Error(message("Unsafe upload filename", "Nom de fichier téléversé dangereux"));
   }
   if (typeof folder !== "string" || folder.length > 256 ||
       !folder.split("/").every(segment => safeFolderSegment.test(segment) && !segment.includes(".."))) {
-    throw new Error("Unsafe upload folder");
+    throw new Error(message("Unsafe upload folder", "Dossier de téléversement dangereux"));
   }
   const extension = filename.split(".").at(-1).toLowerCase();
   const mime = MIME_BY_EXTENSION[extension];
-  if (!mime) throw new Error(`Unsupported upload format: ${extension}`);
+  if (!mime) throw new Error(message(`Unsupported upload format: ${extension}`, `Format de téléversement non pris en charge : ${extension}`));
   return { filename, folder, mime };
 }
 
 /** Inspect file signatures: trusting the filename or HTTP Content-Type is not sufficient. */
 export function validateUploadContent(buffer, filename) {
   if (!Buffer.isBuffer(buffer) || !buffer.length || buffer.length > MAX_UPLOAD_BYTES) {
-    throw new Error("Upload must contain between 1 byte and 20 MiB");
+    throw new Error(message("Upload must contain between 1 byte and 20 MiB", "Le fichier doit contenir entre 1 octet et 20 MiB"));
   }
   const extension = filename.split(".").at(-1).toLowerCase();
   const begins = bytes => buffer.subarray(0, bytes.length).equals(Buffer.from(bytes));
@@ -79,32 +80,32 @@ export function validateUploadContent(buffer, filename) {
     mp4: () => ascii(4, "ftyp"),
     pdf: () => ascii(0, "%PDF-")
   }[extension];
-  if (!valid?.()) throw new Error(`File contents do not match the ${extension} extension`);
+  if (!valid?.()) throw new Error(message(`File contents do not match the ${extension} extension`, `Le contenu du fichier ne correspond pas à l'extension ${extension}`));
 }
 
 export function decodeUploadBase64(input) {
-  if (typeof input !== "string") throw new Error("Base64 upload data must be a string");
+  if (typeof input !== "string") throw new Error(message("Base64 upload data must be a string", "Les données base64 doivent être une chaîne"));
   const marker = input.startsWith("data:") ? /^data:[^,;]+;base64,/.exec(input) : null;
-  if (input.startsWith("data:") && !marker) throw new Error("Only base64 data URLs are supported");
+  if (input.startsWith("data:") && !marker) throw new Error(message("Only base64 data URLs are supported", "Seules les URL de données base64 sont acceptées"));
   const encoded = marker ? input.slice(marker[0].length) : input;
-  if (encoded.length > Math.ceil(MAX_UPLOAD_BYTES / 3) * 4 + 4) throw new Error("File too large (20 MiB maximum)");
+  if (encoded.length > Math.ceil(MAX_UPLOAD_BYTES / 3) * 4 + 4) throw new Error(message("File too large (20 MiB maximum)", "Fichier trop volumineux (20 MiB maximum)"));
   if (!/^[A-Za-z0-9+/]*={0,2}$/.test(encoded) || encoded.length % 4 === 1) {
-    throw new Error("Invalid base64 upload data");
+    throw new Error(message("Invalid base64 upload data", "Données base64 invalides"));
   }
   const result = Buffer.from(encoded, "base64");
-  if (result.length > MAX_UPLOAD_BYTES) throw new Error("File too large (20 MiB maximum)");
+  if (result.length > MAX_UPLOAD_BYTES) throw new Error(message("File too large (20 MiB maximum)", "Fichier trop volumineux (20 MiB maximum)"));
   return result;
 }
 
 function validateRemoteUrl(candidate, origins) {
   let url;
-  try { url = new URL(candidate); } catch { throw new Error("Invalid remote upload URL"); }
+  try { url = new URL(candidate); } catch { throw new Error(message("Invalid remote upload URL", "URL de téléversement distant invalide")); }
   if (url.protocol !== "https:" || url.username || url.password || url.hash) {
-    throw new Error("Remote upload URLs must use HTTPS without credentials or fragments");
+    throw new Error(message("Remote upload URLs must use HTTPS without credentials or fragments", "Les URL distantes doivent utiliser HTTPS, sans identifiants ni fragment"));
   }
-  if (!origins.has(url.origin)) throw new Error(`Remote upload origin is not allowed: ${url.origin}`);
+  if (!origins.has(url.origin)) throw new Error(message(`Remote upload origin is not allowed: ${url.origin}`, `Origine de téléversement distant non autorisée : ${url.origin}`));
   const address = url.hostname.replace(/^\[|\]$/g, "");
-  if (isIP(address) && !isPublicAddress(address)) throw new Error("Remote upload cannot access private or reserved IPs");
+  if (isIP(address) && !isPublicAddress(address)) throw new Error(message("Remote upload cannot access private or reserved IPs", "Le téléversement distant ne peut pas accéder à des IP privées ou réservées"));
   return url;
 }
 
@@ -112,7 +113,7 @@ function publicLookup(hostname, options, callback) {
   lookup(hostname, { all: true }, (error, addresses) => {
     if (error) return callback(error);
     if (!addresses.length || addresses.some(({ address }) => !isPublicAddress(address))) {
-      return callback(new Error("Remote upload DNS resolved to a private or reserved address"));
+      return callback(new Error(message("Remote upload DNS resolved to a private or reserved address", "Le DNS distant a résolu une adresse privée ou réservée")));
     }
     const choice = addresses.find(entry => entry.family === 4) || addresses[0];
     if (options?.all) callback(null, [choice]);
@@ -125,9 +126,9 @@ export async function downloadPublicFile(candidate, {
   allowedOrigins = (process.env.UPLOAD_ALLOWED_ORIGINS || "").split(",").map(origin => origin.trim()).filter(Boolean),
   redirects = 0
 } = {}) {
-  if (!allowedOrigins.length) throw new Error("Remote URL uploads are disabled; configure UPLOAD_ALLOWED_ORIGINS or use base64");
+  if (!allowedOrigins.length) throw new Error(message("Remote URL uploads are disabled; configure UPLOAD_ALLOWED_ORIGINS or use base64", "Le téléversement par URL est désactivé ; configurer UPLOAD_ALLOWED_ORIGINS ou utiliser base64"));
   const url = validateRemoteUrl(candidate, new Set(allowedOrigins));
-  if (redirects > MAX_REDIRECTS) throw new Error("Too many upload redirects");
+  if (redirects > MAX_REDIRECTS) throw new Error(message("Too many upload redirects", "Trop de redirections de téléversement"));
   let timeout;
   return new Promise((resolve, reject) => {
     const req = request(url, {
@@ -138,31 +139,31 @@ export async function downloadPublicFile(candidate, {
       if ([301, 302, 303, 307, 308].includes(status)) {
         const location = response.headers.location;
         response.destroy();
-        if (!location) return reject(new Error("Upload redirect has no Location header"));
+        if (!location) return reject(new Error(message("Upload redirect has no Location header", "La redirection de téléversement n'a pas d'en-tête Location")));
         try { resolve(downloadPublicFile(new URL(location, url).href, { allowedOrigins, redirects: redirects + 1 })); }
         catch (error) { reject(error); }
         return;
       }
-      if (status !== 200) { response.destroy(); return reject(new Error(`Remote upload failed (HTTP ${status})`)); }
+      if (status !== 200) { response.destroy(); return reject(new Error(message(`Remote upload failed (HTTP ${status})`, `Échec du téléversement distant (HTTP ${status})`))); }
       const declared = Number(response.headers["content-length"]);
       if (Number.isFinite(declared) && declared > MAX_UPLOAD_BYTES) {
-        response.destroy(); return reject(new Error("Remote upload exceeds the 20 MiB limit"));
+        response.destroy(); return reject(new Error(message("Remote upload exceeds the 20 MiB limit", "Le téléversement distant dépasse la limite de 20 MiB")));
       }
       const chunks = [];
       let size = 0;
       response.on("data", chunk => {
         size += chunk.length;
-        if (size > MAX_UPLOAD_BYTES) req.destroy(new Error("Remote upload exceeds the 20 MiB limit"));
+        if (size > MAX_UPLOAD_BYTES) req.destroy(new Error(message("Remote upload exceeds the 20 MiB limit", "Le téléversement distant dépasse la limite de 20 MiB")));
         else chunks.push(chunk);
       });
       response.on("error", reject);
-      response.on("close", () => { if (!response.complete) reject(new Error("Remote upload response was interrupted")); });
+      response.on("close", () => { if (!response.complete) reject(new Error(message("Remote upload response was interrupted", "La réponse du téléversement distant a été interrompue"))); });
       response.on("end", () => {
-        if (size > MAX_UPLOAD_BYTES) reject(new Error("Remote upload exceeds the 20 MiB limit"));
+        if (size > MAX_UPLOAD_BYTES) reject(new Error(message("Remote upload exceeds the 20 MiB limit", "Le téléversement distant dépasse la limite de 20 MiB")));
         else resolve(Buffer.concat(chunks, size));
       });
     });
-    timeout = setTimeout(() => req.destroy(new Error("Remote upload timed out")), DOWNLOAD_TIMEOUT_MS);
+    timeout = setTimeout(() => req.destroy(new Error(message("Remote upload timed out", "Délai de téléversement distant dépassé"))), DOWNLOAD_TIMEOUT_MS);
     timeout.unref();
     req.on("error", reject);
     req.end();

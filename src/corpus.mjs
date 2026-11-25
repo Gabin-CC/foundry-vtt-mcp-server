@@ -6,6 +6,7 @@
  */
 import { translations, trFor, localizeItem } from "./dnd5e.mjs";
 import { textFields, applyBabele, plain, detectLang, norm, snippet } from "./texts.mjs";
+import { message } from "./i18n.mjs";
 
 export const WORLD_TYPES = ["Actor", "Item", "JournalEntry", "RollTable", "Cards", "Scene", "Macro", "Playlist"];
 const PACK_TTL = 10 * 60 * 1000;
@@ -195,7 +196,7 @@ export async function auditTranslation(fs, a, { packsOf, packIndex }) {
 // ---------------------------------------------------------------- recherche globale
 export async function searchText(fs, a, { packsOf }) {
   const q = norm(a.query || "");
-  if (q.length < 2) throw new Error("Requête trop courte (2 caractères min.)");
+  if (q.length < 2) throw new Error(message("Query too short (minimum 2 characters)", "Requête trop courte (2 caractères min.)"));
   const scope = a.packs?.length ? "packs" : (a.scope || "all");
   const where = a.in || "all";   // name | text | all
   const hits = [];
@@ -230,7 +231,7 @@ export async function searchText(fs, a, { packsOf }) {
 /** Où un document est utilisé : liens @UUID dans les textes, sources de compendium, jetons, notes, résultats de table. */
 export async function findReferences(fs, a, { packsOf }) {
   const uuid = String(a.uuid || "").trim();
-  if (!uuid) throw new Error("Préciser 'uuid'");
+  if (!uuid) throw new Error(message("Specify 'uuid'", "Préciser 'uuid'"));
   const id = uuid.split(".").at(-1);
   // formes acceptées dans les textes : @UUID[uuid], @UUID[uuid]{…}, ancien @Compendium[pack.id], @Actor[id]…
   const m = /^Compendium\.([^.]+\.[^.]+)\.(?:\w+\.)?([A-Za-z0-9]{16})$/.exec(uuid);

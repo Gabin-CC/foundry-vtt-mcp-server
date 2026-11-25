@@ -62,7 +62,7 @@ async function resolveWithoutPack(fs, packs, entry, indexOf) {
 export async function resolveImportEntry(fs, packs, entry, indexOf) {
   if (!entry.pack) return resolveWithoutPack(fs, packs, entry, indexOf);
   const originalPack = packs.find(p => p.id === entry.pack);
-  if (!originalPack) throw new Error(`Unknown compendium: ${entry.pack}`);
+  if (!originalPack) throw new Error(message(`Unknown compendium: ${entry.pack}`, `Compendium inconnu : ${entry.pack}`));
 
   let pack = originalPack;
   let needsMetadataProof = false;
@@ -83,7 +83,8 @@ export async function resolveImportEntry(fs, packs, entry, indexOf) {
     const original = (await fs.doc("get", originalPack.type, {
       pack: originalPack.id, query: { _id: id }
     })).find(doc => doc._id === id);
-    if (!original) throw new Error(`Cannot resolve original item ${id} in ${originalPack.id}`);
+    if (!original) throw new Error(message(`Cannot resolve original item ${id} in ${originalPack.id}`,
+      `Objet d'origine ${id} introuvable dans ${originalPack.id}`));
     name = original.name;
   }
 
@@ -107,15 +108,19 @@ export async function resolveImportEntry(fs, packs, entry, indexOf) {
     if (!match) return { missing: name };
     id = match._id;
   }
-  if (!id) throw new Error("Provide a compendium item ID or name");
+  if (!id) throw new Error(message("Provide a compendium item ID or name", "Préciser l'identifiant ou le nom d'un objet de compendium"));
 
   const source = (await fs.doc("get", pack.type, { pack: pack.id, query: { _id: id } })).find(doc => doc._id === id);
-  if (!source) throw new Error(`Item ${id} was not found in ${pack.id}`);
-  if (entry.item_type && source.type !== entry.item_type) throw new Error(`Expected item type ${entry.item_type}, got ${source.type}`);
+  if (!source) throw new Error(message(`Item ${id} was not found in ${pack.id}`, `Objet ${id} introuvable dans ${pack.id}`));
+  if (entry.item_type && source.type !== entry.item_type) throw new Error(message(
+    `Expected item type ${entry.item_type}, got ${source.type}`,
+    `Type d'objet attendu : ${entry.item_type}, type reçu : ${source.type}`));
   const sourceRules = String(source.system?.source?.rules || "");
   if (needsMetadataProof && sourceRules !== entry.rules)
-    throw new Error(`Cannot verify rules ${entry.rules} for ${pack.id}/${id}: no corresponding edition pack is installed`);
+    throw new Error(message(`Cannot verify rules ${entry.rules} for ${pack.id}/${id}: no corresponding edition pack is installed`,
+      `Impossible de vérifier les règles ${entry.rules} pour ${pack.id}/${id} : aucun compendium de cette édition n'est installé`));
   if (entry.rules && sourceRules && sourceRules !== entry.rules)
-    throw new Error(`Expected rules ${entry.rules}, but ${pack.id}/${id} declares ${sourceRules}`);
+    throw new Error(message(`Expected rules ${entry.rules}, but ${pack.id}/${id} declares ${sourceRules}`,
+      `Règles attendues : ${entry.rules}, mais ${pack.id}/${id} déclare ${sourceRules}`));
   return { pack, source, id };
 }
