@@ -23,9 +23,11 @@ import { TABLE_TOOLS, CARD_TOOLS, handleTable, handleCards } from "./tables.mjs"
 import { resolveTarget, propose, applyDamage } from "./targets.mjs";
 import { diffUpdates, saveSnapshot, currentDocs, listSnapshots, showSnapshot, restoreSnapshot } from "./snapshots.mjs";
 import { rollFormula, derive, checkBonus, sheet, slotMax, useItem, translations, translateDoc, trFor, refreshUnits, localizeItem, actorMetricUpdates, ABIL, SKILLS } from "./dnd5e.mjs";
+import { setSafePath } from "./security.mjs";
+import { decodeUploadBase64, downloadPublicFile, validateUploadContent, validateUploadDestination } from "./upload.mjs";
 
 const PORT = Number(process.env.PORT || 8808);
-const HOST = process.env.HOST || "0.0.0.0";
+const HOST = process.env.HOST || "127.0.0.1";
 const TRUSTED_PROXY = process.env.TRUSTED_PROXY || ""; // IP du reverse proxy dont on accepte X-Forwarded-For
 const PUBLIC_URL = (process.env.PUBLIC_URL || "").replace(/\/+$/, ""); // ex. https://foundry.example.com
 // L'écran de connexion de Foundry grise les comptes déjà actifs : tant que le MCP garde sa session, le joueur ne
@@ -187,10 +189,11 @@ export const TOOLS = [
         name: { type: "string" }, type: { type: "string", default: "loot" }, quantity: { type: "number" },
         description: { type: "string" }, price_gp: { type: "number" }, weight: { type: "number" }, img: { type: "string" },
         rarity: { type: "string", enum: ["", "common", "uncommon", "rare", "veryRare", "legendary", "artifact"] } } } } } } },
-  { name: "upload_file", description: "Envoie une image/son sur le serveur Foundry (depuis une URL ou du base64) et renvoie le chemin à utiliser dans 'img'.",
+  { name: "upload_file", description: "Upload media from base64 or an explicitly allowed HTTPS origin (UPLOAD_ALLOWED_ORIGINS). Supported: PNG, JPEG, WebP, GIF, MP3, OGG, WAV, WebM, MP4, PDF; max 20 MiB. SVG and private-network URLs are blocked. Returns the Foundry file path.",
     inputSchema: { type: "object", required: ["filename"], properties: {
-      filename: { type: "string" }, folder: { type: "string", default: "images/uploads" },
-      url: { type: "string" }, base64: { type: "string" } } } },
+      filename: { type: "string", maxLength: 128 }, folder: { type: "string", maxLength: 256, default: "images/uploads" },
+      url: { type: "string", description: "HTTPS URL from an origin configured in UPLOAD_ALLOWED_ORIGINS" },
+      base64: { type: "string", description: "Base64 or data:*;base64 payload; provide exactly one of url/base64" } } } },
   { name: "send_chat", description: "Poste un message dans le chat Foundry (texte/HTML), en tant que joueur ou au nom d'un personnage.",
     inputSchema: { type: "object", required: ["content"], properties: {
       content: { type: "string" }, actor: { type: "string", description: "Parler au nom de ce personnage" },
@@ -292,7 +295,7 @@ async function packIndex(fs, pack) {
 }
 const randomId = () => { const c = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"; return Array.from(crypto.randomBytes(16), b => c[b % c.length]).join(""); };
 const norm = t => String(t || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
-function setPath(o, p, v) { const ks = p.split("."); let x = o; ks.slice(0, -1).forEach(k => { x = x[k] ??= {}; }); x[ks.at(-1)] = v; }
+const setPath = setSafePath;
 
 function makeServer(fs) {
   const server = new Server({ name: "foundry-vtt", version: "1.0.0" }, { capabilities: { tools: {} } });
@@ -669,14 +672,11 @@ async function runTool(fs, params) {
           return out({ a: actor.name, recu: lines });
         }
         case "upload_file": {
-          let buf;
-          if (a.url) { const r = await fetch(a.url); if (!r.ok) throw new Error(`Téléchargement impossible (${r.status})`); buf = Buffer.from(await r.arrayBuffer()); }
-          else if (a.base64) buf = Buffer.from(a.base64.replace(/^data:[^,]+,/, ""), "base64");
-          else throw new Error("Fournis 'url' ou 'base64'");
-          if (buf.length > 20 * 1024 * 1024) throw new Error("Fichier trop gros (max 20 Mo)");
-          const ext = a.filename.split(".").pop().toLowerCase();
-          const mime = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp", gif: "image/gif", svg: "image/svg+xml", mp3: "audio/mpeg", ogg: "audio/ogg", wav: "audio/wav", webm: "video/webm", mp4: "video/mp4", pdf: "application/pdf" }[ext];
-          const path = await fs.upload((a.folder || "images/uploads").replace(/^\/+|\/+$/g, ""), a.filename, buf, mime);
+          const { filename, folder, mime } = validateUploadDestination(a.filename, a.folder);
+          if (!!a.url === !!a.base64) throw new Error("Provide exactly one of 'url' or 'base64'");
+          const buf = a.url ? await downloadPublicFile(a.url) : decodeUploadBase64(a.base64);
+          validateUploadContent(buf, filename);
+          const path = await fs.upload(folder, filename, buf, mime);
           return out({ chemin: path, ...(PUBLIC_URL ? { url: `${PUBLIC_URL}/${encodeURI(path)}` } : {}) });
         }
         case "send_chat": {

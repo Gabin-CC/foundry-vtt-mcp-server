@@ -2,6 +2,7 @@
 // dés, stats dérivées, utilisation d'objets/sorts, compendiums FR.
 import crypto from "node:crypto";
 import { FOUNDRY } from "./foundry.mjs";
+import { setSafePath } from "./security.mjs";
 
 // ====================== DÉS ======================
 // Formules : 2d6+3, 1d20+5, 2d20kh1+4 (avantage), 2d20kl1 (désavantage), 4d6kh3, d8, 3d6-1, 1d4+1d6+2
@@ -53,7 +54,7 @@ const num = v => { const n = Number(String(v ?? "").replace(/\s/g, "")); return 
 // ====================== EFFETS ACTIFS ======================
 const MODES = { 0: "custom", 1: "multiply", 2: "add", 3: "downgrade", 4: "upgrade", 5: "override" };
 const getP = (o, p) => p.split(".").reduce((a, k) => a?.[k], o);
-const setP = (o, p, v) => { const ks = p.split("."); let x = o; for (const k of ks.slice(0, -1)) x = (x[k] ??= {}); x[ks.at(-1)] = v; };
+const setP = setSafePath;
 const changesOf = e => (e.system?.changes || e.changes || []).map(c => ({ key: c.key, value: c.value, type: c.type || MODES[c.mode] || "add" }));
 
 /** Effets actifs qui s'appliquent : effets de l'acteur + effets transférés des objets (équipés / harmonisés si requis). */

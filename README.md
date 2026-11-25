@@ -41,7 +41,7 @@ Claude (CLI / Desktop) ──HTTPS + Basic auth──▶ foundry-vtt-mcp-server 
 | `add_from_compendium` | Ajoute sorts, objets, classe (avec niveaux et PV), espèce, historique… à un acteur, ou importe dans le monde |
 | `localize_actor` | Traduit les objets d'un acteur d'après leur compendium d'origine (comme la traduction d'acteur de Babele) et convertit pieds/livres en mètres/kg si l'option métrique de dnd5e est active |
 | `give_loot` | Pièces et objets créés à la volée |
-| `upload_file` | Envoie une image / un son (URL ou base64) |
+| `upload_file` | Envoie une image / un son (base64 ou URL HTTPS explicitement autorisée via `UPLOAD_ALLOWED_ORIGINS`) |
 | `send_chat` | Message dans le chat, au nom d'un personnage, chuchotements |
 
 ### Outils de MJ (comptes MJ et assistant MJ uniquement)
@@ -92,9 +92,10 @@ Variables d'environnement :
 | Variable | Défaut | Rôle |
 |---|---|---|
 | `FOUNDRY_URL` | `http://127.0.0.1:30000` | URL de Foundry vue par le serveur |
-| `PORT` / `HOST` | `8808` / `0.0.0.0` | Écoute HTTP (endpoint `/mcp`, santé `/mcp-health`) |
+| `PORT` / `HOST` | `8808` / `127.0.0.1` | Écoute HTTP (endpoint `/mcp`, santé `/mcp-health`) |
 | `TRUSTED_PROXY` | *(vide)* | IP du reverse proxy dont on croit `X-Forwarded-For` |
 | `PUBLIC_URL` | *(vide)* | URL publique de Foundry, pour renvoyer l'URL des fichiers envoyés |
+| `UPLOAD_ALLOWED_ORIGINS` | *(vide)* | Origines HTTPS autorisées pour `upload_file` (liste séparée par des virgules) ; vide = URL distantes désactivées, base64 toujours disponible |
 | `TRANSLATION_SOURCES` | `dnd5e_fr-FR/compendium_fr` | Dossiers de traductions Babele (`module/dossier`, séparés par des virgules, par priorité). Chaque dossier contient `<id du compendium>.json`, ex. `world.sors.json` |
 
 ### Reverse proxy (HTTPS obligatoire)
@@ -243,6 +244,8 @@ un véritable monde Foundry et une connexion ChatGPT.
 - Sessions Foundry libérées par défaut après 10 s d'inactivité (clé = hash utilisateur + mot de passe).
 - OAuth facultatif : compte Foundry de chaque joueur, PKCE, renouvellement et stockage chiffré des identifiants.
 - Le serveur ne lit jamais les fichiers de Foundry : tout passe par le protocole client.
+- L'API MCP écoute uniquement sur `127.0.0.1` par défaut (`HOST`) : pour un proxy distant, configurer une adresse de réseau privé et un pare-feu adapté. Ne jamais exposer le port MCP en HTTP public.
+- `upload_file` refuse par défaut les téléchargements distants. Pour autoriser des images externes : définir `UPLOAD_ALLOWED_ORIGINS=https://cdn.example.com,https://media.example.org` ; seules les URL HTTPS de ces origines sont acceptées, avec filtrage des adresses privées et limite de 20 Mio. Les SVG sont refusés.
 
 ## Tests
 
@@ -268,6 +271,14 @@ Limitations: the dnd5e advancement workflow runs client-side and is not executed
 
 Install: see the commands above (Node ≥ 20, systemd unit in `deploy/`), expose only `/mcp` over HTTPS through your reverse proxy, then add it to Claude with an `Authorization: Basic …` header.
 Optional OAuth 2.1 support for ChatGPT is documented above; each player connects with their own Foundry credentials. The existing Basic authentication remains available.
+
+### Security-hardening notes (phase 1)
+
+- The MCP HTTP server now binds to **`127.0.0.1` by default**, including in the supplied systemd unit. Keep TLS termination at the reverse proxy. If your proxy runs on another host or container, explicitly set `HOST` to the appropriate private interface and firewall the port.
+- Remote URLs for `upload_file` are **disabled by default**. Base64 uploads continue working. To enable a specific asset CDN, set `UPLOAD_ALLOWED_ORIGINS=https://assets.example.com` (comma-separated HTTPS origins; an origin includes its port, if non-default). Redirect destinations must also be allowlisted. Private and reserved IP addresses are blocked after DNS lookup and on connection; downloads have time and 20 MiB limits.
+- File uploads reject path traversal, unknown formats, and **SVG**; recognized formats are PNG, JPEG, WebP, GIF, MP3, OGG, WAV, WebM, MP4 and PDF. A basic file-signature check is performed. This is not an antivirus or content-disarm system.
+- Property overrides and active-effect updates reject prototype-related keys. This prevents a malicious document key from modifying the Node.js process-wide object prototype.
+- Existing `upload_file` clients that used arbitrary URLs must either switch to base64 or configure explicitly trusted CDN origins. The current release remains French-first; a versioned English API migration is planned separately.
 
 ## Licence
 

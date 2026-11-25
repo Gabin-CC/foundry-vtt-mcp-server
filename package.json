@@ -7,7 +7,7 @@
   "bin": { "foundry-vtt-mcp-server": "src/server.mjs" },
   "scripts": {
     "start": "node src/server.mjs",
-    "check": "node --check src/server.mjs && node --check src/oauth.mjs && node --check src/foundry.mjs && node --check src/dnd5e.mjs && node --check src/advancement.mjs && node scripts/check-tools.mjs && node --test scripts/test-oauth.mjs scripts/test-server-http.mjs"
+    "check": "node --check src/server.mjs && node --check src/oauth.mjs && node --check src/foundry.mjs && node --check src/dnd5e.mjs && node --check src/advancement.mjs && node --check src/security.mjs && node --check src/upload.mjs && node scripts/check-tools.mjs && node --test scripts/test-oauth.mjs scripts/test-server-http.mjs scripts/test-security.mjs"
   },
   "engines": { "node": ">=20" },
   "dependencies": {
