@@ -826,6 +826,8 @@ const deny = (res, code, msg, challenge) => {
 
 if (process.env.NO_LISTEN !== "1") {
 const app = express();
+// Derrière le reverse proxy, req.ip doit être l'IP réelle du client (anti brute-force et rate limit).
+app.set("trust proxy", TRUSTED_PROXY ? ip => ip === TRUSTED_PROXY : false);
 const oauth = process.env.OAUTH_ENABLED === "1" ? createFoundryOAuth({
   mcpUrl: process.env.OAUTH_MCP_URL,
   key: oauthEncryptionKey(),
@@ -835,6 +837,24 @@ const oauth = process.env.OAUTH_ENABLED === "1" ? createFoundryOAuth({
 }) : null;
 
 if (oauth) {
+  // Journalise chaque étape OAuth : indispensable pour diagnostiquer un blocage côté client.
+  const oauthPaths = new Set(["/authorize", "/token", "/register", "/revoke", "/oauth/approve",
+    "/.well-known/oauth-protected-resource/mcp", "/.well-known/oauth-authorization-server"]);
+  const corsOrigins = new Set((process.env.OAUTH_REDIRECT_ORIGINS || "https://chatgpt.com").split(",").map(x => x.trim()).filter(Boolean));
+  app.use((req, res, next) => {
+    if (!oauthPaths.has(req.path)) return next();
+    const start = Date.now();
+    res.on("finish", () => console.log(`[oauth] ${req.method} ${req.path} → ${res.statusCode} (${Date.now() - start} ms)`));
+    const origin = req.headers.origin;
+    if (!origin || !corsOrigins.has(origin)) return next();
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Vary", "Origin");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
+    res.setHeader("Access-Control-Max-Age", "600");
+    if (req.method === "OPTIONS") return res.status(204).end();
+    next();
+  });
   app.use(mcpAuthRouter({
     provider: oauth.provider,
     issuerUrl: new URL(oauth.resource.origin),

@@ -161,6 +161,7 @@ export function createFoundryOAuth({ mcpUrl, key, stateFile = DEFAULT_STATE, log
     async authorize(client, params, res) {
       validateResource(params.resource);
       if (params.scopes?.some(scope => scope !== SCOPE)) throw new InvalidScopeError("Scope non reconnu");
+      console.log(`[oauth] autorisation demandée par ${client.client_name || "?"} (${client.client_id}) : state ${params.state ? "présent" : "ABSENT"}, retour ${params.redirectUri}`);
       const requestId = randomToken();
       for (const [id, entry] of pending) if (entry.expiresAt <= now()) pending.delete(id);
       if (pending.size >= 1000) throw new InvalidGrantError("Trop de demandes de connexion en attente");
@@ -237,6 +238,7 @@ export function createFoundryOAuth({ mcpUrl, key, stateFile = DEFAULT_STATE, log
     const callback = new URL(attempt.params.redirectUri);
     callback.searchParams.set("code", code);
     if (attempt.params.state) callback.searchParams.set("state", attempt.params.state);
+    console.log(`[oauth] connexion validée pour "${username}" → ${callback.origin}${callback.pathname} (state ${attempt.params.state ? "renvoyé" : "ABSENT"}, code ${code.length} car.)`);
     res.redirect(302, callback.href);
   };
 
