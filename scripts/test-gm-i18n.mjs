@@ -145,3 +145,75 @@ test("create_documents still emits no-activity warnings in either locale", async
   assert.deepEqual(result.a_verifier, [`Feature (feat) : ${tr("no activity (feat)", "aucune activité (feat)")}`]);
   assert.deepEqual(result.crees, [{ _id: ID, name: "Feature" }]);
 });
+
+test("ambiguous sync source is bilingual without changing source pack IDs", async () => {
+  const item = { _id: ID, name: "Duplicate Feature", type: "feat", effects: [],
+    _stats: { compendiumSource: `Compendium.premium.missing.Item.${ID}` },
+    system: { activities: {}, advancement: {} } };
+  const packs = ["world.first", "world.second"];
+  const session = {
+    async worldData() { return { packs: packs.map(id => ({ id, type: "Item" })) }; },
+    async doc(action, type, options) {
+      assert.equal(action, "get");
+      assert.equal(type, "Item");
+      if (options.index) return [{ _id: ID }];
+      return [{ _id: ID, name: "Duplicate Feature", type: "feat", system: {} }];
+    }
+  };
+  const result = await syncItems(session, { actor: { _id: ACT, name: "Hero", items: [item] } });
+  assert.equal(result.detail[0].source, `Compendium.premium.missing.Item.${ID}`);
+  assert.equal(result.detail[0].probleme, tr(
+    "Ambiguous compendium source: world.first, world.second",
+    "Source de compendium ambiguë : world.first, world.second"));
+  assert.equal(result.modifies, 0);
+  assert.equal(result.simulation, true);
+});
+
+test("document update/delete snapshot safeguards are bilingual and never mutate", async () => {
+  let writes = 0;
+  const session = { user: { role: 4 }, async doc(action) {
+    if (action === "get") return [];
+    writes++;
+    throw new Error("Unexpected write");
+  } };
+  const cases = [
+    ["update_documents", { type: "Item", updates: [{ _id: ID, name: "Changed" }] },
+      "Document update aborted: original document unavailable for snapshot",
+      "Mise à jour des documents interrompue : document d'origine introuvable pour l'instantané"],
+    ["delete_documents", { type: "Item", ids: [ID] },
+      "Document deletion aborted: original document unavailable for snapshot",
+      "Suppression des documents interrompue : document d'origine introuvable pour l'instantané"]
+  ];
+  for (const [name, args, en, fr] of cases) {
+    const result = await handleTool(session, { name, arguments: args });
+    assert.equal(result.isError, true);
+    assert.ok(result.content[0].text.includes(tr(en, fr)), result.content[0].text);
+  }
+  assert.equal(writes, 0, "A failed snapshot precondition must never write to Foundry");
+});
+
+test("no-op document update has bilingual note and preserves response field names", async () => {
+  const doc = { _id: ID, name: "Unchanged" };
+  const session = { user: { role: 4 }, async doc(action) {
+    assert.equal(action, "get");
+    return [doc];
+  } };
+  const result = await handleTool(session, {
+    name: "update_documents", arguments: { type: "Item", updates: [{ _id: ID, name: doc.name }] }
+  });
+  assert.equal(result.isError, undefined);
+  const value = JSON.parse(result.content[0].text);
+  assert.equal(value.note, tr("No changes necessary", "Aucune modification nécessaire"));
+  assert.equal(value.modifies, 0);
+  assert.deepEqual(value.resultat, []);
+});
+
+test("upload parameter validation is bilingual while parameter names remain stable", async () => {
+  const result = await handleTool({ user: { role: 4 } }, {
+    name: "upload_file", arguments: { filename: "portrait.png" }
+  });
+  assert.equal(result.isError, true);
+  assert.ok(result.content[0].text.includes(tr(
+    "Provide exactly one of 'url' or 'base64'",
+    "Fournir exactement l'un des paramètres « url » ou « base64 »")));
+});
