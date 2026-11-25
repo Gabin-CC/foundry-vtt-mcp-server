@@ -11,19 +11,19 @@ import { message } from "./i18n.mjs";
 export function rollFormula(formula, { flavor } = {}) {
   // les étiquettes de dégâts entre crochets (« 1d6[radiant] », « 2d8[on hit] ») ne font pas partie du jet
   const src = String(formula).replace(/\[[^\]]*\]/g, "").replace(/\s+/g, "");
-  if (src.length > 4096) throw new Error("Formule de dés trop longue");
-  if (!/^[0-9dDkhl+\-*/.]+$/.test(src)) throw new Error(`Formule non supportée : ${formula}`);
+  if (src.length > 4096) throw new Error(message("Dice formula is too long", "Formule de dés trop longue"));
+  if (!/^[0-9dDkhl+\-*/.]+$/.test(src)) throw new Error(message(`Unsupported dice formula: ${formula}`, `Formule non supportée : ${formula}`));
   const tokens = src.match(/[+\-*/]|[^+\-*/]+/g) || [];
   const terms = [];
   const values = [], operators = [];
   const precedence = { "+": 1, "-": 1, "*": 2, "/": 2 };
   const evaluate = () => {
     const right = values.pop(), left = values.pop(), operator = operators.pop();
-    if (left == null || right == null) throw new Error(`Formule incomplète : ${formula}`);
-    if (operator === "/" && right === 0) throw new Error("Division par zéro dans la formule de dés");
+    if (left == null || right == null) throw new Error(message(`Incomplete dice formula: ${formula}`, `Formule incomplète : ${formula}`));
+    if (operator === "/" && right === 0) throw new Error(message("Division by zero in dice formula", "Division par zéro dans la formule de dés"));
     const result = operator === "+" ? left + right : operator === "-" ? left - right
       : operator === "*" ? left * right : Math.floor(left / right);
-    if (!Number.isFinite(result)) throw new Error("Résultat numérique hors limites");
+    if (!Number.isFinite(result)) throw new Error(message("Numeric result is out of range", "Résultat numérique hors limites"));
     values.push(result);
   };
   let expectingValue = true, unarySign = 1;
@@ -32,7 +32,7 @@ export function rollFormula(formula, { flavor } = {}) {
     if (Object.hasOwn(precedence, t)) {
       if (expectingValue) {
         if (t === "+" || t === "-") { if (t === "-") unarySign *= -1; continue; }
-        throw new Error(`Opérateur inattendu : ${t}`);
+        throw new Error(message(`Unexpected operator: ${t}`, `Opérateur inattendu : ${t}`));
       }
       while (operators.length && precedence[operators.at(-1)] >= precedence[t]) evaluate();
       operators.push(t);
@@ -40,12 +40,12 @@ export function rollFormula(formula, { flavor } = {}) {
       expectingValue = true;
       continue;
     }
-    if (!expectingValue) throw new Error(`Opérateur manquant : ${formula}`);
+    if (!expectingValue) throw new Error(message(`Missing operator in dice formula: ${formula}`, `Opérateur manquant : ${formula}`));
     let val;
     const m = /^(\d*)[dD](\d+)(?:(kh|kl)(\d*))?$/.exec(t);
     if (m) {
       const number = Number(m[1] || 1), faces = Number(m[2]);
-      if (number > 100 || faces > 1000 || faces < 1) throw new Error(`Dés hors limites : ${t}`);
+      if (number > 100 || faces > 1000 || faces < 1) throw new Error(message(`Dice limits exceeded: ${t}`, `Dés hors limites : ${t}`));
       const results = Array.from({ length: number }, () => ({ result: crypto.randomInt(1, faces + 1), active: true }));
       const modifiers = [];
       if (m[3]) {
@@ -65,14 +65,14 @@ export function rollFormula(formula, { flavor } = {}) {
       terms.push(die); dice.push({ formula: t, results: results.map(r => r.active ? r.result : `(${r.result})`) , faces });
     } else if (/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(t)) {
       val = Number(t);
-      if (!Number.isFinite(val)) throw new Error(`Terme numérique hors limites : ${t}`);
+      if (!Number.isFinite(val)) throw new Error(message(`Numeric term is out of range: ${t}`, `Terme numérique hors limites : ${t}`));
       terms.push({ class: "NumericTerm", options: {}, evaluated: true, number: unarySign * val });
-    } else throw new Error(`Terme non supporté : ${t}`);
+    } else throw new Error(message(`Unsupported dice term: ${t}`, `Terme non supporté : ${t}`));
     values.push(unarySign * val);
     unarySign = 1;
     expectingValue = false;
   }
-  if (expectingValue && tokens.length) throw new Error(`Formule incomplète : ${formula}`);
+  if (expectingValue && tokens.length) throw new Error(message(`Incomplete dice formula: ${formula}`, `Formule incomplète : ${formula}`));
   while (operators.length) evaluate();
   const total = values[0] ?? 0;
   const roll = { class: "Roll", options: flavor ? { flavor } : {}, dice: [], formula: src.replace(/([+\-*/])/g, " $1 ").trim(), terms, total, evaluated: true };
