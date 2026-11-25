@@ -1,13 +1,17 @@
 /**
  * Avancements reconstruits pour les contenus importés par Plutonium (5etools).
  *
- * Plutonium importe dans les compendiums du monde des historiques, dons et sous-classes SANS avancements
+ * Plutonium importe dans les compendiums du monde des classes, historiques, dons et sous-classes SANS avancements
  * dnd5e (il les applique lui-même au moment d'importer sur une fiche). Sans eux, l'assistant de niveau n'a
  * rien à faire. On les reconstruit à la volée, de façon générique, à partir de ce que 5etools fournit :
  *  - le texte anglais d'origine, au format régulier de 5etools (« Ability Scores: … », « Feat: @feat[…] »,
  *    « Increase your X, Y, or Z by 1 », « You always have the @spell[…] spell prepared », tables de sorts…) ;
  *  - les identifiants Plutonium (flags.plutonium.hash), qui relient une sous-classe à ses aptitudes :
- *    « <aptitude>_<classe>_<src>_<sous-classe>_<src>_<niveau>_<src> ».
+ *    « <aptitude>_<classe>_<src>_<sous-classe>_<src>_<niveau>_<src> », et une classe aux siennes :
+ *    « <aptitude>_<classe>_<src>_<niveau>_<src> » (page « classFeature ») ;
+ *  - les sections « Level N: Nom » du texte d'une classe (améliorations de caractéristique, sous-classe, dons).
+ * Ce que le texte 5etools d'une classe ne contient pas (maîtrises d'armures/armes/outils, équipement de départ)
+ * est repris de la classe officielle équivalente (même system.identifier, même version de règles).
  * Rien n'est écrit dans les compendiums : l'objet créé sur la fiche porte les avancements reconstruits, comme
  * s'ils venaient du compendium. Les identifiants sont déterministes (même objet -> mêmes identifiants).
  */
@@ -193,15 +197,14 @@ async function subclass(fs, raw) {
   const esc = x => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const re = new RegExp(`_${esc(cls)}_${esc(csrc)}_${esc(short)}_${esc(ssrc)}_(\\d+)_`);
   const adv = [];
-  // aptitudes : compendium des capacités de classe, rangées par niveau
-  const idx = await packIndex(fs, "world.capacites-de-classe", ["flags.plutonium.hash"]);
+  // aptitudes : compendiums du monde (aptitudes Plutonium), rangées par niveau
   const byLevel = {};
-  for (const x of idx) {
-    const lm = re.exec(decodeURIComponent(x.flags?.plutonium?.hash || ""));
+  for (const x of await pluFeatures(fs)) {
+    const lm = re.exec(x.hash);
     if (lm) (byLevel[lm[1]] ??= []).push(x);
   }
   for (const [lv, list] of Object.entries(byLevel))
-    adv.push(grant(sid(raw._id, "feat", lv), list.map(x => `Compendium.world.capacites-de-classe.Item.${x._id}`), Number(lv), null, "Features"));
+    adv.push(grant(sid(raw._id, "feat", lv), list.map(x => x.uuid), Number(lv), null, "Features"));
   // sorts de sous-classe : table « <Classe> Level | Spells » de la description (« 3 » ou « 3rd »)
   const html = raw.system?.description?.value || "";
   for (const row of html.matchAll(/<tr[^>]*>\s*<td[^>]*>\s*(\d+)(?:st|nd|rd|th)?\s*<\/td>\s*<td[^>]*>(.*?)<\/td>\s*<\/tr>/gis)) {
@@ -214,6 +217,147 @@ async function subclass(fs, raw) {
   return adv.length ? { advancement: adv } : null;
 }
 
+// ---- aptitudes Plutonium des compendiums du monde ----
+const decode = h => { try { return decodeURIComponent(String(h || "")); } catch { return String(h || ""); } };
+const esc = x => String(x).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const advOf = d => Array.isArray(d?.system?.advancement) ? d.system.advancement : Object.values(d?.system?.advancement || {});
+const packsOf = async fs => (fs._packs2 ??= ((await fs.worldData()).packs || []));
+/**
+ * Aptitudes de classe / sous-classe importées par Plutonium, tous compendiums d'objets du monde confondus :
+ * flags.plutonium.page = « classFeature » | « subclassFeature », flags.plutonium.hash =
+ * « <aptitude>_<classe>_<src>_<niveau>_<src> » ou « <aptitude>_<classe>_<src>_<sous-classe>_<src>_<niveau>_<src> ».
+ */
+async function pluFeatures(fs) {
+  if (fs._synFeatures) return fs._synFeatures;
+  const out = [];
+  for (const p of (await packsOf(fs)).filter(p => p.type === "Item" && String(p.id).startsWith("world."))) {
+    for (const x of await packIndex(fs, p.id, ["flags.plutonium.hash", "flags.plutonium.page"])) {
+      const pl = x.flags?.plutonium;
+      if (!pl?.hash || !/^(sub)?classFeature$/.test(pl.page || "")) continue;
+      out.push({ uuid: `Compendium.${p.id}.Item.${x._id}`, _id: x._id, name: x.name, hash: decode(pl.hash), page: pl.page });
+    }
+  }
+  return (fs._synFeatures = out);
+}
+
+/** Sections « Level N: Nom » du texte 5etools d'une classe (attribut data-roll-name-ancestor). */
+export function classSections(html) {
+  const out = [];
+  for (const part of String(html || "").split(/data-roll-name-ancestor="/).slice(1)) {
+    const q = part.indexOf('"');
+    const head = part.slice(0, q).replace(/&#39;|&apos;|&#x27;/g, "'").replace(/&quot;/g, '"').replace(/&amp;/g, "&");
+    const m = /^Level (\d+)\s*:\s*(.+)$/i.exec(head.trim());
+    if (m) out.push({ level: Number(m[1]), name: m[2].trim(), body: text(part.slice(q + 1).replace(/^[^>]*>/, "")) });
+  }
+  return out;
+}
+
+/**
+ * Équivalent officiel d'une classe (ou sous-classe) : même system.identifier dans un compendium du système dnd5e
+ * (ex. « fighter » -> dnd5e.classes24). Même version de règles (system.source.rules) en priorité.
+ * @returns {{uuid, pack, id, rules}|null}
+ */
+export async function officialEquivalent(fs, doc) {
+  const ident = doc?.system?.identifier;
+  if (!ident || !["class", "subclass"].includes(doc.type)) return null;
+  const hits = [];
+  for (const p of (await packsOf(fs)).filter(p => p.type === "Item" && p.packageName === "dnd5e")) {
+    for (const x of await packIndex(fs, p.id, ["system.identifier", "system.source.rules", "system.classIdentifier"])) {
+      if (x.type !== doc.type || x.system?.identifier !== ident) continue;
+      if (doc.type === "subclass" && x.system?.classIdentifier !== doc.system?.classIdentifier) continue;
+      hits.push({ uuid: `Compendium.${p.id}.Item.${x._id}`, pack: p.id, id: x._id, rules: String(x.system?.source?.rules || "") });
+    }
+  }
+  const rules = String(doc.system?.source?.rules || "");
+  return hits.find(h => h.rules === rules) || hits[0] || null;
+}
+
+/** Vrai si l'objet (classe) accorde des aptitudes : sinon, l'import ne donnerait que PV et maîtrises. */
+export const grantsFeatures = doc => advOf(doc).some(a => ["ItemGrant", "ItemChoice", "Subclass"].includes(a.type));
+
+// « fighting style » -> « fightingStyle » (sous-type de don dnd5e)
+const camel = s => norm(s).split(/[^a-z0-9]+/).filter(Boolean).map((w, i) => i ? w[0].toUpperCase() + w.slice(1) : w).join("");
+async function featSubtypeExists(fs, subtype) {
+  for (const p of (await packsOf(fs)).filter(p => p.type === "Item" && p.packageName === "dnd5e"))
+    if ((await packIndex(fs, p.id, ["system.type.subtype"])).some(x => x.type === "feat" && x.system?.type?.subtype === subtype)) return true;
+  return false;
+}
+
+// ---- classe ----
+async function klass(fs, raw, existing) {
+  // « fighter_xphb »
+  const m = /^([^_,]+)_([^_,]+)$/.exec(decode(raw.flags?.plutonium?.hash));
+  if (!m) return null;
+  const [, cls, csrc] = m;
+  const secs = classSections(raw.system?.description?.value);
+  const adv = [];
+  // amélioration de caractéristique / don : « Ability Score Improvement », ou toute section « … feat or another feat
+  // of your choice for which you qualify » (ex. Don épique)
+  const asiLv = new Map();
+  for (const s of secs) if (/^ability score improvement$/i.test(s.name) || /\bor another feat of your choice\b/i.test(s.body)) if (!asiLv.has(s.level)) asiLv.set(s.level, s.name);
+  // aptitudes de la classe (pas celles des sous-classes), par niveau
+  const reF = new RegExp(`^(.+)_${esc(cls)}_${esc(csrc)}_(\\d+)_[^_]+$`);
+  const reSub = new RegExp(`_${esc(cls)}_${esc(csrc)}_[^_]+_[^_]+_(\\d+)_[^_]+$`);
+  const granted = new Set(existing.filter(a => a.type === "ItemGrant").flatMap(a => (a.configuration?.items || []).map(i => String(typeof i === "string" ? i : i.uuid).split(".").pop())));
+  const byLevel = {}, seen = new Set(), subLevels = [];
+  for (const f of await pluFeatures(fs)) {
+    if (f.page === "subclassFeature") { const sm = reSub.exec(f.hash); if (sm) subLevels.push(Number(sm[1])); continue; }
+    const fm = reF.exec(f.hash);
+    if (!fm) continue;
+    const lv = Number(fm[2]);
+    if (asiLv.has(lv) && norm(asiLv.get(lv)) === norm(f.name)) continue;    // « Epic Boon » : choix de don, pas un objet
+    const k = `${lv}|${norm(f.name)}`;
+    if (granted.has(f._id) || seen.has(k)) continue;
+    seen.add(k);
+    (byLevel[lv] ??= []).push(f);
+  }
+  // rien de fiable à accorder : on laisse la main au repli (classe officielle équivalente)
+  if (!Object.keys(byLevel).length) return null;
+  for (const [lv, list] of Object.entries(byLevel).sort((a, b) => a[0] - b[0]))
+    adv.push(grant(sid(raw._id, "feat", lv), list.map(x => x.uuid), Number(lv), null, "Features"));
+  const asiHave = new Set(existing.filter(a => a.type === "AbilityScoreImprovement").map(a => Number(a.level)));
+  for (const [lv, name] of [...asiLv].sort((a, b) => a[0] - b[0]))
+    if (!asiHave.has(lv)) adv.push({ ...asi(sid(raw._id, "asi", lv), { points: 2, cap: 2, allowed: ALL_ABIL, title: name }), level: lv });
+  // sous-classe : section « <Classe> Subclass », sinon premier niveau des aptitudes de sous-classe
+  if (!existing.some(a => a.type === "Subclass")) {
+    const lv = secs.find(s => /\bsubclass$/i.test(s.name))?.level ?? (subLevels.length ? Math.min(...subLevels) : null);
+    if (lv) adv.push({ _id: sid(raw._id, "subclass"), type: "Subclass", level: lv, title: "Subclass", configuration: {}, value: {} });
+  }
+  // don au choix d'une catégorie (« gain a Fighting Style feat of your choice ») si cette catégorie existe dans dnd5e
+  for (const s of secs) {
+    if (asiLv.has(s.level)) continue;
+    const fm = /\bgain an? ([A-Z][A-Za-z' ]+?) feat of your choice\b/.exec(s.body);
+    if (!fm) continue;
+    const subtype = camel(fm[1]);
+    if (!subtype || !(await featSubtypeExists(fs, subtype))) continue;
+    adv.push({ _id: sid(raw._id, "choice", s.level, subtype), type: "ItemChoice", level: s.level, title: s.name,
+      configuration: { allowDrops: true, type: "feat", pool: [], choices: { [s.level]: { count: 1, replacement: true } },
+        restriction: { type: "feat", subtype, list: [] }, spell: null },
+      value: { added: {}, replaced: {} } });
+  }
+  // maîtrises d'armures / armes / outils et équipement de départ : absents du texte 5etools de Plutonium ;
+  // repris de la classe officielle équivalente (même identifiant, même version de règles), si elle existe
+  let startingEquipment = null;
+  const off = await officialEquivalent(fs, raw);
+  if (off && off.rules === String(raw.system?.source?.rules || "")) {
+    const od = (await fs.doc("get", "Item", { pack: off.pack, query: { _id: off.id } }).catch(() => [])).find(x => x._id === off.id);
+    const keysOf = a => [...(a.configuration?.grants || []), ...(a.configuration?.choices || []).flatMap(c => c.pool || [])];
+    const haveKeys = new Set(existing.filter(a => a.type === "Trait").flatMap(keysOf));
+    for (const a of advOf(od)) {
+      if (a.type !== "Trait") continue;
+      const keys = keysOf(a);
+      if (!keys.length || !keys.every(k => /^(armor|weapon|tool):/.test(k)) || keys.every(k => haveKeys.has(k))) continue;
+      adv.push({ ...structuredClone(a), _id: sid(raw._id, "trait", a._id), value: {} });
+    }
+    const se = od?.system?.startingEquipment || [];
+    if (se.length) {
+      const id = x => x ? sid(raw._id, "eq", x) : x;
+      startingEquipment = se.map(e => ({ ...structuredClone(e), _id: id(e._id), group: id(e.group || "") || "" }));
+    }
+  }
+  return { advancement: adv, startingEquipment };
+}
+
 /**
  * Complète `doc` (déjà traduit) avec des avancements reconstruits si l'objet d'origine (`raw`, texte anglais)
  * vient de Plutonium et n'en a aucun. Sans effet sinon.
@@ -224,13 +368,15 @@ export async function synthesize(fs, doc, raw = doc) {
   const existing = list(doc.system.advancement);
   // sous-classe Plutonium avec seulement des valeurs d'échelle (ex. dés de supériorité) : aptitudes à reconstruire
   const grants = existing.filter(a => ["ItemGrant", "ItemChoice"].includes(a.type));
-  const merge = doc.type === "subclass" && existing.length && !grants.length;
+  // classe Plutonium : PV, sauvegardes, compétences et valeurs d'échelle seulement -> aptitudes à reconstruire
+  const merge = ["subclass", "class"].includes(doc.type) && existing.length && !grants.length;
   if (existing.length && !merge) return doc;
   let r = null;
   try {
     if (doc.type === "background") r = await background(fs, raw);
     else if (doc.type === "feat") r = await feat(fs, raw);
     else if (doc.type === "subclass") r = await subclass(fs, raw);
+    else if (doc.type === "class") r = await klass(fs, raw, existing);
   } catch { r = null; }
   if (!r) return doc;
   doc.system.advancement = Object.fromEntries([...(merge ? existing : []), ...r.advancement].map(a => [a._id, a]));

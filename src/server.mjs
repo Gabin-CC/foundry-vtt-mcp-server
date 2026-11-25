@@ -11,7 +11,7 @@ import { mcpAuthRouter } from "@modelcontextprotocol/sdk/server/auth/router.js";
 import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { FoundrySession } from "./foundry.mjs";
 import { createFoundryOAuth, oauthEncryptionKey } from "./oauth.mjs";
-import { plan as advPlan, apply as advApply, fetchUuid } from "./advancement.mjs";
+import { plan as advPlan, apply as advApply, fetchUuid, preferOfficialClass, retrofitClass } from "./advancement.mjs";
 import { planClassSpells, applyClassSpells } from "./spells.mjs";
 import { ensureCastSpells } from "./cast.mjs";
 import { GM_TOOLS, GM_ROLE, handleGm } from "./gm.mjs";
@@ -830,6 +830,22 @@ async function runTool(session, params) {
             root.__src = `Compendium.${pack.id}.${pack.type}.${id}`; isNew = true;
           } else if (a.item) root = findItem(actor, a.item);
           else throw new Error(message("Specify 'source' (import) or 'item' (class to advance)", "Précise 'source' (import) ou 'item' (classe à faire monter)"));
+          // classe d'un compendium du monde (Plutonium) sans aptitude, même reconstruite : classe officielle équivalente
+          const notes = [];
+          if (isNew) {
+            const r = await preferOfficialClass(fs, root, root.__src);
+            if (r.note) notes.push(r.note);
+            if (r.root !== root) { root = r.root; root.__src = r.src; }
+          }
+          // classe Plutonium déjà sur la fiche, importée sans ses aptitudes : avancements reconstruits à enregistrer
+          let retro = null;
+          if (!isNew && root.type === "class") {
+            retro = await retrofitClass(fs, root);
+            if (retro) root = Object.assign(retro.item, { _id: root._id });
+          }
+          if (root.flags?.mcp?.synthesizedAdvancement) notes.push(message(
+            `${root.name}: advancements rebuilt from the Plutonium (5etools) data of the world compendiums (features, ability score improvements, subclass…).`,
+            `${root.name} : avancements reconstruits depuis les données Plutonium (5etools) des compendiums du monde (aptitudes, améliorations de caractéristique, sous-classe…).`));
           const isClass = root.type === "class";
           const current = isNew ? 0 : Number(root.system?.levels) || 0;
           const charLevel = classes.reduce((t, c) => t + (Number(c.system?.levels) || 0), 0);
@@ -844,6 +860,16 @@ async function runTool(session, params) {
           // inclut les avancements de la sous-classe existante
           const { steps, pending, warnings } = onlySpells ? { steps: [], pending: [], warnings: [] }
             : await advPlan(fs, actor, root, { fromLevel: from, toLevel: target, choices: a.choices || {}, isFirstClass });
+          warnings.unshift(...notes);
+          // niveaux déjà acquis d'une classe complétée : aptitudes et maîtrises reconstruites qui manquent sur la fiche
+          if (retro && current > 0) {
+            const past = { ...root, system: { ...root.system, advancement: retro.added.filter(x => ["ItemGrant", "Trait"].includes(x.type)) } };
+            const pp = await advPlan(fs, actor, past, { fromLevel: 1, toLevel: current, choices: a.choices || {}, isFirstClass });
+            const owned = new Set((actor.items || []).flatMap(i => [i._stats?.compendiumSource, i.flags?.dnd5e?.sourceId]).filter(Boolean));
+            for (const s of pp.steps) if (s.kind === "grant") s.docs = s.docs.filter(d => !owned.has(d.uuid));
+            steps.unshift(...pp.steps.filter(s => s.kind !== "grant" || s.docs.length));
+            pending.push(...pp.pending); warnings.push(...pp.warnings);
+          }
           if (isClass && !isNew && !onlySpells) {
             const sub = (actor.items || []).find(i => i.type === "subclass" && i.system?.classIdentifier === root.system?.identifier);
             // paliers liés au niveau de personnage : espèce, historique et ce qu'ils ont accordé (ex. lignage Haut-elfe aux niv. 3 et 5)
@@ -886,7 +912,8 @@ async function runTool(session, params) {
             if (Object.keys(det).length) await fs.doc("update", "Actor", { updates: [{ _id: actor._id, ...det }], diff: true, modifiedTime: Date.now() });
             actor = await findActor(fs, actor._id);
           } else if (isClass) {
-            await fs.doc("update", "Item", { parentUuid: `Actor.${actor._id}`, updates: [{ _id: root._id, "system.levels": target }], modifiedTime: Date.now() });
+            const advDefs = Object.fromEntries((retro?.added || []).map(x => [`system.advancement.${x._id}`, x]));
+            await fs.doc("update", "Item", { parentUuid: `Actor.${actor._id}`, updates: [{ _id: root._id, "system.levels": target, ...advDefs }], modifiedTime: Date.now() });
           }
           const log = await advApply(fs, actor, root._id, steps, { hpMode: a.hp || "avg", isFirstClass });
           if (spellPlan) log.push(message("Spells — ", "Sorts — ") + await applyClassSpells(fs, await findActor(fs, actor._id), spellPlan.step, root._id));
