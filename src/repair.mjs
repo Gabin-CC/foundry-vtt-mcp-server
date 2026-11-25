@@ -10,6 +10,7 @@
  */
 import crypto from "node:crypto";
 import { diffUpdates, saveSnapshot } from "./snapshots.mjs";
+import { message } from "./i18n.mjs";
 
 export const VALID_ID = /^[A-Za-z0-9]{16}$/;
 
@@ -104,18 +105,18 @@ export function itemWarnings(item, sources = []) {
   const desc = String(item.system?.description?.value || "");
   if (!acts.length && item.type !== "equipment" && item.type !== "container" && item.type !== "loot"
     && item.type !== "consumable" && item.type !== "tool" && item.type !== "weapon" && item.type !== "armor") {
-    warnings.push(`aucune activité (${item.type})`);
+    warnings.push(message(`no activity (${item.type})`, `aucune activité (${item.type})`));
   }
   for (const s of sources) {
     if (!s || s._id === item._id) continue;
     const sActs = Object.values(s.system?.activities || {}).length;
     const sEff = (s.effects || []).length, sAdv = Object.values(s.system?.advancement || {}).length;
     const eff = (item.effects || []).length, adv = advs.length;
-    if (sActs > acts.length) warnings.push(`${sActs} activité(s) dans la source « ${s.name || s._id} », ${acts.length} ici`);
-    if (sEff > eff) warnings.push(`${sEff} effet(s) dans la source « ${s.name || s._id} », ${eff} ici`);
-    if (sAdv > adv) warnings.push(`${sAdv} avancement(s) dans la source, ${adv} ici`);
+    if (sActs > acts.length) warnings.push(message(`${sActs} ${sActs === 1 ? "activity" : "activities"} in source "${s.name || s._id}", ${acts.length} here`, `${sActs} activité(s) dans la source « ${s.name || s._id} », ${acts.length} ici`));
+    if (sEff > eff) warnings.push(message(`${sEff} ${sEff === 1 ? "effect" : "effects"} in source "${s.name || s._id}", ${eff} here`, `${sEff} effet(s) dans la source « ${s.name || s._id} », ${eff} ici`));
+    if (sAdv > adv) warnings.push(message(`${sAdv} ${sAdv === 1 ? "advancement" : "advancements"} in source, ${adv} here`, `${sAdv} avancement(s) dans la source, ${adv} ici`));
   }
-  if (!acts.length && !(item.effects || []).length && desc.length > 80 && !warnings.length) warnings.push("objet sans activité ni effet : importable depuis un compendium");
+  if (!acts.length && !(item.effects || []).length && desc.length > 80 && !warnings.length) warnings.push(message("item without activity or effect: can be imported from a compendium", "objet sans activité ni effet : importable depuis un compendium"));
   return [...new Set(warnings)];
 }
 

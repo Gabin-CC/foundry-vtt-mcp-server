@@ -355,7 +355,7 @@ async function runTool(fs, params) {
         case "get_document": {
           // le filtre _id n'est pas appliqué par Foundry sur les collections embarquées : on filtre ici
           const d = (await fs.doc("get", a.type, { query: { _id: a.id }, ...parentOpt(a.parent, a.pack) })).find(x => x._id === a.id);
-          if (!d) return out(`Introuvable : ${a.type} ${a.id}`);
+          if (!d) return out(message(`Not found: ${a.type} ${a.id}`, `Introuvable : ${a.type} ${a.id}`));
           return out(getPath(d, a.path));
         }
         case "create_documents": {
@@ -390,8 +390,8 @@ async function runTool(fs, params) {
                   if (hit.length) byName.push({ pack: p, _id: hit[0]._id, name: it.name, type: hit[0].type });
                 }
                 const label = `${it.name} (${it.type}) : ${w0.join(", ")}`;
-                if (byName.length) warns.push(`${label} — source possible : ${byName.map(b => `${b.pack}.${b.type}.${b._id}`).join(", ")} (add_from_compendium {pack, id} ou gm_sync_items)`);
-                else if (w0.some(w => /aucune activité/.test(w))) warns.push(label);
+                if (byName.length) warns.push(message(`${label} — possible source: ${byName.map(b => `${b.pack}.${b.type}.${b._id}`).join(", ")} (add_from_compendium {pack, id} or gm_sync_items)`, `${label} — source possible : ${byName.map(b => `${b.pack}.${b.type}.${b._id}`).join(", ")} (add_from_compendium {pack, id} ou gm_sync_items)`));
+                else if (w0.some(w => w.includes(message("no activity", "aucune activité")))) warns.push(label);
               }
             }
           }
@@ -858,7 +858,7 @@ async function runTool(fs, params) {
         }
         default:
           if (params.name.startsWith("gm_")) {
-            if ((Number(fs.user?.role) || 0) < GM_ROLE) return out("Outil réservé aux comptes MJ ou assistant MJ.");
+            if ((Number(fs.user?.role) || 0) < GM_ROLE) return out(message("This tool is restricted to Gamemaster or Assistant Gamemaster accounts.", "Outil réservé aux comptes MJ ou assistant MJ."));
             return out(await handleGm(fs, params.name, a));
           }
           return out(`Outil inconnu : ${params.name}`);

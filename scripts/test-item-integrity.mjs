@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { after, test } from "node:test";
+import { message } from "../src/i18n.mjs";
 
 // Snapshot directory setup must happen before importing modules that capture it.
 const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "foundry-item-integrity-"));
@@ -143,7 +144,7 @@ test("source fallback rejects an unrelated item with the same compendium ID", as
     }
   };
   const report = await syncItems(session, { actor: { _id: ACTOR_ID, name: "Hero", items: [target] } });
-  assert.equal(report.detail[0].probleme, "source introuvable");
+  assert.equal(report.detail[0].probleme, message("source not found", "source introuvable"));
   assert.equal(report.modifies, 0);
 });
 
@@ -163,7 +164,7 @@ test("source fallback accepts a uniquely verified item by name and type", async 
   };
   const report = await syncItems(session, { actor: { _id: ACTOR_ID, name: "Hero", items: [target] } });
   assert.equal(report.a_completer, 1);
-  assert.match(report.detail[0].manque[0], /activité/);
+  assert.match(report.detail[0].manque[0], new RegExp(message("activity", "activité")));
 });
 
 test("source fallback refuses ambiguous equal-name matches across compendiums", async () => {
