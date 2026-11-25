@@ -185,6 +185,12 @@ npm run check
 
 CI runs syntax, schema, security, OAuth, document-integrity, snapshot, dice and HTTP tests on Node.js 20 and 22. Most tests use mocks; they do not prove compatibility with a live world.
 
+For **Foundry v14 integration tests against a disposable dnd5e world**, see
+[the guarded integration harness](docs/integration-foundry-v14.md). It runs
+read-only by default; write tests additionally require two explicit
+confirmations and can only modify the actor fixture and chat messages created
+by that test run. The live-world suite is never launched by ordinary CI.
+
 To run a separate integration call against a Foundry server, see `scripts/test-tools.mjs`. For example:
 
 ```bash
