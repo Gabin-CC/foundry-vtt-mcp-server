@@ -1,7 +1,7 @@
 /** English MCP tool metadata. Wire keys and legacy enum values remain unchanged. */
 const DESCRIPTIONS = {
   world_info: "Show the active Foundry world, authenticated account, and users.",
-  list_documents: "List Foundry documents visible to the account, with filtering, stable ID ordering, and cursor/offset pagination.",
+  list_documents: "List visible Foundry documents with filters and pagination. ChatMessage supports inclusive since_timestamp, chronological ordering, and latest_timestamp.",
   next_page: "Retrieve the next JSON page of an oversized MCP response using its cursor.",
   get_document: "Read a Foundry document or a specific nested property.",
   create_documents: "Create one or more Foundry documents, including embedded items, with ID sanitization and source warnings.",
@@ -49,6 +49,7 @@ const FIELDS = {
   item: "Item name or ID.",
   id: "Document or snapshot identifier.",
   name_contains: "Filter names case-insensitively.",
+  since_timestamp: "For ChatMessage only: return messages from this Unix timestamp in milliseconds (inclusive).",
   filter: "Exact-match filters by property path, for example {\"type\":\"character\"}.",
   fields: "Fields to return as dotted paths, for example [\"name\",\"system.attributes.hp.value\"].",
   limit: "Maximum number of results per page.",

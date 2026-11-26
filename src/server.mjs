@@ -10,6 +10,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { mcpAuthRouter } from "@modelcontextprotocol/sdk/server/auth/router.js";
 import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { FoundrySession } from "./foundry.mjs";
+import { chatTimestamp, compareChatMessages } from "./chat-history.mjs";
 import { createFoundryOAuth, oauthEncryptionKey } from "./oauth.mjs";
 import { plan as advPlan, apply as advApply, fetchUuid, preferOfficialClass, retrofitClass } from "./advancement.mjs";
 import { planClassSpells, applyClassSpells } from "./spells.mjs";
@@ -100,14 +101,15 @@ export const TOOL_DEFINITIONS = [
   { name: "world_info", description: "Infos du monde Foundry actif, du compte connecté et liste des utilisateurs.",
     inputSchema: { type: "object", properties: {} } },
   { name: "list_documents",
-    description: "Liste des documents d'un type (selon les droits du compte). Renvoie par défaut _id, name, type, folder. Filtres optionnels. Paginé : total, next_cursor / next_offset (null = fin), ordre stable par _id.",
+    description: "Liste des documents d'un type (selon les droits du compte). Renvoie par défaut _id, name, type, folder. Filtres optionnels. Paginé : total, next_cursor / next_offset (null = fin). ChatMessage peut être filtré par since_timestamp (inclusif), puis trié par timestamp et _id.",
     inputSchema: { type: "object", required: ["type"], properties: {
       type: typeProp, pack: packProp, parent: parentProp,
       name_contains: { type: "string", description: "Filtre insensible à la casse sur le nom" },
+      since_timestamp: { type: "number", minimum: 0, description: "ChatMessage uniquement : inclure les messages créés depuis cette date (millisecondes Unix, inclusif)" },
       filter: { type: "object", description: "Égalités sur des chemins, ex. {\"type\":\"character\",\"folder\":\"id\"}" },
       fields: { type: "array", items: { type: "string" }, description: "Champs à renvoyer (chemins pointés), ex. [\"name\",\"system.attributes.hp.value\"]" },
       limit: { type: "number", default: 200, description: "Taille de page (max 5000 ; la page s'arrête plus tôt si la réponse devient trop grosse)" },
-      cursor: { type: "string", description: "Page suivante : valeur next_cursor de la réponse précédente (dernier _id renvoyé)" },
+      cursor: { type: "string", description: "Page suivante : valeur next_cursor de la réponse précédente (_id ou curseur timestamp:_id pour ChatMessage incrémental)" },
       offset: { type: "number", description: "Alternative au curseur : position de départ (ordre par _id)" } } } },
   { name: "next_page", description: "Suite d'une réponse trop grosse découpée en pages (champ curseur_suivant d'une réponse précédente).",
     inputSchema: { type: "object", required: ["cursor"], properties: { cursor: { type: "string" } } } },
@@ -364,16 +366,34 @@ async function runTool(session, params) {
             utilisateurs: users.map(u => ({ _id: u._id, name: u.name, role: ROLES[u.role], character: u.character })) });
         }
         case "list_documents": {
-          let docs = await fs.doc("get", a.type, { query: {}, ...parentOpt(a.parent, a.pack) });
+          const incrementalChat = a.since_timestamp !== undefined;
+          if (incrementalChat && (a.type !== "ChatMessage" || typeof a.since_timestamp !== "number" ||
+              !Number.isFinite(a.since_timestamp) || a.since_timestamp < 0)) {
+            throw new Error("since_timestamp requires ChatMessage and a non-negative finite Unix timestamp (ms)");
+          }
+          const query = incrementalChat ? { timestamp: { $gte: a.since_timestamp } } : {};
+          let docs = await fs.doc("get", a.type, { query, ...parentOpt(a.parent, a.pack) });
+          // Also enforce the filter locally: Foundry v14 may silently ignore $gte.
+          if (incrementalChat) docs = docs.filter(d => (chatTimestamp(d) ?? -1) >= a.since_timestamp);
           if (a.name_contains) docs = docs.filter(d => (d.name || "").toLowerCase().includes(a.name_contains.toLowerCase()));
           if (a.filter) docs = docs.filter(d => matches(d, a.filter));
           // pagination stable : ordre par _id (ordre de Foundry), curseur = dernier _id renvoyé (insensible aux
           // créations/suppressions entre deux pages) ou offset ; la page s'arrête avant de dépasser la taille max.
-          docs.sort((x, y) => (x._id < y._id ? -1 : x._id > y._id ? 1 : 0));
+          docs.sort(incrementalChat ? compareChatMessages : (x, y) => (x._id < y._id ? -1 : x._id > y._id ? 1 : 0));
           const total = docs.length;
-          const fields = a.fields?.length ? a.fields : ["name", "type", "folder"];
+          const latestTimestamp = incrementalChat ? docs.reduce((t, d) => Math.max(t, chatTimestamp(d) ?? -1), -1) : -1;
+          const fields = a.fields?.length ? a.fields : incrementalChat
+            ? ["timestamp", "_stats.createdTime", "user", "whisper", "content"] : ["name", "type", "folder"];
           let start = Math.max(0, Number(a.offset) || 0);
-          if (a.cursor) { start = docs.findIndex(d => d._id > a.cursor); if (start < 0) start = total; }
+          if (a.cursor) {
+            if (incrementalChat) {
+              const match = /^t:(\d+):([A-Za-z0-9]+)$/.exec(a.cursor);
+              if (!match) throw new Error("Invalid incremental ChatMessage cursor");
+              const t = Number(match[1]), id = match[2];
+              start = docs.findIndex(d => chatTimestamp(d) > t || (chatTimestamp(d) === t && d._id > id));
+            } else start = docs.findIndex(d => d._id > a.cursor);
+            if (start < 0) start = total;
+          }
           const limit = Math.max(1, Math.min(Number(a.limit) || 200, 5000));
           const page = [];
           let size = 200;
@@ -384,7 +404,10 @@ async function runTool(session, params) {
           }
           const end = start + page.length;
           return out({ total, offset: start, count: page.length,
-            next_cursor: end < total ? page.at(-1)._id : null, next_offset: end < total ? end : null, documents: page });
+            next_cursor: end < total ? incrementalChat
+              ? `t:${chatTimestamp(docs[end - 1])}:${docs[end - 1]._id}` : page.at(-1)._id : null,
+            next_offset: end < total ? end : null, documents: page,
+            ...(incrementalChat ? { latest_timestamp: latestTimestamp < 0 ? null : latestTimestamp } : {}) });
         }
         case "next_page": return out(nextPage(a.cursor, fs.userId));
         case "get_document": {
