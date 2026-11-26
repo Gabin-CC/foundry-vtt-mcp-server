@@ -1,10 +1,15 @@
 // Client Foundry VTT "headless" : login comme un navigateur, puis socket.io
 import { createRequire } from "node:module";
+import { ChatHistory } from "./chat-history.mjs";
 import { message } from "./i18n.mjs";
 const require = createRequire(import.meta.url);
 const { io } = require("socket.io-client");
 
 export const FOUNDRY = process.env.FOUNDRY_URL || "http://127.0.0.1:30000";
+// Recheck the authoritative history even when Foundry broadcasts are arriving.
+const requestedChatCacheAge = Number(process.env.CHAT_CACHE_MAX_AGE_MS);
+const CHAT_CACHE_MAX_AGE_MS = Number.isFinite(requestedChatCacheAge) && requestedChatCacheAge >= 1000
+  ? Math.min(requestedChatCacheAge, 120000) : 15000;
 
 function cookieFrom(res) {
   const sc = res.headers.getSetCookie?.() || [];
@@ -63,10 +68,61 @@ export class FoundrySession {
       this.socket.emit(ev, ...args, r => { clearTimeout(t); resolve(r ?? true); });
     });
   }
-  close() { this.socket?.close(); }
+  close() {
+    if (this._chatSocket) {
+      this._chatSocket.off("modifyDocument", this._chatOnChange);
+      this._chatSocket.off("disconnect", this._chatOnDisconnect);
+      this._chatSocket = null;
+    }
+    this._chatHistory?.clear();
+    this.socket?.close();
+  }
+  _watchChat() {
+    if (this._chatSocket === this.socket) return;
+    this._chatHistory = new ChatHistory();
+    this._chatSocket = this.socket;
+    this._chatOnChange = event => this._chatHistory.observe(event);
+    this._chatOnDisconnect = () => this._chatHistory.clear();
+    this.socket.on("modifyDocument", this._chatOnChange);
+    this.socket.on("disconnect", this._chatOnDisconnect);
+  }
+  async _refreshChat() {
+    if (this._chatRefresh) return this._chatRefresh;
+    this._chatHistory.beginRefresh();
+    const pending = (async () => {
+      const documents = await emit(this.socket, "modifyDocument", {
+        type: "ChatMessage", action: "get", operation: { query: {} }
+      });
+      if (documents?.error) throw new Error(documents.error.message || JSON.stringify(documents.error));
+      const result = documents?.result ?? documents?.results;
+      this._chatHistory.completeRefresh(result);
+      return result;
+    })();
+    this._chatRefresh = pending;
+    try { return await pending; }
+    catch (error) { this._chatHistory.failRefresh(); throw error; }
+    finally { this._chatRefresh = null; }
+  }
   async doc(action, type, operation = {}) {
+    if (action === "get" && type === "ChatMessage" && !operation.pack && !operation.parentUuid) {
+      const query = operation.query || {};
+      const keys = Object.keys(query);
+      const threshold = query.timestamp?.$gte;
+      const onlySince = keys.length === 1 && keys[0] === "timestamp" &&
+        query.timestamp && Object.keys(query.timestamp).length === 1 &&
+        typeof threshold === "number" && Number.isFinite(threshold) && threshold >= 0;
+      if (!keys.length || onlySince) {
+        this._watchChat();
+        if (!onlySince) return this._refreshChat();
+        if (!this._chatHistory.isFresh(CHAT_CACHE_MAX_AGE_MS)) await this._refreshChat();
+        return this._chatHistory.since(threshold);
+      }
+    }
     const r = await emit(this.socket, "modifyDocument", { type, action, operation });
     if (r?.error) throw new Error(r.error.message || JSON.stringify(r.error));
+    if (type === "ChatMessage" && ["create", "update", "delete"].includes(action)) {
+      this._chatHistory?.observe({ type, action, result: r?.result ?? r?.results });
+    }
     return r?.result ?? r?.results;
   }
   async worldData() { return emit(this.socket, "world"); }

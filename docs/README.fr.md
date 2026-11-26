@@ -24,7 +24,7 @@ Claude (CLI / Desktop) ──HTTPS + Basic auth──▶ foundry-vtt-mcp-server 
 | Outil | Rôle |
 |---|---|
 | `world_info` | Monde, compte connecté, utilisateurs |
-| `list_documents` / `get_document` | Lire acteurs, objets, journaux, scènes… (filtres, champs, sous-chemins). `list_documents` est paginé : ordre stable par `_id`, `total`, `next_cursor` / `next_offset` (`cursor` ou `offset` pour la page suivante) |
+| `list_documents` / `get_document` | Lire acteurs, objets, journaux, scènes… (filtres, champs, sous-chemins). `list_documents` est paginé : ordre stable par `_id`, `total`, `next_cursor` / `next_offset` (`cursor` ou `offset` pour la page suivante). Pour `ChatMessage`, `since_timestamp` (ms Unix inclusifs) active l'ordre `timestamp`, puis `_id`, et ajoute `latest_timestamp` ; la classe `FoundrySession` entretient un cache du chat alimenté par les événements socket, avec une resynchronisation complète toutes les 15 s par défaut (`CHAT_CACHE_MAX_AGE_MS`). |
 | `next_page` | Suite d'une réponse trop grosse : au lieu d'être tronquée, elle est découpée en pages JSON valides (`curseur_suivant`) |
 | `create_documents` / `update_documents` / `delete_documents` | CRUD générique, y compris documents embarqués (`parent: "Actor.<id>"`). `dry_run` : aperçu avant/après champ par champ (ou liste de ce qui serait supprimé) |
 | `snapshots` | Instantanés pris automatiquement avant `update_documents`, `delete_documents` et `localize_actor` (valeurs d'origine des champs modifiés, documents supprimés entiers) : `list`, `show`, `restore` (avec `dry_run` ; la restauration est elle-même annulable). Fichiers JSON dans `data/snapshots` (500 derniers, 90 jours) |

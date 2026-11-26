@@ -21,6 +21,8 @@ Each player connects with **their own Foundry account**. Foundry permissions sti
 Highlights:
 
 - `list_documents` supports filters, selected fields, stable `_id` ordering, and cursor/offset pagination. Large responses use valid JSON pages retrievable with `next_page`.
+- For incremental chat, use `list_documents` with `type: "ChatMessage"` and `since_timestamp: <Unix milliseconds>` (inclusive). Results are sorted by `timestamp` (falling back to `_stats.createdTime`), then `_id`; `latest_timestamp` reports the highest observed time. Pass `next_cursor` to fetch subsequent pages. Without the filter, existing full-history and ID-order behavior is unchanged.
+- `FoundrySession.doc("get", "ChatMessage", { query: { timestamp: { $gte: T } } })` supports the same filter without repeating a full Foundry socket read on every call: it caches an initial full read, consumes `modifyDocument` change broadcasts, and refreshes from Foundry periodically (15 seconds by default) in case broadcasts were missed. A new login starts with an empty cache. This optimization is in the MCP session client, not a change to Foundry's database query engine.
 - Write tools support non-mutating previews where indicated; updates and deletions create recoverable snapshots before writing. `snapshots` can inspect and restore earlier values.
 - `use_item` rolls attacks, damage and healing, consumes resources where applicable, and can generate per-target proposals (AC, saves, resistance, vulnerability, immunity). `apply_damage` applies an approved proposal or explicit values.
 - Compendium lookups can use French or English names when compatible Babele translations are installed. `localize_actor` can apply translations and metric units to an existing actor.
@@ -78,6 +80,7 @@ sudo systemctl enable --now foundry-mcp
 | `SNAPSHOT_DIR` | `data/snapshots` | Recovery snapshots; must be writable and backed up |
 | `SNAPSHOT_KEEP` / `SNAPSHOT_DAYS` | `500` / `90` | Snapshot retention |
 | `MAX_OUT` | `60000` | Response-size threshold for JSON pagination |
+| `CHAT_CACHE_MAX_AGE_MS` | `15000` | Maximum age of the authenticated session's chat cache before a full Foundry read; lower values reduce worst-case delay if socket broadcasts are missed |
 
 **Language migration (incremental):** set `MCP_LOCALE=en` to receive English text for supported OAuth errors, dispatcher errors, pagination hints, snapshots, target diagnostics and selected GM / table / card feedback. The OAuth sign-in page additionally honors the browser's `Accept-Language` (English or French), independently for each player. This option deliberately **does not translate JSON keys, enum values, Foundry document content or user-entered names**. Some messages are still French; see [internationalization and compatibility](docs/internationalization.md) for current coverage, migration rules and future work.
 
