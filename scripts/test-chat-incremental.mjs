@@ -66,6 +66,17 @@ test("chat broadcasts add messages at the same millisecond and apply edits and d
   session.close();
 });
 
+test("a large chat history uses a sorted index for repeated incremental reads", async () => {
+  const session = makeSession(Array.from({ length: 5000 }, (_, i) => record(String(i).padStart(8, "0"), i)));
+  await session.doc("get", "ChatMessage", { query: {} });
+  for (let i = 0; i < 20; i++) {
+    const result = await readSince(session, 4998);
+    assert.deepEqual(result.map(x => x.timestamp), [4998, 4999]);
+  }
+  assert.equal(session.socket.calls.length, 1);
+  session.close();
+});
+
 test("a full read corrects missed broadcasts after the cache expires", async () => {
   const session = makeSession([record("old", 80)]);
   assert.deepEqual(await readSince(session, 100), []);
