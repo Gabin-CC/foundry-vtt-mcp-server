@@ -187,12 +187,12 @@ test("import d'un acteur de compendium : nom, biographie, objets intégrés et n
   TRANSLATIONS["world.beasts"] = { mapping: { description: "system.details.biography.value", items: { path: "items", converter: "document" } },
     entries: { "Cave Bear": { name: "Ours des cavernes", description: "<p>Un ours.</p>", items: {
       [CLAW]: { name: "Griffes", description: "<p>Attaque de griffes.</p>" },
-      "Bite": { name: "Morsure", activities: { [id("biteact")]: { name: "Mordre" } } } } } } };
+      "Bite": { name: "Morsure", activities: { [id("biteact")]: { name: "Mordre", chatFlavor: "<p>Morsure !</p>", condition: "Si la cible est à terre" } } } } } } };
   const monster = { _id: MON, name: "Cave Bear", type: "npc", prototypeToken: { name: "Cave Bear" },
     system: { details: { biography: { value: "<p>A bear.</p>" } }, attributes: {} },
     items: [{ _id: CLAW, name: "Claws", type: "weapon", system: { description: { value: "<p>Claw attack.</p>" }, activities: {} } },
       { _id: BITE, name: "Bite", type: "weapon", system: { description: { value: "<p>Bite.</p>" },
-        activities: { [id("biteact")]: { _id: id("biteact"), type: "attack", name: "Bite" } } } }] };
+        activities: { [id("biteact")]: { _id: id("biteact"), type: "attack", name: "Bite", activation: { type: "action", condition: "" }, description: { chatFlavor: "<p>Bite!</p>" } } } } }] };
   const { session, writes } = fakeWorld({ role: 4, userId: GM, packs: [{ id: "world.beasts", type: "Actor" }], packDocs: { "world.beasts": [monster] } });
   const r = await call(session, "add_from_compendium", { entries: [{ uuid: `Compendium.world.beasts.Actor.${MON}` }] });
   assert.equal(r.error, undefined, r.text);
@@ -204,6 +204,8 @@ test("import d'un acteur de compendium : nom, biographie, objets intégrés et n
   const bite = created.items.find(i => i.name === "Morsure");
   assert.ok(bite, "objet intégré traduit par son nom anglais");
   assert.equal(Object.values(bite.system.activities)[0].name, "Mordre");
+  assert.equal(Object.values(bite.system.activities)[0].description.chatFlavor, "<p>Morsure !</p>");
+  assert.equal(Object.values(bite.system.activities)[0].activation.condition, "Si la cible est à terre");
 
   // surcharge du nom : le jeton suit le nom final
   const { session: s2, writes: w2 } = fakeWorld({ role: 4, userId: GM, packs: [{ id: "world.beasts", type: "Actor" }], packDocs: { "world.beasts": [monster] } });
