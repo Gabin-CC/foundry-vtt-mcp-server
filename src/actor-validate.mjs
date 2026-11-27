@@ -170,7 +170,10 @@ export async function validateActor2024(fs, actor) {
       }
     }
 
-    const owned = spells.filter(s => s.system?.sourceClass === id);
+    // Saved spell sourceClass strings are not guaranteed to retain casing.
+    // Normalize them just like orphan detection, or class spells can vanish
+    // from every preparation/cantrip audit without being reported as orphaned.
+    const owned = spells.filter(s => String(s.system?.sourceClass || "").trim().toLowerCase() === id);
     const level = Number(cls.system?.levels);
     const sub = subclasses.find(s => s.system?.classIdentifier === id);
     const verifiedSub = verifiedSubclasses.get(id)?.doc;
@@ -184,7 +187,17 @@ export async function validateActor2024(fs, actor) {
     const classProgression = officialProgression ?? cls.system?.spellcasting?.progression ?? "none";
     const subProgression = verifiedSub?.system?.spellcasting?.progression ?? sub?.system?.spellcasting?.progression ?? "none";
     const progression = classProgression !== "none" ? classProgression : subProgression;
-    if (progression === "none") continue;
+    if (progression === "none") {
+      // A feat or another feature can grant a spell to a noncaster. Do not
+      // declare those spells illegal, but neither silently certify them as
+      // ordinary class spells without a verified casting progression.
+      const unexplained = owned.filter(s => Number(s.system?.prepared) !== 2 ||
+        !rulesSources.subclass_spells.includes(sourceUuid(s)));
+      if (unexplained.length)
+        check("unverified", "noncaster_class_spell_origin",
+          `${cls.name}: ${unexplained.length} spell(s) are attributed to a class without ordinary spellcasting; their feat or feature origin requires separate evidence.`, cls._id);
+      continue;
+    }
     if (!officialClass) {
       check("unverified", "spell_progression_unavailable", `${cls.name}: prepared/cantrip limits cannot be checked without the official class source.`, cls._id);
       continue;
@@ -256,7 +269,7 @@ export async function validateActor2024(fs, actor) {
         `${cls.name}: official subclass does not expose a verifiable cantrip progression.`, cls._id);
   }
 
-  for (const spell of spells.filter(s => s.system?.sourceClass && !ids.includes(String(s.system.sourceClass).toLowerCase())))
+  for (const spell of spells.filter(s => s.system?.sourceClass && !ids.includes(String(s.system.sourceClass).trim().toLowerCase())))
     check("unverified", "orphan_spell_class", `${spell.name}: sourceClass does not match any embedded class.`, spell._id);
   rulesSources.feats.push(...await auditRecordedAdvancements(fs, actor, verifiedAdvancements, check));
   const worn = items.filter(i => ["weapon", "equipment"].includes(i.type) && i.system?.equipped);
