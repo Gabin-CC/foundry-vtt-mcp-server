@@ -113,6 +113,8 @@ For ordinary class spells on an installed official 2024 class list, the audit ad
 
 When every embedded 2024 class and subclass has exact official progression evidence, `validate_actor` also returns `official_base_spell_slots`: the class-table maxima **without** any sheet-specific slot `override`. The existing `expected_spell_slots` remains compatible and still reflects recorded overrides. An override that changes the official maximum is `unverified` (it may be explained by a feature or campaign rule), as are unexplained remaining-slot counts above the base table; negative or noninteger remaining counts are errors. Without complete source evidence, the official baseline is `null` and no slot override is certified or rejected against an invented table.
 
+An explicit maximum override **equal** to the official table (including its numeric-string form) does not excuse more remaining slots than that maximum: the extra slots remain `unverified` and require explanation. A different maximum override already raises its own uncertainty diagnostic without duplicating the same warning.
+
 A blank Foundry slot `override: ""` is treated as **unset**, not zero: both the shared spell-slot calculation and Pact Magic keep their automatic class progression. Explicit numeric overrides (including zero) retain their existing behavior.
 
 Warlock **Pact Magic does not count as a second Spellcasting class** when deciding whether an Eldritch Knight, Arcane Trickster or half-caster follows its single-class slot progression. Only two or more classes actually granting Spellcasting activate multiclass rounding; Pact Magic slots remain separate and can be used across those classes as permitted by the rules.
