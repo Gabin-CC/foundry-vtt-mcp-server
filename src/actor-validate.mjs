@@ -189,8 +189,15 @@ export async function validateActor2024(fs, actor) {
       if (prepared.length > limit)
         check("error", "too_many_prepared", `${cls.name}: ${prepared.length} selected class spells exceed the verified limit of ${limit}.`, cls._id, [classSource]);
     }
-    if (cantripScale == null)
-      check("unverified", "cantrip_scale_unavailable", `${cls.name}: official cantrip scale is unavailable.`, cls._id, [classSource]);
+    // The verified 2024 Paladin has no *base class* cantrip progression.
+    // Blessed Warrior and other feature-granted cantrips are separate grants.
+    // Missing ScaleValue is expected when no ordinary class cantrips exist.
+    if (cantripScale == null) {
+      const noBaseCantrips = !thirdCaster && id === "paladin" &&
+        classSource.startsWith("Compendium.dnd5e.classes24.Item.") && !cantrips.length;
+      if (!noBaseCantrips)
+        check("unverified", "cantrip_scale_unavailable", `${cls.name}: official cantrip scale is unavailable.`, cls._id, [classSource]);
+    }
     else {
       const limit = cantripScale + scaleBonus(actor, id, "cantrips-known");
       if (cantrips.length > limit)
