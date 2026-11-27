@@ -219,6 +219,30 @@ test("PHB 2024 half-caster multiclass slots round up, while 2014 still rounds do
   assert.equal(slotMax(actor).spell2, 2, "2014 rounds half-caster levels down in multiclassing");
 });
 
+test("blank spell slot overrides defer to automatic class and Pact Magic tables", () => {
+  const paladin = classDoc(PALADIN, "paladin", 8);
+  paladin.system.spellcasting.progression = "half";
+  const actor = { items: [paladin], system: { spells: {
+    spell1: { override: "" }, spell2: { override: "" }
+  } } };
+  assert.deepEqual(slotMax(actor), { spell1: 4, spell2: 3 });
+
+  actor.system.spells.spell1.override = 0;
+  assert.equal(slotMax(actor).spell1, undefined, "Numeric zero is an intentional override");
+  actor.system.spells.spell1.override = 5;
+  assert.equal(slotMax(actor).spell1, 5, "Explicit numeric overrides still take priority");
+
+  const warlock = classDoc("warlockClass2024", "warlock", 3);
+  warlock.system.spellcasting.progression = "pact";
+  actor.items = [warlock];
+  actor.system.spells = { pact: { override: "" } };
+  assert.deepEqual(slotMax(actor), { pact: 2, pactLevel: 2 });
+  actor.system.spells.pact.override = 1;
+  assert.deepEqual(slotMax(actor), { pact: 1, pactLevel: 2 });
+  actor.system.spells.pact.override = 0;
+  assert.deepEqual(slotMax(actor), { pact: 0, pactLevel: 2 }, "Numeric Pact Magic zero stays explicit");
+});
+
 // Exact official spell-list fixtures. Each candidate is identifiable only by
 // a 2024 compendium UUID, never by a model-generated spell name.
 const spellId = name => (name + "0000000000000000").slice(0, 16);
