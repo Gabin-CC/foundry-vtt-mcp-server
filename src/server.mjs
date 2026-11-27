@@ -33,6 +33,7 @@ import { TABLE_TOOLS, CARD_TOOLS, handleTable, handleCards } from "./tables.mjs"
 import { resolveTarget, propose, applyDamage } from "./targets.mjs";
 import { diffUpdates, saveSnapshot, finalizeActorSnapshot, currentDocs, listSnapshots, showSnapshot, restoreSnapshot } from "./snapshots.mjs";
 import { captureActorState, summarizeLevelPlan } from "./actor-progress.mjs";
+import { planActorEdits } from "./actor-edit.mjs";
 import { rollFormula, derive, checkBonus, sheet, slotMax, useItem, translations, translateDoc, trFor, refreshUnits, localizeItem, actorTranslationContext, actorMetricUpdates, UNITS, ABIL, SKILLS } from "./dnd5e.mjs";
 import { setSafePath } from "./security.mjs";
 import { restrictedSession, isStub, limitedError } from "./access.mjs";
@@ -234,6 +235,13 @@ export const TOOL_DEFINITIONS = [
       choices: { type: "object", description: "Choix de progression explicitement fournis après simulation (avancement id → valeur)" },
       hp: { type: "string", enum: ["avg", "max"], default: "avg" },
       apply: { type: "boolean", default: false, description: "Appliquer à la fiche existante uniquement une fois tous les choix vérifiés" }
+    } } },
+  { name: "edit_actor", description: "Modifie l'équipement porté et les sorts de classe préparés d'un personnage D&D 2024 existant. Simulation sans écriture par défaut ; vérifie les maîtrises, le bouclier et les armes à deux mains, les sorts possédés, l'édition et le maximum préparé. apply=true sauvegarde l'état avant les changements pour une restauration via snapshots.",
+    inputSchema: { type: "object", required: ["actor"], properties: {
+      actor: { type: "string", description: "Nom ou identifiant du personnage existant" },
+      equipment: { type: "object", description: "Objet de l'inventaire par _id vers true=porter / false=retirer (fournir le retrait de l'ancien équipement dans le même appel)" , additionalProperties: { type: "boolean" } },
+      prepared_spells: { type: "object", description: "Sort possédé par _id vers true=préparer / false=ne plus préparer ; les sorts accordés en permanence ne sont pas modifiables" , additionalProperties: { type: "boolean" } },
+      apply: { type: "boolean", default: false, description: "false par défaut : simulation ; true : appliquer avec instantané de récupération" }
     } } },
   { name: "advancement_blueprint", description: "Inspecte un acteur à classe unique et renvoie sa classe/source, ses choix d'avancement réellement enregistrés et ses caractéristiques avant progression de classe, sans rien modifier. Les équipements et sorts non enregistrés comme choix restent à contrôler.",
     inputSchema: { type: "object", required: ["actor"], properties: { actor: { type: "string" } } } },
@@ -1046,6 +1054,44 @@ async function runTool(session, params) {
           return out({ message: id });
         }
 
+        case "edit_actor": {
+          const actor = await findActor(fs, a.actor);
+          const plan = planActorEdits(actor, { equipment: a.equipment, prepared_spells: a.prepared_spells });
+          if (!a.apply || !plan.modifications.length) return out({ ...plan,
+            ...(a.apply && !plan.modifications.length ? { note: "No changes required; no snapshot was created." } : {}) });
+          const before = captureActorState(actor);
+          const snapshot = await saveSnapshot(fs, "edit_actor", `${actor.name}: equipment and spell preparation`,
+            [{ action: "actor_state", type: "Actor", actor_id: actor._id, before }]);
+          let finalized = false;
+          try {
+            await fs.doc("update", "Item", { parentUuid: `Actor.${actor._id}`,
+              updates: plan.modifications, diff: true, modifiedTime: Date.now() });
+            const fresh = await findActor(fs, actor._id);
+            await finalizeActorSnapshot(snapshot, actor._id, captureActorState(fresh));
+            finalized = true;
+            const byId = new Map((fresh.items || []).map(i => [i._id, i]));
+            for (const update of plan.modifications) {
+              const item = byId.get(update._id);
+              if (!item || Object.entries(update).some(([k, v]) => k !== "_id" &&
+                (k === "system.equipped" ? !!item.system?.equipped !== v : Number(item.system?.prepared) !== v)))
+                throw new Error(`Item ${update._id} did not retain the requested state.`);
+            }
+            return out({ simulation: false, acteur: plan.acteur,
+              changements: plan.changements, preparation: plan.preparation,
+              objets_modifies: plan.modifications.length, avertissements: plan.avertissements,
+              instantane: snapshot,
+              rappel: "Use snapshots show/restore with the returned instantane to inspect or revert these edits." });
+          } catch (error) {
+            if (!finalized) {
+              try { await finalizeActorSnapshot(snapshot, actor._id,
+                captureActorState(await findActor(fs, actor._id))); finalized = true; } catch { /* report below */ }
+            }
+            return out({ erreur: error.message, acteur_partiel: plan.acteur,
+              instantane: snapshot, restauration_disponible: finalized,
+              note: finalized ? "Review snapshots.restore with dry_run=true before reverting this partial edit."
+                : "Snapshot post-state is unavailable; inspect the actor before attempting recovery." });
+          }
+        }
         case "progress_actor": {
           const actor = await findActor(fs, a.actor);
           const classes = (actor.items || []).filter(i => i.type === "class");
