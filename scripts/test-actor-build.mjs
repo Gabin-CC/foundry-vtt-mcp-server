@@ -124,8 +124,10 @@ function with2024TraitChoices(f) {
       type: { value: "simpleM", baseItem: "spear" }, source: { rules: "2024" } } },
     { _id: id("dice"), name: "Dice Set", type: "tool", system: { identifier: "dice", ability: "wis",
       type: { value: "game", baseItem: "dice" }, source: { rules: "2024" } } },
-    { _id: id("cards"), name: "Playing Cards", type: "tool", system: { identifier: "card", ability: "wis",
+    { _id: id("cards"), name: "Playing Cards", type: "tool", system: { identifier: "playing-cards", ability: "wis",
       type: { value: "game", baseItem: "card" }, source: { rules: "2024" } } },
+    { _id: id("chess"), name: "Dragonchess", type: "tool", system: { identifier: "dragonchess", ability: "wis",
+      type: { value: "game", baseItem: "chess" }, source: { rules: "2024" } } },
     { _id: id("magicSword"), name: "Longsword +1", type: "weapon", system: { identifier: "magicSword",
       mastery: "sap", rarity: "uncommon", type: { value: "martialM", baseItem: "longsword" }, source: { rules: "2024" } } }
   ];
@@ -143,13 +145,47 @@ test("weapon mastery and gaming-set wildcards resolve to actual 2024 equipment o
   assert.equal(p.pret, false);
   const wp = p.choix_requis.find(x => x.id === mastery);
   const gp = p.choix_requis.find(x => x.id === gaming);
+  assert.equal(p.choix_requis.filter(x => x.id === mastery).length, 1,
+    "An unfilled mastery choice must not also be reported as invalid");
+  assert.equal(p.choix_requis.filter(x => x.id === gaming).length, 1,
+    "An unfilled gaming-set choice must not also be reported as invalid");
   assert.ok(wp.options.includes("Longsword (weapon:mar:longsword)"), JSON.stringify(wp));
   assert.ok(wp.options.includes("Dagger (weapon:sim:dagger)"));
   assert.ok(gp.options.includes("Dice Set (tool:game:dice)"));
   assert.ok(gp.options.includes("Playing Cards (tool:game:card)"));
+  assert.ok(gp.options.includes("Dragonchess (tool:game:chess)"));
   assert.equal(wp.options.some(v => v.includes("weapon:*")), false);
   assert.equal(gp.options.some(v => v.includes("tool:game:*")), false);
   assert.equal(wp.options.some(v => v.includes("Longsword +1")), false);
+  assert.deepEqual(f.writes, []);
+});
+
+test("a partially filled mastery choice is missing, not invalid; Dragonchess is accepted", async () => {
+  const f = fixture();
+  const { mastery, gaming } = with2024TraitChoices(f);
+  const p = await planActorBuild(f.session, request({ choices: {
+    ...CHOICES, [mastery]: ["weapon:mar:longsword"], [gaming]: ["tool:game:chess"]
+  } }));
+  assert.equal(p.pret, false);
+  const masteryPending = p.choix_requis.filter(x => x.id === mastery);
+  assert.equal(masteryPending.length, 1);
+  assert.equal(masteryPending[0].nombre, 2);
+  assert.equal(masteryPending[0].aide.includes("invalid"), false);
+  assert.equal(p.choix_requis.some(x => x.id === gaming), false);
+  assert.deepEqual(f.writes, []);
+});
+
+test("replayed Trait values may include their already-granted proficiencies", async () => {
+  const f = fixture();
+  const { mastery, gaming } = with2024TraitChoices(f);
+  f.sources[2].system.advancement.find(x => x._id === gaming).configuration.grants =
+    ["skills:ath", "skills:itm"];
+  const p = await planActorBuild(f.session, request({ choices: {
+    ...CHOICES,
+    [mastery]: ["weapon:mar:longsword", "weapon:sim:dagger"],
+    [gaming]: ["skills:ath", "skills:itm", "tool:game:card"]
+  } }));
+  assert.equal(p.pret, true, JSON.stringify(p.choix_requis));
   assert.deepEqual(f.writes, []);
 });
 
