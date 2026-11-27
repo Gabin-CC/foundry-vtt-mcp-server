@@ -84,7 +84,24 @@ Use `multiclass_actor` to **add a secondary 2024 class** to an existing characte
 3. Supply exact advancement `choices` and repeat the preview until `pret: true`, then explicitly set `apply: true`. The tool saves the complete pre-change actor state, invokes `advance` with secondary-class proficiencies and **without new-class starting equipment**, verifies each class level and returns `instantane` for `snapshots` restore.
 4. For a later level-up of any **existing** class on the multiclass actor, pass its embedded class item ID: `multiclass_actor({ "actor": "ACTOR_ID", "item": "CLASS_ITEM_ID", "level": 2 })`. The total character level and proficiency bonus follow the sum of class levels.
 
-Spell slots follow the D&D 2024 multiclass rule: full casters contribute all class levels, Paladin and Ranger contribute **half rounded up**, eligible third casters contribute one third rounded down, and Warlock Pact Magic remains separate. Each class still prepares/learns spells from **its own class-level limits**; this tool **does not** silently import spells or certify spellbook legality. Spells must be selected and verified separately. `edit_actor`, `rebuild_actor` and `progress_actor` still have their documented **single-class** restrictions. No de-leveling, cross-edition mixing, automatic class-specific spell acquisition or full rules certification is included.
+Spell slots follow the D&D 2024 multiclass rule: full casters contribute all class levels, Paladin and Ranger contribute **half rounded up**, eligible third casters contribute one third rounded down, and Warlock Pact Magic remains separate. **Combined slots do not increase the level of spells eligible for any individual class.**
+
+To select verified spells for the class being added/advanced, use `spells: "selected"` and preview first. The tool lists `choix_requis` containing exact 2024 compendium UUIDs; supply `choices["spells:cantrips"]` and `choices["spells:prepared"]` as arrays of those UUIDs. For a Wizard entering at class level 1, also provide `choices["spells:spellbook"]` with **six** eligible spell UUIDs (two newly added spellbook spells per later Wizard level); the prepared choices must be among the Wizard's eligible spellbook spells. For example:
+
+```json
+{
+  "actor": "ACTOR_ID",
+  "class_source": "Compendium.dnd5e.classes24.Item.CLASS_ID",
+  "spells": "selected",
+  "choices": {
+    "spells:cantrips": ["Compendium.dnd5e.spells24.Item.CANTRIP_ID"],
+    "spells:prepared": ["Compendium.dnd5e.spells24.Item.SPELL_ID"]
+  },
+  "apply": false
+}
+```
+
+The arrays must match the exact counts shown in the preview; placeholder IDs above are illustrative, **not usable UUIDs**. `spells: "none"` (default) leaves spell selection to the GM. Selection requires installed, verifiable official D&D 2024 spell lists and supported class spellcasting progression; unsupported subclass-based third casters are refused rather than guessed. Class spells are tracked independently by `sourceClass`, and the spell additions are included in the recoverable snapshot. This is not a full certification of all spellbook rules, spell replacements or class features. `edit_actor`, `rebuild_actor` and `progress_actor` retain their documented **single-class** restrictions. No de-leveling or cross-edition mixing is included.
 
 ### Change equipment and prepared spells on an existing character
 

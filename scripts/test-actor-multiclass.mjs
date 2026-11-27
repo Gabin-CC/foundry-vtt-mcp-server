@@ -4,6 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { planMulticlass } from "../src/actor-multiclass.mjs";
+import { planMulticlassSpells } from "../src/actor-multiclass-spells.mjs";
 import { slotMax } from "../src/dnd5e.mjs";
 
 process.env.NO_LISTEN = "1";
@@ -39,6 +40,7 @@ function fixture() {
     details: { originalClass: PALADIN } },
     items: [classDoc(PALADIN, "paladin", 8)] };
   let failUpdate = false;
+  let failItemCreate = false;
   const writes = [];
   const setPath = (target, key, value) => {
     const path = key.split(".");
@@ -64,7 +66,11 @@ function fixture() {
       }
       writes.push({ action, type, opts: structuredClone(opts) });
       if (action === "create" && type === "Item") {
-        const added = opts.data.map((d, index) => ({ ...structuredClone(d), _id: opts.keepId ? d._id : `newMulticlassI${index}` }));
+        if (failItemCreate && opts.data.some(i => i.type === "spell")) {
+          failItemCreate = false;
+          throw new Error("Simulated spell import failure");
+        }
+        const added = opts.data.map((d, index) => ({ ...structuredClone(d), _id: opts.keepId ? d._id : `newMulticlass${writes.length}_${index}` }));
         actor.items.push(...added);
         return structuredClone(added);
       }
@@ -84,7 +90,8 @@ function fixture() {
       throw new Error(`Unexpected ${action} ${type}`);
     }
   };
-  return { fs, actor, writes, failUpdate() { failUpdate = true; } };
+  return { fs, actor, writes, failUpdate() { failUpdate = true; },
+    failItemCreate() { failItemCreate = true; } };
 }
 
 const call = async (fs, name, args) => {
@@ -210,6 +217,192 @@ test("PHB 2024 half-caster multiclass slots round up, while 2014 still rounds do
   assert.equal(slotMax(actor).spell2, 3, "Paladin 3 + Wizard 2 = 4th-level multiclass caster");
   actor.items[0].system.source.rules = "2014";
   assert.equal(slotMax(actor).spell2, 2, "2014 rounds half-caster levels down in multiclassing");
+});
+
+// Exact official spell-list fixtures. Each candidate is identifiable only by
+// a 2024 compendium UUID, never by a model-generated spell name.
+const spellId = name => (name + "0000000000000000").slice(0, 16);
+const spellUuid = name => `Compendium.dnd5e.spells24.Item.${spellId(name)}`;
+const casters = Object.fromEntries([
+  ["sorcerer", "full", 2, 2], ["wizard", "full", 2, 4],
+  ["warlock", "pact", 2, 2], ["ranger", "half", 0, 2]
+].map(([id, progression, cantrips, prepared]) => [id, {
+  ...classDoc(spellId(id), id, 0),
+  system: { ...classDoc(spellId(id), id, 0).system,
+    spellcasting: { progression }, advancement: [
+      { _id: spellId(`${id}cantrip`), type: "ScaleValue", configuration: {
+        identifier: "cantrips-known", scale: { 1: { value: cantrips }, 2: { value: cantrips } } } },
+      { _id: spellId(`${id}prepared`), type: "ScaleValue", configuration: {
+        identifier: "max-prepared", scale: { 1: { value: prepared }, 2: { value: prepared + 1 } } } }
+    ] }
+}]));
+
+const spellSpecs = [
+  ["light", "Light", 0, ["sorcerer", "wizard"]],
+  ["spark", "Sorcerous Spark", 0, ["sorcerer"]],
+  ["shield", "Shield", 1, ["sorcerer", "wizard"]],
+  ["missile", "Magic Missile", 1, ["sorcerer", "wizard"]],
+  ["burning", "Burning Hands", 1, ["wizard"]],
+  ["sleep", "Sleep", 1, ["wizard"]],
+  ["detect", "Detect Magic", 1, ["wizard"]],
+  ["feather", "Feather Fall", 1, ["wizard"]],
+  ["armor", "Mage Armor", 1, ["wizard"]],
+  ["grease", "Grease", 1, ["wizard"]],
+  ["blast", "Eldritch Blast", 0, ["warlock"]],
+  ["magehand", "Mage Hand", 0, ["warlock", "wizard"]],
+  ["hex", "Hex", 1, ["warlock"]],
+  ["agathys", "Armor of Agathys", 1, ["warlock"]],
+  ["cure", "Cure Wounds", 1, ["ranger"]],
+  ["hunter", "Hunter's Mark", 1, ["ranger"]],
+  ["fireball", "Fireball", 3, ["sorcerer", "wizard"]]
+];
+
+function casterFixture() {
+  const f = fixture();
+  f.actor.system.abilities.int.value = 14;
+  f.actor.system.abilities.dex.value = 14;
+  f.actor.system.abilities.wis.value = 14;
+  f.actor.items[0].system.spellcasting.progression = "half";
+  const spells = spellSpecs.map(([key, name, level]) => ({
+    _id: spellId(key), name, type: "spell", flags: {},
+    system: { identifier: name.toLowerCase().replace(/[^a-z0-9]+/g, "-"), level,
+      prepared: 0, method: "spell", source: { rules: "2024" } }
+  }));
+  const oldDoc = f.fs.doc.bind(f.fs);
+  f.fs.worldData = async () => ({ packs: [
+    { id: "dnd5e.classes24", type: "Item", packageName: "dnd5e" },
+    { id: "dnd5e.spells24", type: "Item", packageName: "dnd5e" },
+    { id: "dnd5e.content24", type: "JournalEntry", packageName: "dnd5e" }
+  ] });
+  f.fs.doc = async (action, type, opts = {}) => {
+    if (action === "get" && type === "JournalEntry" && opts.pack === "dnd5e.content24")
+      return [{ pages: Object.keys(casters).map(id => ({ type: "spells", system: {
+        type: "class", identifier: id, spells: spellSpecs.filter(([, , , ids]) => ids.includes(id))
+          .map(([key]) => spellUuid(key)) } })) }];
+    if (action === "get" && type === "Item" && opts.pack === "dnd5e.spells24")
+      return structuredClone(spells.filter(s => !opts.query?._id || opts.query._id === s._id));
+    if (action === "get" && type === "Item" && opts.pack === "dnd5e.classes24" && !opts.index)
+      return structuredClone([...(Object.values(casters)), classDoc(FIGHTER, "fighter", 0)]
+        .filter(c => !opts.query?._id || opts.query._id === c._id));
+    return oldDoc(action, type, opts);
+  };
+  return { ...f, sources: Object.fromEntries(spellSpecs.map(([key]) => [key, spellUuid(key)])) };
+}
+
+test("multiclass selected Sorcerer spells are class-level-bounded, exact, and preview-only", async () => {
+  const f = casterFixture();
+  const src = `Compendium.dnd5e.classes24.Item.${casters.sorcerer._id}`;
+  const preview = await call(f.fs, "multiclass_actor", { actor: ACTOR, class_source: src, spells: "selected" });
+  assert.equal(preview.pret, false);
+  assert.deepEqual(preview.choix_requis.filter(x => x.id.startsWith("spells:")).map(x => [x.id, x.nombre]),
+    [["spells:cantrips", 2], ["spells:prepared", 2]]);
+  assert.ok(!preview.choix_requis.some(x => x.options?.some(v => v.includes(f.sources.fireball))));
+  assert.equal(preview.sorts.niveau_max_classe, 1, "Paladin's combined slots must not unlock Fireball");
+  assert.equal(preview.emplacements_apres.spell3, 2, "combined slots can exceed new class spell level");
+  assert.deepEqual(f.writes, []);
+  const choices = { "spells:cantrips": [f.sources.light, f.sources.spark],
+    "spells:prepared": [f.sources.shield, f.sources.missile] };
+  await rejected(f.fs, { actor: ACTOR, class_source: src, spells: "selected", choices: {
+    ...choices, "spells:prepared": [f.sources.shield, f.sources.fireball]
+  } }, /not a verified, eligible/);
+  await rejected(f.fs, { actor: ACTOR, class_source: src, spells: "selected", choices: {
+    ...choices, "spells:prepared": [f.sources.shield, f.sources.shield]
+  } }, /distinct/);
+  assert.deepEqual(f.writes, []);
+  const applied = await call(f.fs, "multiclass_actor", { actor: ACTOR, class_source: src,
+    spells: "selected", choices, apply: true });
+  assert.equal(applied.simulation, false, JSON.stringify(applied));
+  const owned = f.actor.items.filter(i => i.type === "spell" && i.system?.sourceClass === "sorcerer");
+  assert.deepEqual(owned.map(i => i.name).sort(), ["Light", "Magic Missile", "Shield", "Sorcerous Spark"].sort());
+  assert.ok(owned.filter(i => Number(i.system?.level) === 1).every(i => i.system.prepared === 1));
+  await call(f.fs, "snapshots", { action: "restore", id: applied.instantane });
+  assert.equal(f.actor.items.filter(i => i.type === "spell").length, 0);
+});
+
+test("Warlock Pact Magic is independent of shared Spellcasting slots", async () => {
+  const f = casterFixture();
+  const src = `Compendium.dnd5e.classes24.Item.${casters.warlock._id}`;
+  const preview = await call(f.fs, "multiclass_actor", { actor: ACTOR, class_source: src, spells: "selected" });
+  assert.equal(preview.sorts.niveau_max_classe, 1);
+  assert.equal(preview.emplacements_apres.pact, 1);
+  assert.equal(preview.emplacements_apres.pactLevel, 1);
+  const choices = { "spells:cantrips": [f.sources.blast, f.sources.magehand],
+    "spells:prepared": [f.sources.hex, f.sources.agathys] };
+  const applied = await call(f.fs, "multiclass_actor", { actor: ACTOR, class_source: src,
+    spells: "selected", choices, apply: true });
+  assert.equal(applied.pret, true, JSON.stringify(applied));
+  assert.equal(f.actor.items.filter(i => i.type === "spell" && i.system.sourceClass === "warlock").length, 4);
+});
+
+test("Wizard spellbook requires six class-level-eligible entries and independent prepared choices", async () => {
+  const f = casterFixture();
+  const src = `Compendium.dnd5e.classes24.Item.${casters.wizard._id}`;
+  const preview = await call(f.fs, "multiclass_actor", { actor: ACTOR, class_source: src, spells: "selected" });
+  assert.deepEqual(preview.choix_requis.filter(x => x.id.startsWith("spells:")).map(x => [x.id, x.nombre]),
+    [["spells:cantrips", 2], ["spells:spellbook", 6], ["spells:prepared", 4]]);
+  const book = ["shield", "missile", "burning", "sleep", "detect", "feather"].map(k => f.sources[k]);
+  const choices = { "spells:cantrips": [f.sources.light, f.sources.magehand],
+    "spells:spellbook": book, "spells:prepared": book.slice(0, 4) };
+  const applied = await call(f.fs, "multiclass_actor", { actor: ACTOR, class_source: src,
+    spells: "selected", choices, apply: true });
+  assert.equal(applied.pret, true, JSON.stringify(applied));
+  const wizardSpells = f.actor.items.filter(i => i.type === "spell" && i.system?.sourceClass === "wizard");
+  assert.equal(wizardSpells.filter(i => Number(i.system?.level) === 1).length, 6,
+    JSON.stringify(wizardSpells.map(i => [i.name, i.system?.level])));
+  assert.equal(wizardSpells.filter(i => Number(i.system?.level) === 1 && i.system.prepared === 1).length, 4);
+  assert.ok(wizardSpells.every(i => i.system.sourceClass === "wizard"));
+
+  const classItem = f.actor.items.find(i => i.type === "class" && i.system.identifier === "wizard");
+  const next = await call(f.fs, "multiclass_actor", { actor: ACTOR, item: classItem._id, spells: "selected" });
+  assert.deepEqual(next.choix_requis.filter(x => x.id.startsWith("spells:")).map(x => [x.id, x.nombre]),
+    [["spells:spellbook", 2], ["spells:prepared", 1]]);
+  const again = await call(f.fs, "multiclass_actor", { actor: ACTOR, item: classItem._id,
+    spells: "selected", choices: { "spells:spellbook": [f.sources.armor, f.sources.grease],
+      "spells:prepared": [f.sources.grease] }, apply: true });
+  assert.equal(again.pret, true, JSON.stringify(again));
+  assert.equal(f.actor.items.filter(i => i.type === "spell" && i.system.sourceClass === "wizard" && i.system.level === 1).length, 8);
+  assert.equal(f.actor.items.filter(i => i.type === "spell" && i.system.sourceClass === "wizard" && i.system.prepared === 1).length, 5);
+});
+
+test("same official spell can belong independently to two multiclass spell lists", async () => {
+  const f = casterFixture();
+  f.actor.items.push({ ...structuredClone(casters.sorcerer), _id: "sorcererEmbedded", system: {
+    ...structuredClone(casters.sorcerer.system), levels: 1 } });
+  f.actor.items.push({ _id: "sorcererShield1A", name: "Shield", type: "spell", flags: {},
+    system: { identifier: "shield", sourceClass: "sorcerer", level: 1,
+      prepared: 1, source: { rules: "2024" } }, _stats: { compendiumSource: f.sources.shield } });
+  const src = `Compendium.dnd5e.classes24.Item.${casters.wizard._id}`;
+  const book = ["shield", "missile", "burning", "sleep", "detect", "feather"].map(k => f.sources[k]);
+  const result = await call(f.fs, "multiclass_actor", { actor: ACTOR, class_source: src,
+    spells: "selected", choices: { "spells:cantrips": [f.sources.light, f.sources.magehand],
+      "spells:spellbook": book, "spells:prepared": book.slice(0, 4) }, apply: true });
+  assert.equal(result.pret, true, JSON.stringify(result));
+  assert.equal(f.actor.items.filter(i => i.type === "spell" && i.name === "Shield").length, 2);
+  assert.equal(f.actor.items.find(i => i._id === "sorcererShield1A").system.sourceClass, "sorcerer");
+});
+
+test("failed import preserves a recoverable partial advancement snapshot", async () => {
+  const f = casterFixture();
+  const before = captureActorState(f.actor);
+  const src = `Compendium.dnd5e.classes24.Item.${casters.sorcerer._id}`;
+  f.failItemCreate();
+  const result = await call(f.fs, "multiclass_actor", { actor: ACTOR, class_source: src,
+    spells: "selected", choices: { "spells:cantrips": [f.sources.light, f.sources.spark],
+      "spells:prepared": [f.sources.shield, f.sources.missile] }, apply: true });
+  assert.match(result.erreur, /Simulated spell import failure/);
+  assert.equal(result.restauration_disponible, true);
+  await call(f.fs, "snapshots", { action: "restore", id: result.instantane });
+  assert.deepEqual(captureActorState(f.actor), before);
+});
+
+test("multiclass spell selection rejects unsupported third-caster and 2014 spellbook choices", async () => {
+  const f = casterFixture();
+  const src = `Compendium.dnd5e.classes24.Item.${casters.sorcerer._id}`;
+  await rejected(f.fs, { actor: ACTOR, class_source: src, choices: { "spells:prepared": [] } }, /spells=selected/);
+  await rejected(f.fs, { actor: ACTOR, class_source: FIGHTER_SOURCE, spells: "selected" }, /supported 2024 Spellcasting/);
+  await rejected(f.fs, { actor: ACTOR, class_source: src, spells: "selected",
+    choices: { "spells:spellbook": [f.sources.shield] } }, /Wizard/);
+  assert.deepEqual(f.writes, []);
 });
 
 after(async () => { await rm(process.env.SNAPSHOT_DIR, { recursive: true, force: true }); });
