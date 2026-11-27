@@ -152,12 +152,15 @@ async function equipmentTraitChoices(fs) {
     .filter(p => p.type === "Item" && p.packageName === "dnd5e" && p.id === "dnd5e.equipment24");
   const found = new Map();
   for (const pk of packs) {
-    const rows = await packIdx(fs, pk.id, ["type", "system.type.value", "system.type.baseItem", "system.identifier",
+    const rows = await packIdx(fs, pk.id, ["type", "system.type.value", "system.type.baseItem",
       "system.mastery", "system.ability", "system.source.rules", "system.rarity"]);
     for (const e of rows) {
       const type = e.system?.type?.value;
       const base = e.system?.type?.baseItem;
-      if (!base || e.system?.identifier !== base || (e.system?.rarity && e.system.rarity !== "common")) continue;
+      // A base item's public identifier need not equal its proficiency key:
+      // Playing Cards is "playing-cards" / "card", Dragonchess is
+      // "dragonchess" / "chess" in the official 2024 equipment compendium.
+      if (!base || (e.system?.rarity && e.system.rarity !== "common")) continue;
       if (e.system?.source?.rules && e.system.source.rules !== "2024") continue;
       let key;
       if (e.type === "weapon" && e.system?.mastery && /^(simple|martial)[MR]$/.test(type || ""))
@@ -413,9 +416,11 @@ export async function plan(fs, actor, item, { fromLevel, toLevel, choices = {}, 
         }
         // Invalid and duplicate values must not be silently ignored if a few
         // valid picks also happen to satisfy the required number of choices.
-        const invalid = submitted.filter(k => !availableKeys.has(k));
+        // Foundry persists auto-granted traits in value.chosen as well as
+        // selected ones; replay may legitimately submit both sets together.
+        const invalid = submitted.filter(k => !availableKeys.has(k) && !(c.grants || []).includes(k));
         if (submitted.length !== new Set(submitted).size || invalid.length ||
-          (concreteWildcards && submitted.filter(k => !(c.grants || []).includes(k)).length !== expectedPicks)) {
+          (concreteWildcards && submitted.filter(k => !(c.grants || []).includes(k)).length > expectedPicks)) {
           missing = true;
           pending.push({ id: key(adv, l), objet: item.name, niveau: l, type: "Trait",
             titre: adv.title || adv.name || message("Proficiencies", "Maîtrises"),
