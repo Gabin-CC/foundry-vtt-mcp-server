@@ -106,6 +106,51 @@ function subclassFixture() {
   return { ...f, source, thirdSource };
 }
 
+function advancementFixture() {
+  const f = fixture();
+  const feature = classUuid("wardFeature");
+  const feat = classUuid("toughFeat");
+  const sub = classUuid("oathSubclass");
+  const ids = { grant: id("grantAtThree"), asi: id("asiAtFour"), feat: id("featAtEight"),
+    subclass: id("subAtThree"), future: id("asiAtTwelve") };
+  const adv = [
+    { _id: ids.grant, type: "ItemGrant", level: 3, configuration: { items: [{ uuid: feature, optional: false }] }, value: {} },
+    { _id: ids.asi, type: "AbilityScoreImprovement", level: 4, configuration: { points: 2, cap: 2, locked: ["wis"] }, value: {} },
+    { _id: ids.feat, type: "AbilityScoreImprovement", level: 8, configuration: { points: 2, cap: 2 }, value: {} },
+    { _id: ids.subclass, type: "Subclass", level: 3, configuration: {}, value: {} },
+    { _id: ids.future, type: "AbilityScoreImprovement", level: 12, configuration: { points: 2, cap: 2 }, value: {} }
+  ];
+  const saved = structuredClone(adv);
+  saved[0].value = { added: { [id("ownedWard")]: feature } };
+  saved[1].value = { type: "asi", assignments: { str: 1, cha: 1 } };
+  saved[2].value = { type: "feat", feat: { [id("ownedFeat")]: feat } };
+  saved[3].value = { document: id("ownedSub"), uuid: sub };
+  f.actor.items[0].system.advancement = saved;
+  f.actor.items.push(
+    { _id: id("ownedWard"), name: "Official Ward", type: "feat", _stats: { compendiumSource: feature }, system: {} },
+    { _id: id("ownedFeat"), name: "Tough", type: "feat", _stats: { compendiumSource: feat }, system: {} },
+    { _id: id("ownedSub"), name: "Test Oath", type: "subclass", _stats: { compendiumSource: sub },
+      system: { identifier: "test-oath", classIdentifier: "paladin", source: { rules: "2024" }, advancement: {} } }
+  );
+  const official = { ...officialClass("paladin", 0, 6), system: {
+    ...officialClass("paladin", 0, 6).system,
+    advancement: [...officialClass("paladin", 0, 6).system.advancement, ...adv] } };
+  const featDoc = { _id: id("toughFeat"), name: "Tough", type: "feat",
+    system: { source: { rules: "2024" }, prerequisites: { level: 4 } } };
+  const subDoc = { _id: id("oathSubclass"), name: "Test Oath", type: "subclass", system: {
+    identifier: "test-oath", classIdentifier: "paladin", source: { rules: "2024" }, advancement: {} } };
+  const originalDoc = f.fs.doc.bind(f.fs);
+  f.fs.doc = async (action, type, opts = {}) => {
+    if (action === "get" && type === "Item" && opts.pack === "dnd5e.classes24") {
+      const added = [official, featDoc, subDoc].filter(x => !opts.query?._id || opts.query._id === x._id);
+      const earlier = await originalDoc(action, type, opts);
+      return structuredClone([...added, ...earlier.filter(x => !added.some(y => y._id === x._id))]);
+    }
+    return originalDoc(action, type, opts);
+  };
+  return { ...f, ids, source: { feature, feat, sub }, featDoc };
+}
+
 async function audit(fs) {
   const result = await handleTool(fs, { name: "validate_actor", arguments: { actor: ACTOR } });
   assert.equal(result.isError, undefined, result.content?.[0]?.text);
@@ -247,5 +292,73 @@ test("official third-caster subclass uses the Wizard list and its own 2024 scale
   assert.equal(bad.status, "issues");
   assert.ok(bad.diagnostics.some(d => d.code === "spell_above_class_level"));
   assert.ok(bad.diagnostics.some(d => d.code === "too_many_prepared"));
+  assert.deepEqual(f.writes, []);
+});
+
+test("recorded official ASI, subclass, mandatory feature and feat source are verifiable without writes", async () => {
+  const f = advancementFixture();
+  const report = await audit(f.fs);
+  assert.equal(report.status, "passed_scoped_checks", JSON.stringify(report.diagnostics));
+  assert.deepEqual(report.verified_sources.feats, [f.source.feat]);
+  assert.deepEqual(report.verified_sources.subclasses, [f.source.sub]);
+  assert.deepEqual(f.writes, []);
+});
+
+test("official ASI limits and saved future choices are proven errors", async () => {
+  const f = advancementFixture();
+  const adv = f.actor.items[0].system.advancement;
+  adv.find(a => a._id === f.ids.asi).value.assignments.str = 3;
+  adv.find(a => a._id === f.ids.future).value = { type: "asi", assignments: { dex: 2 } };
+  const report = await audit(f.fs);
+  assert.equal(report.status, "issues");
+  assert.ok(report.diagnostics.some(d => d.code === "invalid_asi_allocation"));
+  assert.ok(report.diagnostics.some(d => d.code === "future_advancement_recorded"));
+  assert.deepEqual(f.writes, []);
+});
+
+test("missing mandatory feature is a warning; forged official advancement grants are errors", async () => {
+  const f = advancementFixture();
+  f.actor.items = f.actor.items.filter(i => i._id !== id("ownedWard"));
+  const missing = await audit(f.fs);
+  assert.ok(missing.diagnostics.some(d => d.code === "mandatory_feature_missing" && d.severity === "warning"));
+  f.actor.items[0].system.advancement.find(a => a._id === f.ids.grant).value.added = {
+    [id("fakeGrant")]: classUuid("notGranted") };
+  const forged = await audit(f.fs);
+  assert.ok(forged.diagnostics.some(d => d.code === "unexpected_recorded_grant" && d.severity === "error"));
+  assert.deepEqual(f.writes, []);
+});
+
+test("feat level requirement can be proved but historical ability prerequisites remain unverifiable", async () => {
+  const f = advancementFixture();
+  f.featDoc.system.prerequisites.level = 15;
+  const originalDoc = f.fs.doc.bind(f.fs);
+  f.fs.doc = async (action, type, opts = {}) => action === "get" && type === "Item" &&
+    opts.pack === "dnd5e.classes24" && opts.query?._id === id("toughFeat")
+    ? [structuredClone(f.featDoc)] : originalDoc(action, type, opts);
+  const invalid = await audit(f.fs);
+  assert.ok(invalid.diagnostics.some(d => d.code === "feat_level_prerequisite_unmet" && d.severity === "error"));
+  f.featDoc.system.prerequisites = { level: 4, ability: { con: 13 } };
+  const unknown = await audit(f.fs);
+  assert.ok(unknown.diagnostics.some(d => d.code === "feat_historical_prerequisite" && d.severity === "unverified"));
+  assert.ok(!unknown.diagnostics.some(d => d.code === "feat_level_prerequisite_unmet"));
+  assert.deepEqual(f.writes, []);
+});
+
+test("fixed ability bonuses are not falsely counted as invalid selectable ASI points", async () => {
+  const f = advancementFixture();
+  f.actor.items[0].system.advancement.find(a => a._id === f.ids.asi).value.assignments.str = 2;
+  const originalDoc = f.fs.doc.bind(f.fs);
+  f.fs.doc = async (action, type, opts = {}) => {
+    const docs = await originalDoc(action, type, opts);
+    if (action === "get" && type === "Item" && opts.pack === "dnd5e.classes24" &&
+        (!opts.query?._id || opts.query._id === id("paladin"))) {
+      const src = docs.find(i => i._id === id("paladin"));
+      if (src) src.system.advancement.find(a => a._id === f.ids.asi).configuration.fixed = { str: 1 };
+    }
+    return docs;
+  };
+  const report = await audit(f.fs);
+  assert.ok(report.diagnostics.some(d => d.code === "asi_fixed_allocation_unverified"));
+  assert.ok(!report.diagnostics.some(d => d.code === "invalid_asi_allocation"));
   assert.deepEqual(f.writes, []);
 });

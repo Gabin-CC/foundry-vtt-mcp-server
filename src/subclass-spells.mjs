@@ -11,6 +11,8 @@ const sourceUuid = item => item._stats?.compendiumSource || item.flags?.dnd5e?.s
 export function isOfficial2024Uuid(uuid) {
   return ITEM_UUID.test(uuid || "") && (uuid.startsWith("Compendium.dnd5e.classes24.Item.") ||
     uuid.startsWith("Compendium.dnd5e.spells24.Item.") ||
+    uuid.startsWith("Compendium.dnd5e.feats24.Item.") ||
+    uuid.startsWith("Compendium.dnd5e.origins24.Item.") ||
     uuid.startsWith("Compendium.dnd-players-handbook."));
 }
 
