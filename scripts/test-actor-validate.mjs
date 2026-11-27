@@ -351,6 +351,8 @@ test("official slot baseline is independent of a recorded spell slot override", 
   assert.equal(report.official_base_spell_slots.spell1, 4, "The official class table is not overwritten");
   assert.ok(report.diagnostics.some(d => d.code === "spell_slot_override_unverified" &&
     d.severity === "unverified"));
+  assert.ok(!report.diagnostics.some(d => d.code === "spell_slots_above_official_base"),
+    "A nonstandard maximum already explains the unverified resource excess");
   assert.ok(!report.diagnostics.some(d => d.code === "invalid_spell_slot_value"));
   assert.deepEqual(f.writes, []);
 });
@@ -362,6 +364,23 @@ test("an override equal to the official slot table does not cause a spurious war
   assert.equal(report.status, "passed_scoped_checks", JSON.stringify(report.diagnostics));
   assert.equal(report.official_base_spell_slots.spell1, 4);
   assert.deepEqual(f.writes, []);
+});
+
+test("a matching maximum override cannot hide remaining slots above the official table", async () => {
+  for (const override of [4, "4"]) {
+    const f = fixture();
+    f.actor.system.spells.spell1 = { value: 5, override };
+    const report = await audit(f.fs);
+    assert.equal(report.expected_spell_slots.spell1, override);
+    assert.equal(report.official_base_spell_slots.spell1, 4);
+    assert.equal(report.status, "incomplete", JSON.stringify(report.diagnostics));
+    assert.ok(report.diagnostics.some(d => d.code === "spell_slots_above_official_base" &&
+      d.severity === "unverified" && /spell1/.test(d.detail)),
+    "Remaining slots above an unchanged official maximum still require an explanation");
+    assert.ok(!report.diagnostics.some(d => d.code === "spell_slot_override_unverified"),
+      "An override equal to the official maximum is not itself suspect");
+    assert.deepEqual(f.writes, []);
+  }
 });
 
 test("blank spell slot overrides preserve the verified expected table without diagnostics", async () => {

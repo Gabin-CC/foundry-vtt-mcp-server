@@ -389,6 +389,7 @@ export async function validateActor2024(fs, actor) {
     const override = slot?.override;
     const baseline = Number(baseSlots[key]) || 0;
     const hasOverride = override != null && override !== "";
+    const overrideMatchesBase = hasOverride && Number(override) === baseline;
     if (hasOverride && (!Number.isInteger(Number(override)) || Number(override) < 0 || Number(override) !== baseline))
       check("unverified", "spell_slot_override_unverified",
         `${key}: the recorded maximum override differs from the verified 2024 class table; a feature or campaign rule may explain it.`, actor._id);
@@ -397,7 +398,10 @@ export async function validateActor2024(fs, actor) {
     const n = Number(remaining);
     if (!Number.isInteger(n) || n < 0)
       check("error", "invalid_spell_slot_value", `${key}: remaining spell slots must be a nonnegative integer.`, actor._id);
-    else if (!hasOverride && n > baseline)
+    // A redundant override equal to the official maximum must not suppress
+    // a resource-excess check. A differing override already has its own
+    // unverified diagnostic, so do not duplicate that uncertainty here.
+    else if (n > baseline && (!hasOverride || overrideMatchesBase))
       check("unverified", "spell_slots_above_official_base",
         `${key}: ${n} remaining slots exceed the verified class-table maximum ${baseline}; an extra grant or stale value needs review.`, actor._id);
   }
