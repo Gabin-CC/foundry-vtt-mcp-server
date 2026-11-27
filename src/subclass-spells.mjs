@@ -40,46 +40,51 @@ export async function verifySubclass(fs, sub, parent) {
 }
 
 /**
- * Read mandatory, always-prepared ItemGrant spells, including nested feature
- * grants (e.g. Life Domain -> Life Domain Spells -> spells at levels 3/5/7/9).
- * Failures are explicit: incomplete evidence must not create false errors.
+ * Trace mandatory always-prepared spells through exact official ItemGrant
+ * sources, including nested features. A declared spell UUID is *not* verified
+ * until its exact source pack can be loaded, but it can explain why an
+ * unattributed owned spell is already covered by an explicit source warning.
  */
-export async function subclassAlwaysPrepared(fs, officialSubclass, level) {
+async function traceAlwaysPrepared(fs, officialRoot, level, kind, onlySpellRoots) {
   const expected = new Map();
   const unresolved = [];
+  const declared = new Set();
   const visited = new Set();
   let scanned = 0;
 
   async function visit(doc, depth) {
     if (depth > 4 || ++scanned > 100) {
-      unresolved.push("Subclass feature grant graph exceeds the safe verification bound.");
+      unresolved.push(`${kind} feature grant graph exceeds the safe verification bound.`);
       return;
     }
     for (const adv of advancementList(doc)) {
       if (adv.type !== "ItemGrant" || Number(adv.level ?? 0) > level) continue;
+      if (onlySpellRoots && depth === 0 && Number(adv.configuration?.spell?.prepared) !== 2) continue;
       const always = Number(adv.configuration?.spell?.prepared) === 2;
       for (const grant of adv.configuration?.items || []) {
         // Optional ItemGrant entries are player choices, not mandatory grants.
         if (grant.optional) continue;
         const uuid = grant.uuid;
+        if (always && /^Compendium\.(?:dnd5e\.spells24|dnd-players-handbook\.spells)\.Item\./.test(uuid || "") &&
+            isOfficial2024Uuid(uuid)) declared.add(uuid);
         if (!isOfficial2024Uuid(uuid)) {
-          unresolved.push(`A required subclass grant has no verified official source: ${String(uuid)}`);
+          unresolved.push(`A required ${kind} grant has no verified official source: ${String(uuid)}`);
           continue;
         }
         let source;
         try { source = await fetchUuid(fs, uuid); }
-        catch { unresolved.push(`Required subclass grant cannot be loaded: ${uuid}`); continue; }
+        catch { unresolved.push(`Required ${kind} grant cannot be loaded: ${uuid}`); continue; }
         if (source.__pack !== PACK.exec(uuid)?.[1]) {
-          unresolved.push(`Required subclass grant resolved from a different compendium: ${uuid}`);
+          unresolved.push(`Required ${kind} grant resolved from a different compendium: ${uuid}`);
           continue;
         }
         if (source.system?.source?.rules !== "2024") {
-          unresolved.push(`Required subclass grant does not declare 2024 rules: ${uuid}`);
+          unresolved.push(`Required ${kind} grant does not declare 2024 rules: ${uuid}`);
           continue;
         }
         if (source.type === "spell") {
           if (always) expected.set(uuid, Math.min(level, Number(adv.level ?? 0)));
-          else unresolved.push(`Subclass spell grant has no proven always-prepared state: ${uuid}`);
+          else unresolved.push(`${kind} spell grant has no proven always-prepared state: ${uuid}`);
         } else if (!visited.has(uuid)) {
           visited.add(uuid);
           await visit(source, depth + 1);
@@ -88,9 +93,17 @@ export async function subclassAlwaysPrepared(fs, officialSubclass, level) {
     }
   }
 
-  await visit(officialSubclass, 0);
-  return { expected, unresolved: [...new Set(unresolved)] };
+  await visit(officialRoot, 0);
+  return { expected, declared, unresolved: [...new Set(unresolved)] };
 }
+
+/** Trace all mandatory subclass feature chains, including nested spell grants. */
+export const subclassAlwaysPrepared = (fs, officialSubclass, level) =>
+  traceAlwaysPrepared(fs, officialSubclass, level, "subclass", false);
+
+/** Trace only class grants explicitly configured to give always-prepared spells. */
+export const classAlwaysPrepared = (fs, officialClass, level) =>
+  traceAlwaysPrepared(fs, officialClass, level, "class", true);
 
 /** Only these PHB 2024 third-casters use the Wizard list by rule. */
 export const THIRD_CASTER_WIZARD_LIST = Object.freeze({

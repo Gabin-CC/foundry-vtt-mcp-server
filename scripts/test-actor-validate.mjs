@@ -108,6 +108,31 @@ function subclassFixture() {
   return { ...f, source, thirdSource };
 }
 
+function classSpellGrantFixture() {
+  const f = fixture();
+  const feature = classUuid("magicFeature");
+  const choice = { _id: id("classMagicGrant"), type: "ItemGrant", level: 2,
+    configuration: { spell: { prepared: 2 }, items: [{ uuid: feature, optional: false }] },
+    value: { added: { [id("ownedMagicFeature")]: feature } } };
+  const child = { _id: id("magicFeature"), name: "Official Magic Feature", type: "feat",
+    system: { source: { rules: "2024" }, advancement: [{ _id: id("grantMagicSpell"),
+      type: "ItemGrant", level: 2,
+      configuration: { spell: { prepared: 2 }, items: [{ uuid: spellUuid("cure"), optional: false }] } }] } };
+  f.actor.items[0].system.advancement.push(structuredClone(choice));
+  f.actor.items.push({ _id: id("ownedMagicFeature"), name: "Official Magic Feature", type: "feat",
+    _stats: { compendiumSource: feature }, system: { source: { rules: "2024" } } });
+  f.actor.items.push(makeSpell("cure", 2, ""));
+  const oldDoc = f.fs.doc.bind(f.fs);
+  f.fs.doc = async (action, type, opts = {}) => {
+    const docs = await oldDoc(action, type, opts);
+    if (action !== "get" || type !== "Item" || opts.pack !== "dnd5e.classes24") return docs;
+    for (const doc of docs) if (doc._id === id("paladin"))
+      doc.system.advancement.push(structuredClone(choice));
+    return !opts.query?._id || opts.query._id === child._id ? [...docs, structuredClone(child)] : docs;
+  };
+  return f;
+}
+
 // The generic compendium loader may find an item with the same 16-character ID
 // in a different pack. An audit must not certify it as the requested source.
 function shadowOfficialSource(f, pack, missingId, shadowDoc) {
@@ -482,6 +507,34 @@ test("always-granted feature spells are not overcounted as selected prepared spe
   assert.deepEqual(f.writes, []);
 });
 
+test("exact official class feature grants prove always-prepared spells without sourceClass", async () => {
+  const f = classSpellGrantFixture();
+  const report = await audit(f.fs);
+  assert.equal(report.status, "passed_scoped_checks", JSON.stringify(report.diagnostics));
+  assert.deepEqual(report.verified_sources.class_granted_spells, [spellUuid("cure")]);
+  assert.ok(!report.diagnostics.some(d => d.code === "unattributed_spell_origin"));
+  f.actor.items.find(i => i._id === id("ownedcure")).system.prepared = 1;
+  const wrong = await audit(f.fs);
+  assert.ok(wrong.diagnostics.some(d => d.code === "class_granted_spell_not_always_prepared"));
+  f.actor.items = f.actor.items.filter(i => i._id !== id("ownedcure"));
+  const missing = await audit(f.fs);
+  assert.ok(missing.diagnostics.some(d => d.code === "missing_class_granted_spell"));
+  assert.deepEqual(f.writes, []);
+});
+
+test("a class-granted spell from the wrong pack stays unverified without duplicate attribution warning", async () => {
+  const f = classSpellGrantFixture();
+  shadowOfficialSource(f, "dnd5e.spells24", id("cure"), compendiumSpells.find(s => s._id === id("cure")));
+  const report = await audit(f.fs);
+  assert.equal(report.status, "incomplete");
+  assert.deepEqual(report.verified_sources.class_granted_spells, []);
+  assert.ok(report.diagnostics.some(d => d.code === "class_grant_unverified" &&
+    /different compendium/.test(d.detail)));
+  assert.ok(!report.diagnostics.some(d => d.code === "unattributed_spell_origin"),
+    "The existing official class-grant source warning already covers this same spell");
+  assert.deepEqual(f.writes, []);
+});
+
 test("equipment conflicts and unknown class spell lists are reported without mutations", async () => {
   const f = fixture();
   f.actor.system.traits.armorProf.value = [];
@@ -594,6 +647,23 @@ test("a subclass spell with only a same-ID world fallback is not a proven mandat
   assert.ok(report.diagnostics.some(d => d.code === "subclass_grant_unverified" &&
     d.references.includes(f.source) && /different compendium/.test(d.detail)));
   assert.ok(!report.diagnostics.some(d => d.code === "missing_subclass_spell"));
+  assert.deepEqual(f.writes, []);
+});
+
+test("known but unverified subclass spell grants do not duplicate missing-class attribution diagnostics", async () => {
+  const f = subclassFixture();
+  const shadow = compendiumSpells.find(spell => spell._id === id("cure"));
+  shadowOfficialSource(f, "dnd5e.spells24", id("cure"), shadow);
+  f.actor.items.push({ _id: id("oathOwned"), type: "subclass", name: "Official Oath",
+    _stats: { compendiumSource: f.source }, system: {
+      identifier: "test-oath", classIdentifier: "paladin", source: { rules: "2024" } } });
+  f.actor.items.push(makeSpell("cure", 2, ""));
+  f.actor.items.push(makeSpell("feather", 2, ""));
+  const report = await audit(f.fs);
+  assert.ok(report.diagnostics.some(d => d.code === "subclass_grant_unverified" &&
+    /different compendium/.test(d.detail)));
+  assert.ok(!report.diagnostics.some(d => d.code === "unattributed_spell_origin"),
+    "The official declared subclass grant and its explicit source warning explain the blank sourceClass");
   assert.deepEqual(f.writes, []);
 });
 
