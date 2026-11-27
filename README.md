@@ -34,13 +34,15 @@ Highlights:
 
 Tool **names and discovery descriptions are in English**. Some response keys, legacy argument values, enum values, and Foundry-specific status labels remain in French for backward compatibility. Renaming those fields requires an explicitly versioned protocol migration. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
+The character automation milestones (rebuild, new build, progression and D&D 2024 rules certification) are tracked in [docs/ROADMAP.md](docs/ROADMAP.md).
+
 ### Build a new D&D 2024 character
 
 Use `build_actor` for a **new character with no source actor**, and `rebuild_actor` below to reproduce an existing character. An AI agent can find the required compendium UUIDs with `search_compendium` / `get_compendium_entry`, but should **not guess** an ambiguous class, species, background, subclass or feat.
 
 1. Call `build_actor` with a unique `name`, `class_source`, `species_source`, `background_source`, a `level` (1–20), and six base `abilities` **before** background increases. These three sources must declare `system.source.rules: "2024"`. The tool also accepts partial inputs: it returns `parametres_requis` without writing.
 2. Review the read-only preview: `choix_requis` includes missing advancement, subclass, feat and starting-equipment selections, with their exact option IDs/UUIDs. Supply them in `choices` and rerun until `pret: true`.
-3. Set `apply: true` to create **one separate actor**, then replay class → species → background via the normal `advance` engine. No existing actor is changed. If a later Foundry write fails, the response identifies the partial actor for GM inspection; it never silently deletes it.
+3. Set `apply: true` to create **one separate actor**, then replay class → species → background via the normal `advance` engine. Starting armor, a compatible shield and one primary weapon are equipped by default (`auto_equip: false` opts out). No existing actor is changed. If a later Foundry write fails, the response identifies the partial actor for GM inspection; it never silently deletes it.
 
 **Trait choices (D&D 2024):** weapon mastery (`weapon:*`) and gaming-set proficiency (`tool:game:*`) are expanded using installed `dnd5e.equipment24` base items. The preview shows concrete selections such as `weapon:mar:longsword` or `tool:game:dice`; supply **those keys**, never the wildcard. Weapon mastery is limited to weapon categories the character is proficient with, and is recorded separately from weapon proficiency. Invalid or repeated selections leave `pret: false` and cannot create an actor. If the official equipment compendium is missing, the tool cannot resolve these wildcards and stays in preview mode.
 
@@ -56,7 +58,7 @@ Example preview (the first call will ask for all outstanding selections):
 }
 ```
 
-**Spells:** the default `spells: "none"` does not import a full class spell list. Use `advance` to pick spells afterwards. The optional `spells: "all"` follows the existing `advance` behavior of importing **all accessible class spells** and asking for cantrip/preparation choices; it is not a legal spellbook-building mode for classes with limited known spells (notably Wizard). Full rules legality, ability-generation method, spellbook constraints and magic effects still require separate verification.
+**Spells:** the default `spells: "none"` postpones class spell selection. For 2024 classes with a supported prepared-spell progression, choose `spells: "selected"`: the preview requests `choices["spells:prepared"]` (and `choices["spells:cantrips"]` when applicable), arrays of **exact 2024 compendium UUIDs**. It enforces the number of choices, class spell list, spell level, edition and uniqueness, then imports **only those selections**, marking the leveled spells prepared. Automatically granted subclass/class spells are excluded from selection where verifiable. A missing official class spell list blocks creation. The legacy `spells: "all"` still imports **all accessible class spells**, which may produce an illegal spellbook. Full rules legality, ability-generation method, Wizard spellbook constraints and magic effects still require separate verification.
 
 ### Rebuild a character using recorded advancement choices
 

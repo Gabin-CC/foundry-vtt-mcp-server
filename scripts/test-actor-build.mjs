@@ -138,6 +138,147 @@ function with2024TraitChoices(f) {
   return { mastery, gaming };
 }
 
+function withSelectedSpellsAndGear(f) {
+  const bless = source("dnd5e.spells24", "paladinBless");
+  const cure = source("dnd5e.spells24", "paladinCure");
+  const command = source("dnd5e.spells24", "paladinCommand");
+  const foreign = source("dnd5e.spells24", "notPaladinSpell");
+  const legacy = source("dnd5e.spells24", "legacyPaladin");
+  const make = (uuid, name, type, system) => ({
+    _id: uuid.split(".").at(-1), _stats: { compendiumSource: uuid }, name, type,
+    system: { source: { rules: "2024" }, advancement: [], ...system }
+  });
+  f.sources[0].system.identifier = "paladin";
+  f.sources[0].system.spellcasting = { progression: "half", ability: "cha" };
+  f.sources[0].system.advancement.push(
+    { _id: id("preparedScale"), type: "ScaleValue", configuration: {
+      identifier: "max-prepared", scale: { 2: { value: 2 } }
+    } },
+    { _id: id("equipProfs"), type: "Trait", level: 1, configuration: { mode: "default",
+      grants: ["armor:hvy", "armor:shl", "weapon:mar"], choices: [] } }
+  );
+  const armor = source("dnd5e.equipment24", "chainMail");
+  const shield = source("dnd5e.equipment24", "shield");
+  const twoHand = source("dnd5e.equipment24", "greatsword");
+  const sword = source("dnd5e.equipment24", "longsword");
+  const gear = [
+    make(armor, "Chain Mail", "equipment", { type: { value: "heavy" }, armor: { value: 16 }, equipped: false }),
+    make(shield, "Shield", "equipment", { type: { value: "shield" }, armor: { value: 2 }, equipped: false }),
+    make(twoHand, "Greatsword", "weapon", { type: { value: "martialM", baseItem: "greatsword" },
+      properties: ["two"], equipped: false }),
+    make(sword, "Longsword", "weapon", { type: { value: "martialM", baseItem: "longsword" },
+      properties: ["ver"], equipped: false })
+  ];
+  const legacyDoc = make(legacy, "Legacy Hymn", "spell", { level: 1, identifier: "legacy-hymn" });
+  legacyDoc.system.source.rules = "2014";
+  f.sources.push(...gear, make(bless, "Bless", "spell", { level: 1, identifier: "bless", method: "spell" }),
+    make(cure, "Cure Wounds", "spell", { level: 1, identifier: "cure-wounds", method: "spell" }),
+    make(command, "Command", "spell", { level: 1, identifier: "command", method: "spell" }),
+    make(foreign, "Magic Missile", "spell", { level: 1, identifier: "magic-missile", sourceClass: "paladin" }),
+    legacyDoc);
+  for (const [n, src] of [armor, shield, twoHand, sword].entries())
+    f.sources[0].system.startingEquipment.push({ _id: id(`extraGear${n}`), type: "linked", key: src, group: "" });
+  const oldWorldData = f.session.worldData.bind(f.session);
+  f.session.worldData = async () => ({ ...(await oldWorldData()), packs: [
+    ...(await oldWorldData()).packs,
+    { id: "dnd5e.spells24", type: "Item", packageName: "dnd5e" },
+    { id: "dnd5e.equipment24", type: "Item", packageName: "dnd5e" },
+    { id: "dnd5e.content24", type: "JournalEntry", packageName: "dnd5e" }
+  ] });
+  const oldDoc = f.session.doc.bind(f.session);
+  f.session.doc = async (action, type, opts = {}) => {
+    if (action === "get" && type === "JournalEntry" && opts.pack === "dnd5e.content24")
+      return [{ pages: [{ type: "spells", system: { type: "class", identifier: "paladin",
+        spells: [bless, cure, command, legacy] } }] }];
+    if (action === "get" && type === "Item" && opts.pack === "dnd5e.spells24" && opts.index)
+      return structuredClone(f.sources.filter(x => x.type === "spell"));
+    return oldDoc(action, type, opts);
+  };
+  return { bless, cure, command, foreign, legacy };
+}
+
+test("spells=selected requires exact verified 2024 class spell choices before any write", async () => {
+  const f = fixture();
+  const { bless, cure, foreign, legacy } = withSelectedSpellsAndGear(f);
+  const p = await planActorBuild(f.session, request({ spells: "selected" }));
+  assert.equal(p.pret, false);
+  const wanted = p.choix_requis.find(x => x.id === "spells:prepared");
+  assert.equal(wanted.nombre, 2);
+  assert.equal(wanted.options.length, 3);
+  assert.ok(wanted.options.some(x => x.includes(bless)));
+  const good = await planActorBuild(f.session, request({ spells: "selected",
+    choices: { ...CHOICES, "spells:prepared": [bless, cure] } }));
+  assert.equal(good.pret, true, JSON.stringify(good.choix_requis));
+  await assert.rejects(planActorBuild(f.session, request({ spells: "selected",
+    choices: { ...CHOICES, "spells:prepared": [bless, foreign] } })), /not a verified, eligible/);
+  await assert.rejects(planActorBuild(f.session, request({ spells: "selected",
+    choices: { ...CHOICES, "spells:prepared": [bless, legacy] } })), /not a verified, eligible/);
+  await assert.rejects(planActorBuild(f.session, request({ spells: "selected",
+    choices: { ...CHOICES, "spells:prepared": [bless, bless] } })), /distinct/);
+  assert.deepEqual(f.writes, []);
+});
+
+test("automatically granted spells are excluded from exact prepared spell choices", async () => {
+  const f = fixture();
+  const { bless, cure, command } = withSelectedSpellsAndGear(f);
+  f.sources[0].system.advancement.push({ _id: id("classBlessGrant"), type: "ItemGrant", level: 1,
+    configuration: { items: [{ uuid: bless }] } });
+  const p = await planActorBuild(f.session, request({ spells: "selected" }));
+  const options = p.choix_requis.find(x => x.id === "spells:prepared").options;
+  assert.equal(options.length, 2);
+  assert.ok(options.some(x => x.includes(cure)));
+  assert.ok(options.some(x => x.includes(command)));
+  assert.ok(!options.some(x => x.includes(bless)));
+  assert.deepEqual(f.writes, []);
+});
+
+test("selected-spell build imports only the chosen spells and equips legal starting gear", async () => {
+  const f = fixture();
+  const { bless, cure } = withSelectedSpellsAndGear(f);
+  const { handleTool } = await import("../src/server.mjs");
+  const response = await handleTool(f.session, { name: "build_actor", arguments: request({
+    spells: "selected", choices: { ...CHOICES, "spells:prepared": [bless, cure] }, apply: true
+  }) });
+  assert.equal(response.isError, undefined, JSON.stringify(response));
+  const result = JSON.parse(response.content[0].text);
+  assert.equal(result.simulation, false, JSON.stringify(result));
+  assert.equal(f.actors.length, 1);
+  const actor = f.actors[0];
+  const spells = actor.items.filter(i => i.type === "spell");
+  assert.deepEqual(spells.map(i => i.name).sort(), ["Bless", "Cure Wounds"]);
+  assert.deepEqual(spells.map(i => i.system.prepared), [1, 1]);
+  const equipped = actor.items.filter(i => i.system?.equipped).map(i => i.name).sort();
+  assert.deepEqual(equipped, ["Chain Mail", "Longsword", "Shield"]);
+  assert.equal(actor.items.find(i => i.name === "Greatsword").system.equipped, false);
+  assert.equal(result.equipement_porte.length, 3);
+});
+
+test("auto_equip=false leaves starting equipment untouched", async () => {
+  const f = fixture();
+  withSelectedSpellsAndGear(f);
+  const { handleTool } = await import("../src/server.mjs");
+  const response = await handleTool(f.session, { name: "build_actor", arguments: request({
+    apply: true, auto_equip: false
+  }) });
+  assert.equal(response.isError, undefined, JSON.stringify(response));
+  assert.ok(f.actors.length);
+  assert.equal(f.actors[0].items.some(i => i.system?.equipped), false);
+});
+
+test("a two-handed starting weapon is never equipped together with a shield", async () => {
+  const f = fixture();
+  withSelectedSpellsAndGear(f);
+  const longsword = source("dnd5e.equipment24", "longsword");
+  f.sources[0].system.startingEquipment = f.sources[0].system.startingEquipment.filter(e => e.key !== longsword);
+  const { handleTool } = await import("../src/server.mjs");
+  const response = await handleTool(f.session, { name: "build_actor", arguments: request({ apply: true }) });
+  assert.equal(response.isError, undefined, JSON.stringify(response));
+  const result = JSON.parse(response.content[0].text);
+  assert.equal(result.simulation, false, JSON.stringify(result));
+  const gear = f.actors[0].items.filter(i => i.system?.equipped).map(i => i.name).sort();
+  assert.deepEqual(gear, ["Chain Mail", "Greatsword"]);
+});
+
 test("weapon mastery and gaming-set wildcards resolve to actual 2024 equipment options", async () => {
   const f = fixture();
   const { mastery, gaming } = with2024TraitChoices(f);
