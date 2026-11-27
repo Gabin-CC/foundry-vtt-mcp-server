@@ -270,7 +270,7 @@ export const TOOL_DEFINITIONS = [
       prepared_spells: { type: "object", description: "Sort possédé par _id vers true=préparer / false=ne plus préparer ; les sorts accordés en permanence ne sont pas modifiables" , additionalProperties: { type: "boolean" } },
       apply: { type: "boolean", default: false, description: "false par défaut : simulation ; true : appliquer avec instantané de récupération" }
     } } },
-  { name: "validate_actor", description: "Audite une fiche D&D 2024 sans aucune écriture : niveaux, provenance officielle, limites de sorts, sorts de sous-classe, choix de progression (classes, sous-classes, espèces, historiques, dons, choix de dons dans les aptitudes et grants obligatoires) et conflits d'équipement. Distingue erreurs prouvées, avertissements et éléments historiques non vérifiables ; ne certifie pas la conformité globale.",
+  { name: "validate_actor", description: "Audite une fiche D&D 2024 sans aucune écriture : niveaux, provenance officielle, limites de sorts, sorts de sous-classe, choix de progression (classes, sous-classes, espèces, historiques, dons, niveau d'obtention vérifiable et grants obligatoires) et conflits d'équipement. Distingue erreurs prouvées, avertissements et éléments historiques non vérifiables ; ne certifie pas la conformité globale.",
     inputSchema: { type: "object", required: ["actor"], properties: {
       actor: { type: "string", description: "Nom ou identifiant de la fiche à examiner (lecture seule)" }
     } } },

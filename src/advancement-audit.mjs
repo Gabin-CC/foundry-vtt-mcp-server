@@ -32,10 +32,45 @@ export async function auditRecordedAdvancements(fs, actor, sources, check) {
   const owned = actor.items || [];
   const byId = new Map(owned.map(i => [i._id, i]));
   const verifiedFeats = new Set();
-  const totalLevel = owned.filter(i => i.type === "class")
+  const classes = owned.filter(i => i.type === "class");
+  const totalLevel = classes
     .reduce((n, i) => n + (Number(i.system?.levels) || 0), 0);
+  const oneClass = classes.length === 1;
+  const featFeatureGrants = new Map();
+  for (const { embedded, official, level } of sources) {
+    const recorded = new Map(list(embedded).filter(a => a?._id).map(a => [a._id, a]));
+    for (const advancement of list(official)) {
+      if (advancement.type !== "ItemGrant" || Number(advancement.level || 0) > level) continue;
+      const at = Number(advancement.level || 0);
+      for (const grant of advancement.configuration?.items || []) {
+        if (grant.optional || !grant.uuid) continue;
+        const additions = entries(recorded.get(advancement._id)?.value?.added);
+        // Ownership alone cannot date a feature: the saved official grant must
+        // point to the same embedded item and its exact source UUID.
+        if (!additions.some(([id, uuid]) => uuid === grant.uuid &&
+          byId.has(id) && sourceUuid(byId.get(id)) === grant.uuid)) continue;
+        const origin = ["race", "background"].includes(embedded.type);
+        const proof = { at, lower: origin && at === 0 ? 1 : Math.max(1, at),
+          exact: origin && at === 0 ? 1 : oneClass ? Math.max(1, at) : null };
+        if (!featFeatureGrants.has(grant.uuid)) featFeatureGrants.set(grant.uuid, []);
+        featFeatureGrants.get(grant.uuid).push(proof);
+      }
+    }
+  }
 
-  async function verifyFeatChoice(root, recordedId, uuid, src, restriction = null) {
+  const acquisitionForStep = (root, at) => {
+    const milestone = Number(at);
+    if (root.type === "class" || root.type === "subclass")
+      return { lower: Math.max(1, milestone), exact: oneClass ? Math.max(1, milestone) : null };
+    if (["race", "background"].includes(root.type) && milestone === 0)
+      return { lower: 1, exact: 1 };
+    const proofs = featFeatureGrants.get(sourceUuid(root)) || [];
+    if (root.type !== "feat" || proofs.length !== 1) return null;
+    const parent = proofs[0];
+    return milestone === 0 || milestone === parent.at ? parent : { lower: parent.lower, exact: null };
+  };
+
+  async function verifyFeatChoice(root, recordedId, uuid, src, restriction = null, acquisition = null) {
     const matching = owned.filter(item => item.type === "feat" && sourceUuid(item) === uuid);
     const direct = byId.get(recordedId);
     if ((direct && (direct.type !== "feat" || sourceUuid(direct) !== uuid)) || (!direct && matching.length))
@@ -75,6 +110,10 @@ export async function auditRecordedAdvancements(fs, actor, sources, check) {
         check("unverified", "feat_level_prerequisite_unreadable", `${feat.name}: level prerequisite is not numeric.`, root._id, [uuid]);
       else if (totalLevel < minimum)
         check("error", "feat_level_prerequisite_unmet", `${feat.name}: requires at least character level ${minimum}, but the actor is level ${totalLevel}.`, root._id, [uuid]);
+      else if (acquisition?.exact != null && acquisition.exact < minimum)
+        check("error", "feat_level_prerequisite_unmet_at_choice", `${feat.name}: its recorded acquisition at character level ${acquisition.exact} precedes the required level ${minimum}.`, root._id, [src, uuid]);
+      else if (minimum > 0 && acquisition?.exact == null && (acquisition?.lower ?? 0) < minimum)
+        check("unverified", "feat_level_at_choice_unverified", `${feat.name}: current level meets ${minimum}, but the historical character level at acquisition is not proven.`, root._id, [src, uuid]);
     }
     // Today's ability scores cannot establish scores when the feat was taken.
     const prereqs = feat.system?.prerequisites || {};
@@ -83,13 +122,13 @@ export async function auditRecordedAdvancements(fs, actor, sources, check) {
       check("unverified", "feat_historical_prerequisite", `${feat.name}: historical or conditional feat prerequisites cannot be certified from current attributes.`, root._id, [uuid]);
   }
 
-  async function checkFeat(root, adv, src) {
+  async function checkFeat(root, adv, src, milestone) {
     const pairs = entries(adv.value?.feat).filter(([, uuid]) => !!uuid);
     if (pairs.length !== 1 || !UUID.test(pairs[0]?.[1] || "")) {
       check("error", "invalid_recorded_feat", `${root.name}: feat advancement must record one exact source UUID.`, root._id, [src]);
       return;
     }
-    await verifyFeatChoice(root, pairs[0][0], pairs[0][1], src);
+    await verifyFeatChoice(root, pairs[0][0], pairs[0][1], src, null, acquisitionForStep(root, milestone));
   }
 
   async function checkItemChoice(root, saved, official, level, src) {
@@ -135,7 +174,7 @@ export async function auditRecordedAdvancements(fs, actor, sources, check) {
         }
         if (config.allowDrops === false && !pool.length)
           check("unverified", "feat_choice_pool_unavailable", `${root.name}: a closed feat choice has no verifiable official pool.`, root._id, [src]);
-        await verifyFeatChoice(root, recordedId, uuid, src, config.restriction || {});
+        await verifyFeatChoice(root, recordedId, uuid, src, config.restriction || {}, acquisitionForStep(root, at));
       }
     }
   }
@@ -170,7 +209,7 @@ export async function auditRecordedAdvancements(fs, actor, sources, check) {
       }
       if (a.type === "AbilityScoreImprovement") {
         const value = step.value || {};
-        if (value.type === "feat") { await checkFeat(root, step, src); continue; }
+        if (value.type === "feat") { await checkFeat(root, step, src, milestone); continue; }
         if (value.type !== "asi") {
           check("unverified", "asi_choice_missing", `${root.name}: no verifiable feat or ability-score decision is recorded for level ${milestone}.`, root._id, [src]);
           continue;
