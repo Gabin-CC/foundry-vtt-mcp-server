@@ -364,6 +364,18 @@ test("an override equal to the official slot table does not cause a spurious war
   assert.deepEqual(f.writes, []);
 });
 
+test("blank spell slot overrides preserve the verified expected table without diagnostics", async () => {
+  const f = fixture();
+  f.actor.system.spells.spell1 = { value: 3, override: "" };
+  f.actor.system.spells.spell3 = { value: 1, override: "" };
+  const report = await audit(f.fs);
+  assert.equal(report.status, "passed_scoped_checks", JSON.stringify(report.diagnostics));
+  assert.deepEqual(report.expected_spell_slots, report.official_base_spell_slots);
+  assert.equal(report.expected_spell_slots.spell1, 4);
+  assert.equal(report.expected_spell_slots.spell3, 2);
+  assert.deepEqual(f.writes, []);
+});
+
 test("spell slot resource values cannot be negative, and unexplained excess stays unverified", async () => {
   const f = fixture();
   f.actor.system.spells.spell1 = { value: -1 };

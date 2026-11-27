@@ -243,12 +243,17 @@ export function slotMax(actor) {
   const r = {};
   const row = SLOTS[Math.min(20, lvl)] || [];
   for (let i = 1; i <= 9; i++) {
-    const ov = actor.system?.spells?.[`spell${i}`]?.override;
+    // Foundry may persist a blank override input as "". This means the
+    // automatic class table, not an intentional zero-slot override.
+    const rawOverride = actor.system?.spells?.[`spell${i}`]?.override;
+    const ov = rawOverride === "" ? null : rawOverride;
     const m = ov ?? row[i - 1] ?? 0;
     if (m) r[`spell${i}`] = m;
   }
-  if (pactLvl || actor.system?.spells?.pact?.override) {
-    r.pact = actor.system?.spells?.pact?.override ?? (pactLvl >= 17 ? 4 : pactLvl >= 11 ? 3 : pactLvl >= 2 ? 2 : 1);
+  const rawPactOverride = actor.system?.spells?.pact?.override;
+  const pactOverride = rawPactOverride === "" ? null : rawPactOverride;
+  if (pactLvl || pactOverride) {
+    r.pact = pactOverride ?? (pactLvl >= 17 ? 4 : pactLvl >= 11 ? 3 : pactLvl >= 2 ? 2 : 1);
     r.pactLevel = Math.min(5, Math.ceil(pactLvl / 2)) || 1;
   }
   return r;
