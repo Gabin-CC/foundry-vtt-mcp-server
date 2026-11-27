@@ -108,6 +108,23 @@ function subclassFixture() {
   return { ...f, source, thirdSource };
 }
 
+// The generic compendium loader may find an item with the same 16-character ID
+// in a different pack. An audit must not certify it as the requested source.
+function shadowOfficialSource(f, pack, missingId, shadowDoc) {
+  const oldData = f.fs.worldData.bind(f.fs);
+  f.fs.worldData = async () => ({ ...await oldData(), packs: [
+    ...(await oldData()).packs, { id: "world.shadow", type: "Item", packageName: "world" }
+  ] });
+  const oldDoc = f.fs.doc.bind(f.fs);
+  f.fs.doc = async (action, type, opts = {}) => {
+    if (action === "get" && type === "Item" && opts.pack === "world.shadow")
+      return !opts.query?._id || opts.query._id === missingId ? [structuredClone(shadowDoc)] : [];
+    const docs = await oldDoc(action, type, opts);
+    return action === "get" && type === "Item" && opts.pack === pack ?
+      docs.filter(doc => doc._id !== missingId) : docs;
+  };
+}
+
 function advancementFixture() {
   const f = fixture();
   const feature = classUuid("wardFeature");
@@ -332,6 +349,27 @@ test("missing compendium provenance and historic ability prerequisites never bec
   assert.deepEqual(f.writes, []);
 });
 
+test("world class provenance cannot certify an otherwise plausible 2024 class", async () => {
+  const f = fixture();
+  f.actor.items[0]._stats.compendiumSource = `Compendium.world.classes.Item.${id("paladin")}`;
+  const report = await audit(f.fs);
+  assert.ok(report.diagnostics.some(d => d.code === "class_source_unverified" && d.severity === "unverified"));
+  assert.ok(!report.verified_sources.classes.includes(classUuid("paladin")));
+  assert.ok(report.diagnostics.some(d => d.code === "spell_progression_unavailable"));
+  assert.deepEqual(f.writes, []);
+});
+
+test("a class found by ID in another pack cannot replace the missing official class source", async () => {
+  const f = fixture();
+  shadowOfficialSource(f, "dnd5e.classes24", id("paladin"), officialClass("paladin", 0, 6));
+  const report = await audit(f.fs);
+  assert.ok(report.diagnostics.some(d => d.code === "class_source_unavailable" && d.severity === "unverified"));
+  assert.ok(!report.diagnostics.some(d => d.code === "class_source_mismatch"));
+  assert.ok(!report.verified_sources.classes.includes(classUuid("paladin")));
+  assert.ok(report.diagnostics.some(d => d.code === "spell_progression_unavailable"));
+  assert.deepEqual(f.writes, []);
+});
+
 test("always-granted feature spells are not overcounted as selected prepared spells", async () => {
   const f = fixture();
   const granted = makeSpell("burning", 2);
@@ -397,6 +435,57 @@ test("world-imported subclass is not mistaken for official PHB 2024 evidence", a
   assert.equal(report.status, "incomplete");
   assert.ok(report.diagnostics.some(d => d.code === "subclass_source_unverified"));
   assert.deepEqual(report.verified_sources.subclasses, []);
+  assert.deepEqual(f.writes, []);
+});
+
+test("a subclass from an ID-match fallback cannot certify its official source or grants", async () => {
+  const f = subclassFixture();
+  const shadow = (await f.fs.doc("get", "Item", { pack: "dnd5e.classes24",
+    query: { _id: id("subclassOath") } }))[0];
+  shadowOfficialSource(f, "dnd5e.classes24", id("subclassOath"), shadow);
+  f.actor.items.push({ _id: id("oathOwned"), type: "subclass", name: "Unproven Oath",
+    _stats: { compendiumSource: f.source }, system: {
+      identifier: "test-oath", classIdentifier: "paladin", source: { rules: "2024" } } });
+  f.actor.items.push(makeSpell("cure", 2, "paladin"));
+  const report = await audit(f.fs);
+  assert.ok(report.diagnostics.some(d => d.code === "subclass_source_unverified" && d.severity === "unverified"));
+  assert.deepEqual(report.verified_sources.subclasses, []);
+  assert.deepEqual(report.verified_sources.subclass_spells, []);
+  assert.ok(!report.diagnostics.some(d => d.code === "missing_subclass_spell"));
+  assert.deepEqual(f.writes, []);
+});
+
+test("a subclass's nested grant must resolve from the exact official feature pack", async () => {
+  const f = subclassFixture();
+  const shadow = (await f.fs.doc("get", "Item", { pack: "dnd5e.classes24",
+    query: { _id: id("domainSpells") } }))[0];
+  shadowOfficialSource(f, "dnd5e.classes24", id("domainSpells"), shadow);
+  f.actor.items.push({ _id: id("oathOwned"), type: "subclass", name: "Official Oath",
+    _stats: { compendiumSource: f.source }, system: {
+      identifier: "test-oath", classIdentifier: "paladin", source: { rules: "2024" } } });
+  const report = await audit(f.fs);
+  assert.deepEqual(report.verified_sources.subclasses, [f.source]);
+  assert.deepEqual(report.verified_sources.subclass_spells, []);
+  assert.ok(report.diagnostics.some(d => d.code === "subclass_grant_unverified" &&
+    /different compendium/.test(d.detail)));
+  assert.ok(!report.diagnostics.some(d => d.code === "missing_subclass_spell"));
+  assert.deepEqual(f.writes, []);
+});
+
+test("a subclass spell with only a same-ID world fallback is not a proven mandatory spell", async () => {
+  const f = subclassFixture();
+  const shadow = compendiumSpells.find(spell => spell._id === id("cure"));
+  shadowOfficialSource(f, "dnd5e.spells24", id("cure"), shadow);
+  f.actor.items.push({ _id: id("oathOwned"), type: "subclass", name: "Official Oath",
+    _stats: { compendiumSource: f.source }, system: {
+      identifier: "test-oath", classIdentifier: "paladin", source: { rules: "2024" } } });
+  f.actor.items.push(makeSpell("feather", 2, "paladin"));
+  const report = await audit(f.fs);
+  assert.deepEqual(report.verified_sources.subclasses, [f.source]);
+  assert.deepEqual(report.verified_sources.subclass_spells, [spellUuid("feather")]);
+  assert.ok(report.diagnostics.some(d => d.code === "subclass_grant_unverified" &&
+    d.references.includes(f.source) && /different compendium/.test(d.detail)));
+  assert.ok(!report.diagnostics.some(d => d.code === "missing_subclass_spell"));
   assert.deepEqual(f.writes, []);
 });
 

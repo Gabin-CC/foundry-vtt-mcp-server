@@ -3,7 +3,7 @@ import { fetchUuid, spellLists } from "./advancement.mjs";
 import { slotMax } from "./dnd5e.mjs";
 import { PRIMARY } from "./actor-multiclass.mjs";
 import { scaleBonus } from "./spells.mjs";
-import { verifySubclass, subclassAlwaysPrepared, THIRD_CASTER_WIZARD_LIST } from "./subclass-spells.mjs";
+import { verifySubclass, subclassAlwaysPrepared, isOfficial2024ClassUuid, THIRD_CASTER_WIZARD_LIST } from "./subclass-spells.mjs";
 import { auditRecordedAdvancements } from "./advancement-audit.mjs";
 
 const UUID = /^Compendium\.[^.]+\.[^.]+\.Item\.[A-Za-z0-9]{16}$/;
@@ -138,13 +138,18 @@ export async function validateActor2024(fs, actor) {
     const id = String(cls.system?.identifier || "").toLowerCase();
     if (cls.system?.source?.rules !== "2024") continue;
     const classSource = sourceUuid(cls);
+    const classPack = /^Compendium\.([^.]+\.[^.]+)\.Item\./.exec(classSource || "")?.[1];
     let officialClass = null;
     if (!UUID.test(classSource || "")) {
       check("unverified", "class_source_missing", `${cls.name}: exact official class compendium UUID is unavailable.`, cls._id);
+    } else if (!isOfficial2024ClassUuid(classSource)) {
+      check("unverified", "class_source_unverified", `${cls.name}: its class source is not an official 2024 class compendium.`, cls._id, [classSource]);
     } else {
       try {
         const doc = await fetchUuid(fs, classSource);
-        if (doc.type !== "class" || String(doc.system?.identifier || "").toLowerCase() !== id || doc.system?.source?.rules !== "2024")
+        if (doc.__pack !== classPack)
+          check("unverified", "class_source_unavailable", `${cls.name}: the exact recorded official class pack could not be read; a different compendium matched its item ID.`, cls._id, [classSource]);
+        else if (doc.type !== "class" || String(doc.system?.identifier || "").toLowerCase() !== id || doc.system?.source?.rules !== "2024")
           check("error", "class_source_mismatch", `${cls.name}: recorded class source disagrees with its identifier or rules edition.`, cls._id, [classSource]);
         else { officialClass = doc; rulesSources.classes.push(classSource);
           verifiedAdvancements.push({ embedded: cls, official: doc,

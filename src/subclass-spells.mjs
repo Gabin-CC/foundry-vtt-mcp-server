@@ -2,6 +2,7 @@
 import { fetchUuid } from "./advancement.mjs";
 
 const ITEM_UUID = /^Compendium\.[^.]+\.[^.]+\.Item\.[A-Za-z0-9]{16}$/;
+const PACK = /^Compendium\.([^.]+\.[^.]+)\.Item\./;
 const advancementList = item => Array.isArray(item.system?.advancement)
   ? item.system.advancement : Object.values(item.system?.advancement || {});
 const sourceUuid = item => item._stats?.compendiumSource || item.flags?.dnd5e?.sourceId || item.flags?.core?.sourceId;
@@ -16,13 +17,21 @@ export function isOfficial2024Uuid(uuid) {
     uuid.startsWith("Compendium.dnd-players-handbook."));
 }
 
+/** Class and subclass evidence must originate in an official class pack. */
+export function isOfficial2024ClassUuid(uuid) {
+  return ITEM_UUID.test(uuid || "") && (uuid.startsWith("Compendium.dnd5e.classes24.Item.") ||
+    uuid.startsWith("Compendium.dnd-players-handbook."));
+}
+
 /** Verify an embedded subclass against its exact installed official source. */
 export async function verifySubclass(fs, sub, parent) {
   const uuid = sourceUuid(sub);
-  if (!isOfficial2024Uuid(uuid)) return { reason: "An exact official D&D 2024 subclass compendium UUID is unavailable." };
+  if (!isOfficial2024ClassUuid(uuid)) return { reason: "An exact official D&D 2024 subclass compendium UUID is unavailable." };
   let doc;
   try { doc = await fetchUuid(fs, uuid); }
   catch { return { reason: "The recorded official subclass source cannot be read." }; }
+  if (doc.__pack !== PACK.exec(uuid)?.[1])
+    return { source: uuid, reason: "The recorded subclass source resolved through a different compendium, not the exact official pack." };
   if (doc.type !== "subclass" || doc.system?.source?.rules !== "2024" ||
       String(doc.system?.classIdentifier || "").toLowerCase() !== String(parent.system?.identifier || "").toLowerCase() ||
       String(doc.system?.identifier || "").toLowerCase() !== String(sub.system?.identifier || "").toLowerCase())
@@ -60,6 +69,10 @@ export async function subclassAlwaysPrepared(fs, officialSubclass, level) {
         let source;
         try { source = await fetchUuid(fs, uuid); }
         catch { unresolved.push(`Required subclass grant cannot be loaded: ${uuid}`); continue; }
+        if (source.__pack !== PACK.exec(uuid)?.[1]) {
+          unresolved.push(`Required subclass grant resolved from a different compendium: ${uuid}`);
+          continue;
+        }
         if (source.system?.source?.rules !== "2024") {
           unresolved.push(`Required subclass grant does not declare 2024 rules: ${uuid}`);
           continue;
