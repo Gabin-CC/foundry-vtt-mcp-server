@@ -94,6 +94,115 @@ function fixture() {
   return { session, actors, writes, sources, set failOnItemCreate(value) { failOnItemCreate = value; } };
 }
 
+function with2024TraitChoices(f) {
+  const mastery = id("weaponMastery"), gaming = id("gamingSet");
+  const feat = source("dnd5e.classes24", "weaponFeature");
+  f.sources[0].system.advancement.push(
+    { _id: id("weaponProfs"), type: "Trait", level: 1,
+      configuration: { mode: "default", grants: ["weapon:sim", "weapon:mar"], choices: [] } },
+    { _id: id("masteryGrant"), type: "ItemGrant", level: 1,
+      configuration: { items: [{ uuid: feat }] } }
+  );
+  f.sources.push({ _id: feat.split(".").at(-1), name: "Weapon Mastery", type: "feat",
+    _stats: { compendiumSource: feat },
+    system: { source: { rules: "2024" }, advancement: [{ _id: mastery, type: "Trait", level: 0,
+      title: "Weapon Mastery", configuration: { mode: "mastery", grants: [],
+        choices: [{ count: 2, pool: ["weapon:*"] }] } }] } });
+  f.sources[2].system.advancement.push({ _id: gaming, type: "Trait", level: 0,
+    title: "Gaming Set", configuration: { mode: "default", grants: [],
+      choices: [{ count: 1, pool: ["tool:game:*"] }] } });
+  const oldWorldData = f.session.worldData.bind(f.session);
+  f.session.worldData = async () => ({ ...(await oldWorldData()), packs: [
+    ...(await oldWorldData()).packs, { id: "dnd5e.equipment24", type: "Item", packageName: "dnd5e" }
+  ] });
+  const equipment = [
+    { _id: id("sword"), name: "Longsword", type: "weapon", system: { identifier: "longsword", mastery: "sap",
+      type: { value: "martialM", baseItem: "longsword" }, source: { rules: "2024" } } },
+    { _id: id("dagger"), name: "Dagger", type: "weapon", system: { identifier: "dagger", mastery: "nick",
+      type: { value: "simpleM", baseItem: "dagger" }, source: { rules: "2024" } } },
+    { _id: id("spear"), name: "Spear", type: "weapon", system: { identifier: "spear", mastery: "sap",
+      type: { value: "simpleM", baseItem: "spear" }, source: { rules: "2024" } } },
+    { _id: id("dice"), name: "Dice Set", type: "tool", system: { identifier: "dice", ability: "wis",
+      type: { value: "game", baseItem: "dice" }, source: { rules: "2024" } } },
+    { _id: id("cards"), name: "Playing Cards", type: "tool", system: { identifier: "card", ability: "wis",
+      type: { value: "game", baseItem: "card" }, source: { rules: "2024" } } },
+    { _id: id("magicSword"), name: "Longsword +1", type: "weapon", system: { identifier: "magicSword",
+      mastery: "sap", rarity: "uncommon", type: { value: "martialM", baseItem: "longsword" }, source: { rules: "2024" } } }
+  ];
+  const oldDoc = f.session.doc.bind(f.session);
+  f.session.doc = async (action, type, opts = {}) =>
+    action === "get" && type === "Item" && opts.pack === "dnd5e.equipment24" && opts.index
+      ? structuredClone(equipment) : oldDoc(action, type, opts);
+  return { mastery, gaming };
+}
+
+test("weapon mastery and gaming-set wildcards resolve to actual 2024 equipment options", async () => {
+  const f = fixture();
+  const { mastery, gaming } = with2024TraitChoices(f);
+  const p = await planActorBuild(f.session, request());
+  assert.equal(p.pret, false);
+  const wp = p.choix_requis.find(x => x.id === mastery);
+  const gp = p.choix_requis.find(x => x.id === gaming);
+  assert.ok(wp.options.includes("Longsword (weapon:mar:longsword)"), JSON.stringify(wp));
+  assert.ok(wp.options.includes("Dagger (weapon:sim:dagger)"));
+  assert.ok(gp.options.includes("Dice Set (tool:game:dice)"));
+  assert.ok(gp.options.includes("Playing Cards (tool:game:card)"));
+  assert.equal(wp.options.some(v => v.includes("weapon:*")), false);
+  assert.equal(gp.options.some(v => v.includes("tool:game:*")), false);
+  assert.equal(wp.options.some(v => v.includes("Longsword +1")), false);
+  assert.deepEqual(f.writes, []);
+});
+
+test("invalid or duplicate Trait picks block build_actor apply without creating any actor", async () => {
+  const f = fixture();
+  const { mastery, gaming } = with2024TraitChoices(f);
+  const { handleTool } = await import("../src/server.mjs");
+  for (const wrong of [["weapon:*", "weapon:mar:longsword"],
+    ["weapon:mar:longsword", "weapon:mar:longsword"],
+    ["weapon:mar:longsword", "weapon:mar:imaginary"],
+    ["weapon:mar:longsword", "weapon:sim:dagger", "weapon:sim:spear"]]) {
+    const response = await handleTool(f.session, { name: "build_actor", arguments: request({ apply: true,
+      choices: { ...CHOICES, [mastery]: wrong, [gaming]: ["tool:game:*"] } }) });
+    const p = JSON.parse(response.content[0].text);
+    assert.equal(p.pret, false, JSON.stringify(p));
+    assert.equal(p.simulation, true);
+    assert.ok(p.choix_requis.some(x => x.id === mastery));
+  }
+  assert.deepEqual(f.writes, []);
+  assert.equal(f.actors.length, 0);
+});
+
+test("mastery cannot select a weapon outside the class's actual proficiency", async () => {
+  const f = fixture();
+  const { mastery } = with2024TraitChoices(f);
+  const proficiency = f.sources[0].system.advancement.find(x => x._id === id("weaponProfs"));
+  proficiency.configuration.grants = ["weapon:sim"];
+  const p = await planActorBuild(f.session, request());
+  const options = p.choix_requis.find(x => x.id === mastery).options;
+  assert.ok(options.includes("Dagger (weapon:sim:dagger)"));
+  assert.ok(!options.some(x => x.includes("longsword")));
+  assert.deepEqual(f.writes, []);
+});
+
+test("accepted equipment Trait picks grant actual mastery and gaming tool proficiency", async () => {
+  const f = fixture();
+  const { mastery, gaming } = with2024TraitChoices(f);
+  const choices = { ...CHOICES,
+    [mastery]: ["weapon:mar:longsword", "weapon:sim:dagger"], [gaming]: ["tool:game:dice"] };
+  const preflight = await planActorBuild(f.session, request({ choices }));
+  assert.equal(preflight.pret, true, JSON.stringify(preflight.choix_requis));
+  const { handleTool } = await import("../src/server.mjs");
+  const response = await handleTool(f.session, { name: "build_actor", arguments: request({ choices, apply: true }) });
+  assert.equal(response.isError, undefined, JSON.stringify(response));
+  assert.equal(JSON.parse(response.content[0].text).simulation, false, response.content[0].text);
+  assert.equal(f.actors.length, 1);
+  const actor = f.actors[0];
+  assert.deepEqual(actor.system.traits.weaponProf.mastery.value.sort(), ["dagger", "longsword"]);
+  assert.deepEqual(actor.system.traits.weaponProf.value.sort(), ["mar", "sim"]);
+  assert.equal(actor.system.tools.dice.value, 1);
+  assert.equal(actor.system.tools.dice.ability, "wis");
+});
+
 test("build preflight lists missing origins and ability scores without fetching or writing", async () => {
   const f = fixture();
   const p = await planActorBuild(f.session, { name: "New character" });
