@@ -585,3 +585,85 @@ test("future nested feat choices and malformed group formats cannot silently pas
   assert.ok(malformed.diagnostics.some(d => d.code === "feat_choice_record_format_unverified" && d.severity === "unverified"));
   assert.deepEqual(f.writes, []);
 });
+
+test("single-class feat ASI checks the actual acquisition level, not today's higher level", async () => {
+  const f = advancementFixture();
+  f.actor.items = f.actor.items.filter(i => i.type !== "class" || i.system?.identifier === "paladin");
+  const saved = f.actor.items[0].system.advancement;
+  saved.find(a => a._id === f.ids.asi).value = { type: "feat", feat: { [id("ownedFeat")]: f.source.feat } };
+  saved.find(a => a._id === f.ids.feat).value = { type: "asi", assignments: { dex: 1, cha: 1 } };
+  f.featDoc.system.prerequisites.level = 6;
+  const report = await audit(f.fs);
+  assert.ok(report.diagnostics.some(d => d.code === "feat_level_prerequisite_unmet_at_choice" && d.severity === "error"));
+  assert.ok(!report.diagnostics.some(d => d.code === "feat_level_prerequisite_unmet"));
+  assert.deepEqual(f.writes, []);
+});
+
+test("multiclass feat history is unverified when earlier total character level is unknown", async () => {
+  const f = advancementFixture();
+  const saved = f.actor.items[0].system.advancement;
+  saved.find(a => a._id === f.ids.asi).value = { type: "feat", feat: { [id("ownedFeat")]: f.source.feat } };
+  saved.find(a => a._id === f.ids.feat).value = { type: "asi", assignments: { dex: 1, cha: 1 } };
+  f.featDoc.system.prerequisites.level = 6;
+  const unknown = await audit(f.fs);
+  assert.ok(unknown.diagnostics.some(d => d.code === "feat_level_at_choice_unverified" && d.severity === "unverified"));
+  assert.ok(!unknown.diagnostics.some(d => d.code === "feat_level_prerequisite_unmet_at_choice"));
+  f.featDoc.system.prerequisites.level = 4;
+  const proven = await audit(f.fs);
+  assert.ok(!proven.diagnostics.some(d => d.code === "feat_level_at_choice_unverified"));
+  assert.deepEqual(f.writes, []);
+});
+
+test("origin-granted feat choices have an exact creation level even after multiclassing", async () => {
+  const f = nestedFeatChoiceFixture();
+  const grant = f.official[0].system.advancement[id("originGrant")];
+  grant.configuration.items.push({ uuid: f.sources.versatile, optional: false });
+  f.race.system.advancement[id("originGrant")].value.added[f.versatile._id] = f.sources.versatile;
+  f.featDocs.find(d => d._id === id("alert")).system.prerequisites.level = 4;
+  const report = await audit(f.fs);
+  assert.ok(report.diagnostics.some(d => d.code === "feat_level_prerequisite_unmet_at_choice" && d.severity === "error"));
+  assert.deepEqual(f.writes, []);
+});
+
+test("verified single-class feature grants date their nested feat choices", async () => {
+  const f = nestedFeatChoiceFixture();
+  f.actor.items = f.actor.items.filter(i => i.type !== "class" || i.system?.identifier === "paladin");
+  const grant = { _id: id("styleGrantTwo"), type: "ItemGrant", level: 2,
+    configuration: { items: [{ uuid: f.sources.style, optional: false }] },
+    value: { added: { [f.style._id]: f.sources.style } } };
+  f.actor.items[0].system.advancement.push(structuredClone(grant));
+  const originalDoc = f.fs.doc.bind(f.fs);
+  f.fs.doc = async (action, type, opts = {}) => {
+    const docs = await originalDoc(action, type, opts);
+    if (action === "get" && type === "Item" && opts.pack === "dnd5e.classes24") {
+      const paladin = docs.find(d => d._id === id("paladin"));
+      if (paladin) paladin.system.advancement.push(structuredClone(grant));
+    }
+    return docs;
+  };
+  f.featDocs.find(d => d._id === id("defense")).system.prerequisites.level = 4;
+  const report = await audit(f.fs);
+  assert.ok(report.diagnostics.some(d => d.code === "feat_level_prerequisite_unmet_at_choice" && d.severity === "error"));
+  assert.deepEqual(f.writes, []);
+});
+
+test("nested feats without a proven parent grant do not invent an acquisition date", async () => {
+  const f = nestedFeatChoiceFixture();
+  f.featDocs.find(d => d._id === id("alert")).system.prerequisites.level = 4;
+  const report = await audit(f.fs);
+  assert.ok(report.diagnostics.some(d => d.code === "feat_level_at_choice_unverified" && d.severity === "unverified"));
+  assert.ok(!report.diagnostics.some(d => d.code === "feat_level_prerequisite_unmet_at_choice"));
+  assert.deepEqual(f.writes, []);
+});
+
+test("an official feature grant without saved item provenance cannot date a feat", async () => {
+  const f = nestedFeatChoiceFixture();
+  f.official[0].system.advancement[id("originGrant")].configuration.items.push({
+    uuid: f.sources.versatile, optional: false });
+  // Versatile is owned, but its exact ItemGrant association was never saved.
+  f.featDocs.find(d => d._id === id("alert")).system.prerequisites.level = 4;
+  const report = await audit(f.fs);
+  assert.ok(report.diagnostics.some(d => d.code === "feat_level_at_choice_unverified" && d.severity === "unverified"));
+  assert.ok(!report.diagnostics.some(d => d.code === "feat_level_prerequisite_unmet_at_choice"));
+  assert.deepEqual(f.writes, []);
+});
