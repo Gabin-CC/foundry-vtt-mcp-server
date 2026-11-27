@@ -17,6 +17,9 @@ const DESCRIPTIONS = {
   list_packs: "List installed compendiums, entry counts, document types and available French translations.",
   search_compendium: "Search installed compendiums by French or English name, type and spell level.",
   get_compendium_entry: "Read a compendium entry, using an available French translation when configured.",
+  rules_list_sources: "List indexed official SRD 5.2.1 and permitted private D&D rulebook sources; GM-only campaign books are never listed to players.",
+  rules_search: "Search compact BM25 rule passages in the shared indexed D&D 2024 corpus. Return the actual source, PDF page, excerpt and official SRD URL where applicable. Requires a verified passage for a confident rules answer.",
+  rules_read_page: "Read an exact permitted indexed PDF page in bounded 6,000-character windows. Continue using next_offset. Never invent page numbers or public URLs for private PDF books.",
   localize_actor: "Reapply available French Babele translations to an actor's items and convert supported units when dnd5e metric mode is enabled.",
   add_from_compendium: "Import spells, equipment, classes, species, backgrounds or other compendium entries into an actor or the world. Supports 2014/2024 rules selection.",
   give_loot: "Give an actor currency and optionally create simple loot items. Weights use the world unit (kg with dnd5e metric weights, otherwise lb) unless weight_unit is given; lb is converted to kg by halving, like the French dnd5e module.",
@@ -136,6 +139,12 @@ const FIELDS = {
 };
 
 const SPECIAL_FIELDS = {
+  rules_search: { query: "English rule-search terms, 2 to 500 characters.",
+    source: "all (default), srd, or an exact PDF source ID returned by rules_list_sources.",
+    limit: "Number of compact excerpts to return, 1 to 8 (default 4)." },
+  rules_read_page: { source: "Exact permitted PDF source ID from rules_search; defaults to srd.",
+    page: "Actual PDF page number (1-based), not printed book pagination.",
+    offset: "Character offset for the next bounded 6,000-character window, default 0." },
   apply_damage: { targets: "Limit application to selected target UUIDs or names.", force: "Allow reapplying an already consumed proposal." },
   find_references: { uuid: "Document UUID to search for, for example Compendium.dnd5e.spells24.Item.ID." },
   gm_sync_items: { pack: "Only synchronize items originating from this specific source compendium." },

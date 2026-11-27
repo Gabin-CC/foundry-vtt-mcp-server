@@ -189,6 +189,24 @@ Variables d'environnement :
 | `PUBLIC_URL` | *(vide)* | URL publique de Foundry, pour renvoyer l'URL des fichiers envoyés |
 | `UPLOAD_ALLOWED_ORIGINS` | *(vide)* | Origines HTTPS autorisées pour `upload_file` (liste séparée par des virgules) ; vide = URL distantes désactivées, base64 toujours disponible |
 | `TRANSLATION_SOURCES` | `dnd5e_fr-FR/compendium_fr` | Dossiers de traductions Babele (`module/dossier`, séparés par des virgules, par priorité). Chaque dossier contient `<id du compendium>.json`, ex. `world.sors.json` |
+| `RULES_INDEX_PATH` | `.rules/rules-index.json` | Chemin de l'index **déjà généré** par foundry-ai-agent, accompagné de `search-v1.json` dans le même dossier |
+| `RULES_ACCESS_FILE` | `rules-private/access.json` | Politique facultative des livres accessibles à tous ; les autres PDF restent réservés aux MJ |
+| `RULES_SEARCH_METRICS` | désactivé | `1` pour journaliser le temps de recherche sans les extraits |
+
+### Recherche dans les livres indexés
+
+Trois outils MCP unifient la recherche documentaire : `rules_list_sources` (sources autorisées), `rules_search` (passages BM25 courts, au maximum 8) et `rules_read_page` (page exacte par fenêtres de 6 000 caractères). Aucun chargement massif des 7 446 pages dans le contexte et aucune ré-extraction des PDF : le MCP lit l'index existant et son index de recherche optimisé.
+
+Sur un hôte commun, renseigner le chemin de l'index et de la politique depuis le service MCP, par exemple :
+
+```ini
+RULES_INDEX_PATH=/opt/foundry-ai-agent/.rules/rules-index.json
+RULES_ACCESS_FILE=/opt/foundry-ai-agent/rules-private/access.json
+```
+
+Le compte système du serveur MCP doit avoir des droits de **lecture** sur les deux fichiers, ainsi que sur `.rules/search-v1.json`, sans exposition publique des livres ni de l'index. Le fichier de politique peut contenir `{"version":1,"rules_for_all":["Player Handbook 2024.pdf"]}` (le nom doit correspondre exactement au PDF indexé). Sans déclaration, **tous les PDF privés, campagnes incluses, sont réservés au MJ** ; le SRD officiel reste accessible aux joueurs. Les PDF privés ne reçoivent aucune fausse URL publique dans les citations.
+
+La visibilité dépend du rôle Foundry authentifié. Pour le pont IA qui se connecte en Assistant MJ au nom de joueurs, l'en-tête HTTP `X-Rules-Audience: player` restreint les outils documentaires aux sources joueurs. Cet en-tête doit être dérivé côté serveur du rôle réel du message, jamais du texte fourni à l'IA ; il ne peut pas accorder de droits MJ à un compte joueur.
 
 ### Reverse proxy (HTTPS obligatoire)
 

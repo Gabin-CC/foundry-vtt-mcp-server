@@ -33,6 +33,7 @@ import { TABLE_TOOLS, CARD_TOOLS, handleTable, handleCards } from "./tables.mjs"
 import { resolveTarget, propose, applyDamage } from "./targets.mjs";
 import { diffUpdates, saveSnapshot, finalizeActorSnapshot, currentDocs, listSnapshots, showSnapshot, restoreSnapshot } from "./snapshots.mjs";
 import { captureActorState, summarizeLevelPlan } from "./actor-progress.mjs";
+import { rulesQuery } from "./rules-api.mjs";
 import { planMulticlass } from "./actor-multiclass.mjs";
 import { planActorEdits } from "./actor-edit.mjs";
 import { rollFormula, derive, checkBonus, sheet, slotMax, useItem, translations, translateDoc, trFor, refreshUnits, localizeItem, actorTranslationContext, actorMetricUpdates, UNITS, ABIL, SKILLS } from "./dnd5e.mjs";
@@ -186,6 +187,18 @@ export const TOOL_DEFINITIONS = [
       level: { type: "number", description: "Niveau de sort" }, limit: { type: "number", default: 25 } } } },
   { name: "get_compendium_entry", description: "Lit une entrée de compendium (traduite en FR si possible).",
     inputSchema: { type: "object", required: ["pack", "id"], properties: { pack: { type: "string" }, id: { type: "string" }, path: { type: "string" } } } },
+  { name: "rules_list_sources", description: "Liste les livres de règles D&D 2024 indexés et accessibles : SRD officiel pour tous, PDF privés autorisés suivant le rôle. Aucun document privé n'est chargé dans le contexte.",
+    inputSchema: { type: "object", properties: {} } },
+  { name: "rules_search", description: "Recherche BM25 de passages précis dans le SRD 5.2.1 et les PDF indexés accessibles à l'utilisateur. Renvoie le livre, la page PDF, un extrait borné et l'URL officielle du SRD seulement ; aucune invention de référence.",
+    inputSchema: { type: "object", required: ["query"], properties: {
+      query: { type: "string", minLength: 2, maxLength: 500, description: "Termes anglais à rechercher dans les règles" },
+      source: { type: "string", default: "all", description: "all, srd, ou ID de livre renvoyé par rules_list_sources" },
+      limit: { type: "integer", minimum: 1, maximum: 8, default: 4, description: "Nombre maximal de passages renvoyés (1–8)" } } } },
+  { name: "rules_read_page", description: "Lit une page PDF réellement indexée, par fenêtre de 6000 caractères et sans exposer les livres réservés au MJ aux joueurs.",
+    inputSchema: { type: "object", required: ["page"], properties: {
+      source: { type: "string", default: "srd", description: "ID de livre obtenu depuis rules_search" },
+      page: { type: "integer", minimum: 1, description: "Numéro de page du PDF, non du livre imprimé" },
+      offset: { type: "integer", minimum: 0, default: 0, description: "Position du texte à partir de laquelle lire la prochaine fenêtre" } } } },
   { name: "localize_actor", description: "Traduit en FR les objets d'un acteur d'après leur compendium d'origine (comme la traduction d'acteur de Babele) et convertit les unités en mètres/kg si l'option métrique de dnd5e est active. Sans effet sur ce qui est déjà traduit/converti.",
     inputSchema: { type: "object", properties: { actor: { type: "string", description: "Nom ou _id de l'acteur" }, dry_run: { type: "boolean", description: "Aperçu avant/après de chaque champ, sans rien appliquer (sinon instantané de restauration : outil snapshots)" } }, required: ["actor"] } },
   { name: "add_from_compendium", description: "Ajoute des entrées de compendium à un acteur (sorts, objets, butin, classe, espèce, historique, dons...) ou les importe dans le monde si 'actor' est absent (ex. un monstre). Traduit en FR. Pour une classe, 'levels' fixe le niveau et remplit les PV (max au niv. 1, puis moyenne).",
@@ -403,28 +416,40 @@ const randomId = () => { const c = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqr
 const norm = t => String(t || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
 const setPath = setSafePath;
 
-function makeServer(fs) {
+function makeServer(fs, rulesAudience) {
   const server = new Server({ name: "foundry-vtt", version: "1.0.0" }, { capabilities: { tools: {} } });
   const isGM = (Number(fs.user?.role) || 0) >= GM_ROLE;
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS.filter(t => !t.gm || isGM).map(({ gm, ...t }) => t) }));
-  server.setRequestHandler(CallToolRequestSchema, async ({ params }) => handleTool(fs, params));
+  server.setRequestHandler(CallToolRequestSchema, async ({ params }) => handleTool(fs, params, { rulesAudience }));
   return server;
 }
 
-export async function handleTool(fs, params) {
-  const r = await runTool(fs, params);
+export async function handleTool(fs, params, context = {}) {
+  const r = await runTool(fs, params, context);
   if (!r?.[OUT]) return r;
   return { content: [{ type: "text", text: r.value === undefined ? message("(empty)", "(vide)") : render(responseAliases(params.name, r.value), fs.userId) }] };
 }
 
-async function runTool(session, params) {
+async function runTool(session, params, { rulesAudience } = {}) {
   // comptes non MJ : lectures filtrées selon les droits Foundry (voir access.mjs) ; `session` (non filtrée) ne sert
   // qu'au calcul des cibles de use_item / apply_damage (CA, sauvegardes), qui ne renvoie pas les fiches des cibles.
   const fs = restrictedSession(session);
-  try { await refreshUnits(fs); } catch { /* pas bloquant */ }
+  if (!params.name.startsWith("rules_")) {
+    try { await refreshUnits(fs); } catch { /* pas bloquant */ }
+  }
     const a = params.arguments || {};
     try {
       switch (params.name) {
+        case "rules_list_sources":
+        case "rules_search":
+        case "rules_read_page": {
+          try { return out(await rulesQuery(params.name, a, { foundryRole: fs.user?.role, audience: rulesAudience })); }
+          catch (error) {
+            console.error(`[rules-mcp] ${params.name} failed: ${error.message}`);
+            return { isError: true, content: [{ type: "text", text:
+              "Rules source unavailable or query rejected. Check the indexed source and access permissions; do not invent a rule." }] };
+          }
+        }
         case "world_info": {
           const users = await fs.doc("get", "User", { query: {} });
           return out({ world: { id: fs.world.id, title: fs.world.title, system: fs.world.system, coreVersion: fs.world.coreVersion },
@@ -1507,7 +1532,11 @@ app.use(async (req, res) => {
     return deny(res, 401, message("Invalid Foundry credentials", "Identifiants Foundry invalides"), bearer ? bearerChallenge : undefined);
   }
   if (req.method !== "POST") return deny(res, 405, message("Stateless MCP server: POST only", "Serveur MCP sans état : POST uniquement"));
-  const server = makeServer(fs);
+  // The AI bridge acts through an Assistant GM account for Foundry operations;
+  // its per-message audience can explicitly DOWNGRADE rules visibility.
+  // An ordinary player's credentials can never acquire GM rules with a header.
+  const rulesAudience = req.headers["x-rules-audience"] === "player" ? "player" : undefined;
+  const server = makeServer(fs, rulesAudience);
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
   res.on("close", () => { transport.close(); server.close(); });
   await server.connect(transport);

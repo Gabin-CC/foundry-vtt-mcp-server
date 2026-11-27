@@ -13,6 +13,7 @@ Each player connects with **their own Foundry account**. Foundry permissions sti
 | World and documents | `world_info`, `list_documents`, `get_document`, `create_documents`, `update_documents`, `delete_documents` |
 | Safe changes and large results | `snapshots`, `next_page` |
 | Search and diagnostics | `search_text`, `find_references`, `audit_translation` |
+| Indexed D&D books | `rules_list_sources`, `rules_search`, `rules_read_page` (SRD + locally indexed private PDFs, role-filtered) |
 | D&D 5e characters | `actor_sheet`, `advance`, `progress_actor`, `multiclass_actor`, `edit_actor`, `build_actor`, `advancement_blueprint`, `rebuild_actor`, `compare_actors`, `roll`, `check`, `use_item`, `apply_damage`, `rest`, `give_loot` |
 | Compendiums | `list_packs`, `search_compendium`, `get_compendium_entry`, `add_from_compendium`, `localize_actor` |
 | Other world features | `roll_table`, `cards`, `upload_file`, `send_chat` |
@@ -26,6 +27,7 @@ Highlights:
 - Write tools support non-mutating previews where indicated; updates and deletions create recoverable snapshots before writing. `snapshots` can inspect and restore earlier values.
 - `use_item` rolls attacks, damage and healing, consumes resources where applicable, and can generate per-target proposals (AC, saves, resistance, vulnerability, immunity). `apply_damage` applies an approved proposal or explicit values.
 - Compendium lookups can use French or English names when compatible Babele translations are installed. `localize_actor` can apply translations and metric units to an existing actor.
+- `rules_search` queries the already-built BM25 index in short passages (up to eight results, 1,300-character passages); `rules_read_page` reads an exact indexed PDF page in 6,000-character windows. The PDFs are never uploaded to the MCP server or returned in bulk.
 - `advance` replays the dnd5e advancement workflow server-side (class, subclass, species, background, feat). Classes, subclasses, backgrounds and feats imported by Plutonium into world compendiums often lack dnd5e advancements; they are rebuilt on the fly from the Plutonium flags and the 5etools text (see [Plutonium content](#plutonium-content-in-world-compendiums)).
 - `advancement_blueprint` reads the exact advancement decisions recorded on an existing single-class actor. `advance` can reuse those decisions with `replay_from`, including the official class source and pre-class ability scores for an empty target actor; `compare_actors` reports what still differs.
 - `rebuild_actor` is the preview-first full-character workflow: replay the original class, species and background advancements; recover a missing choice only from the exact origin of a granted item; restore the source's remaining spells, inventory and campaign rewards; compare both sheets.
@@ -182,10 +184,26 @@ sudo systemctl enable --now foundry-mcp
 | `SNAPSHOT_KEEP` / `SNAPSHOT_DAYS` | `500` / `90` | Snapshot retention |
 | `MAX_OUT` | `60000` | Response-size threshold for JSON pagination |
 | `CHAT_CACHE_MAX_AGE_MS` | `15000` | Maximum age of the authenticated session's chat cache before a full Foundry read; lower values reduce worst-case delay if socket broadcasts are missed |
+| `RULES_INDEX_PATH` | `.rules/rules-index.json` relative to MCP working directory | Path to the **existing** index produced by `foundry-ai-agent` (legacy `srd-5.2.1.json` also accepted); the matching `search-v1.json` is loaded from the same directory when valid |
+| `RULES_ACCESS_FILE` | `rules-private/access.json` relative to MCP working directory | Optional `{"version":1,"rules_for_all":["Player Handbook 2024.pdf"]}` allowlist; all other private PDFs, including adventures, are GM-only by default |
+| `RULES_SEARCH_METRICS` | unset | Set `1` to log retrieval times without logging excerpts |
 
 **Language migration (incremental):** set `MCP_LOCALE=en` to receive English text for supported OAuth errors, dispatcher errors, pagination hints, snapshots, target diagnostics and selected GM / table / card feedback. The OAuth sign-in page additionally honors the browser's `Accept-Language` (English or French), independently for each player. This option deliberately **does not translate JSON keys, enum values, Foundry document content or user-entered names**. Some messages are still French; see [internationalization and compatibility](docs/internationalization.md) for current coverage, migration rules and future work.
 
 If the proxy is in a separate container or host, bind `HOST` to a suitable **private** interface and apply firewall rules. Never expose the MCP HTTP port directly to the public internet.
+
+### Shared D&D book search (MCP)
+
+The indexed book collection is local data, **not part of this public repository**. If both services run on the same host, configure the MCP service to read the agent's existing index and policy, e.g.:
+
+```ini
+RULES_INDEX_PATH=/opt/foundry-ai-agent/.rules/rules-index.json
+RULES_ACCESS_FILE=/opt/foundry-ai-agent/rules-private/access.json
+```
+
+The account running `foundry-mcp` needs read access to the index, the `search-v1.json` sidecar and policy file (for example via a dedicated read-only group or ACL). Do not copy private books into Git, make the index world-readable, or re-extract the PDFs. The index is refreshed automatically when its file metadata changes. Missing indexes produce a tool error, **not an invented rule**. `rules_list_sources` shows only books permitted for that request; `rules_search` returns verifiable excerpts with PDF page numbers; `rules_read_page` follows up on an exact source/page and uses `next_offset` if needed. Private PDFs have no public URL in the result.
+
+For direct MCP connections, Foundry's authenticated roles determine visibility: players see the official SRD plus PDFs explicitly listed in `rules_for_all`, while GM and Assistant GM accounts can consult all indexed books. For a shared AI bridge authenticated as an Assistant GM but responding to a player, set the HTTP header `X-Rules-Audience: player` **from trusted, server-side message-role data**. That header can only reduce access; a player account cannot use it to gain GM access. The model must never control this header. Keep the role-scoped tool output out of shared logs and player chat; the agent bridge must set the audience separately for each request.
 
 ### Reverse proxy
 
