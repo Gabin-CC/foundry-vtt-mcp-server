@@ -34,6 +34,7 @@ Claude (CLI / Desktop) ──HTTPS + Basic auth──▶ foundry-vtt-mcp-server 
 | `roll_table` | Tirage sur une table (monde ou compendium, traduite) comme Foundry : formule, tirage sans remise, tables imbriquées, carte dans le chat optionnelle ; `show`, `reset` |
 | `cards` | Cartes : `list`, `draw`, `deal`, `pass`, `discard`, `shuffle`, `recall` (mêmes opérations que le client Foundry) |
 | `actor_sheet` | Fiche calculée : niveau, maîtrise, mods, CA estimée, PV, compétences, attaque/DD de sort, emplacements |
+| `validate_actor` | Audit D&D 2024 **en lecture seule** : niveaux et classes, provenance des règles, limites de sorts propres à chaque classe et conflits d'équipement. Distingue erreurs établies, avertissements et points non vérifiables |
 | `advancement_blueprint` | Lit les choix de progression réellement enregistrés sur une fiche à classe unique, la source exacte de la classe et les caractéristiques avant progression de classe (lecture seule) |
 | `advance` avec `replay_from` | Rejoue automatiquement ces choix sur une autre fiche avec la même classe ; demande uniquement les choix introuvables dans la source |
 | `progress_actor` | Fait progresser une **fiche existante** D&D 2024 à classe unique : simulation sans écriture par défaut, choix explicites, sauvegarde avant application et restauration contrôlée |
@@ -123,6 +124,14 @@ Les emplacements de sorts multiclasses 2024 comptent la moitié **arrondie au su
 Pour choisir les sorts de la classe qui progresse, activer `spells: "selected"` et lancer d'abord une simulation : `choix_requis` indique les sorts éligibles, vérifiés dans les listes officielles installées. Renseigner les UUID exacts des compendiums 2024 dans `choices["spells:cantrips"]` et `choices["spells:prepared"]`. Pour un **Magicien** de niveau de classe 1, fournir également **six** UUID dans `choices["spells:spellbook"]`, puis choisir les quatre sorts préparés dans ce grimoire ; deux nouveaux sorts s'y ajoutent à chaque niveau de Magicien suivant. Les nombres exacts figurent dans la simulation et doivent être respectés. `spells: "none"` (défaut) ne sélectionne aucun sort.
 
 La sélection se fait **classe par classe**, avec provenance `sourceClass`, vérification des sorts importés et prise en charge de leur restauration dans `snapshots`. Les listes de sorts 2024 doivent être présentes dans Foundry. La magie des sous-classes de tiers-lanceurs non prise en charge est refusée ; cela ne certifie pas toutes les règles de remplacement de sorts ni toutes les particularités du grimoire. La rétrogradation et la certification complète des règles restent hors périmètre.
+
+### Auditer une fiche D&D 2024 sans la modifier
+
+Appeler `validate_actor({ "actor": "ID_ACTEUR" })` pour obtenir un rapport : classes, somme des niveaux, sources de classe 2024 vérifiables, emplacements multiclasses prévus, niveaux de sorts accessibles **dans chaque classe**, listes officielles de sorts installées, nombre de sorts préparés / mineurs et conflits d'équipement visibles.
+
+Les diagnostics distinguent `error` (contradiction vérifiable), `warning` (situation à examiner) et `unverified` (données insuffisantes). Le résultat `status` vaut `issues`, `review`, `incomplete` ou `passed_scoped_checks`. **Même le dernier ne constitue pas une certification exhaustive D&D 2024.** Les références de compendiums sont fournies lorsqu'elles ont été réellement contrôlées, sans citation de page PDF inventée. Une caractéristique aujourd'hui inférieure au seuil de multiclassage produit un avertissement : la valeur lors du choix initial peut avoir été différente.
+
+Un grimoire de Magicien peut contenir des sorts supplémentaires copiés : il n'existe **pas de plafond absolu de six sorts + deux par niveau**. Les sorts accordés en permanence et les particularités de sous-classes ne sont pas assimilés aux préparations ordinaires. Les choix historiques de dons, aptitudes, PV et effets d'objets magiques nécessitent encore des vérifications complémentaires.
 
 ### Modifier l'équipement et les sorts préparés
 

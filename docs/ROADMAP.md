@@ -11,7 +11,8 @@ The earlier four-step plan was **feature-oriented**; its proposed PR numbers no 
 | Edit owned equipment and prepared class spells | Available | `edit_actor` previews state changes and validates equipment/spell constraints, with restorable snapshots; PR #29 |
 | Multiclass progression | Available | `multiclass_actor`: verified D&D 2024 class prerequisites, one level at a time, secondary-class proficiencies, preview and recoverable snapshots; PR #30 |
 | Multiclass spell acquisition | Available (PR #33) | Class-scoped verified 2024 cantrip/prepared selections, Wizard spellbook entry/growth, independent Pact Magic and shared multiclass slots; subclass third-casters and spell replacement rules remain out of scope |
-| Certify D&D 2024 rules legality | Planned | Validate prerequisites, edition, class/subclass/feat progression, spellbook limits, selected equipment, and derived sheet values against verified sources |
+| Read-only D&D 2024 sheet audit | Available (PR #34) | `validate_actor`: source-aware class/spell/equipment checks with errors, warnings and explicitly unverified cases. Does not claim global rules certification |
+| Certify full D&D 2024 rules legality | Planned | Verify recorded historical choices, subclass/feat progression, equipment interactions, copied spellbook entries and derived sheet values against available authoritative rules |
 
 ## Principles
 

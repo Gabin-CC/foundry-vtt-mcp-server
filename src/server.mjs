@@ -37,6 +37,7 @@ import { rulesQuery } from "./rules-api.mjs";
 import { planMulticlass } from "./actor-multiclass.mjs";
 import { planMulticlassSpells } from "./actor-multiclass-spells.mjs";
 import { planActorEdits } from "./actor-edit.mjs";
+import { validateActor2024 } from "./actor-validate.mjs";
 import { rollFormula, derive, checkBonus, sheet, slotMax, useItem, translations, translateDoc, trFor, refreshUnits, localizeItem, actorTranslationContext, actorMetricUpdates, UNITS, ABIL, SKILLS } from "./dnd5e.mjs";
 import { setSafePath } from "./security.mjs";
 import { restrictedSession, isStub, limitedError } from "./access.mjs";
@@ -268,6 +269,10 @@ export const TOOL_DEFINITIONS = [
       equipment: { type: "object", description: "Objet de l'inventaire par _id vers true=porter / false=retirer (fournir le retrait de l'ancien équipement dans le même appel)" , additionalProperties: { type: "boolean" } },
       prepared_spells: { type: "object", description: "Sort possédé par _id vers true=préparer / false=ne plus préparer ; les sorts accordés en permanence ne sont pas modifiables" , additionalProperties: { type: "boolean" } },
       apply: { type: "boolean", default: false, description: "false par défaut : simulation ; true : appliquer avec instantané de récupération" }
+    } } },
+  { name: "validate_actor", description: "Audite une fiche D&D 2024 sans aucune écriture : niveaux et classes, provenance officielle, préparation des sorts par classe, limites de niveau propres aux classes et conflits d'équipement. Sépare erreurs prouvées, avertissements et contrôles impossibles à vérifier ; ne certifie pas la conformité globale.",
+    inputSchema: { type: "object", required: ["actor"], properties: {
+      actor: { type: "string", description: "Nom ou identifiant de la fiche à examiner (lecture seule)" }
     } } },
   { name: "advancement_blueprint", description: "Inspecte un acteur à classe unique et renvoie sa classe/source, ses choix d'avancement réellement enregistrés et ses caractéristiques avant progression de classe, sans rien modifier. Les équipements et sorts non enregistrés comme choix restent à contrôler.",
     inputSchema: { type: "object", required: ["actor"], properties: { actor: { type: "string" } } } },
@@ -595,6 +600,7 @@ async function runTool(session, params, { rulesAudience } = {}) {
         }
 
         case "actor_sheet": return out(sheet(await findActor(fs, a.actor)));
+        case "validate_actor": return out(await validateActor2024(fs, await findActor(fs, a.actor)));
         case "advancement_blueprint": return out(advancementBlueprint(await findActor(fs, a.actor)));
         case "compare_actors": {
           const source = await findActor(fs, a.source), target = await findActor(fs, a.target);

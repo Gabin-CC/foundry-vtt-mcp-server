@@ -14,7 +14,7 @@ Each player connects with **their own Foundry account**. Foundry permissions sti
 | Safe changes and large results | `snapshots`, `next_page` |
 | Search and diagnostics | `search_text`, `find_references`, `audit_translation` |
 | Indexed D&D books | `rules_list_sources`, `rules_search`, `rules_read_page` (SRD + locally indexed private PDFs, role-filtered) |
-| D&D 5e characters | `actor_sheet`, `advance`, `progress_actor`, `multiclass_actor`, `edit_actor`, `build_actor`, `advancement_blueprint`, `rebuild_actor`, `compare_actors`, `roll`, `check`, `use_item`, `apply_damage`, `rest`, `give_loot` |
+| D&D 5e characters | `actor_sheet`, `validate_actor`, `advance`, `progress_actor`, `multiclass_actor`, `edit_actor`, `build_actor`, `advancement_blueprint`, `rebuild_actor`, `compare_actors`, `roll`, `check`, `use_item`, `apply_damage`, `rest`, `give_loot` |
 | Compendiums | `list_packs`, `search_compendium`, `get_compendium_entry`, `add_from_compendium`, `localize_actor` |
 | Other world features | `roll_table`, `cards`, `upload_file`, `send_chat` |
 | GM and assistant-GM actions | `gm_scene`, `gm_music`, `gm_show`, `gm_permissions`, `gm_tile`, `gm_token`, `gm_combat`, `gm_pause`, `gm_check_ids`, `gm_sync_items`, `gm_patch_items` |
@@ -102,6 +102,18 @@ To select verified spells for the class being added/advanced, use `spells: "sele
 ```
 
 The arrays must match the exact counts shown in the preview; placeholder IDs above are illustrative, **not usable UUIDs**. `spells: "none"` (default) leaves spell selection to the GM. Selection requires installed, verifiable official D&D 2024 spell lists and supported class spellcasting progression; unsupported subclass-based third casters are refused rather than guessed. Class spells are tracked independently by `sourceClass`, and the spell additions are included in the recoverable snapshot. This is not a full certification of all spellbook rules, spell replacements or class features. `edit_actor`, `rebuild_actor` and `progress_actor` retain their documented **single-class** restrictions. No de-leveling or cross-edition mixing is included.
+
+### Audit a D&D 2024 character (read-only)
+
+Call `validate_actor({ "actor": "ACTOR_ID" })` to inspect **an existing actor without any Foundry writes**. It reports class levels (including multiclass total), official 2024 class-source provenance, documented spell slots, class-specific cantrip and prepared-spell limits, class-specific spell-level ceilings, exact installed official class-list membership, and obvious equipment conflicts.
+
+Each diagnostic has a stable `code`, `severity` (`error`, `warning`, or `unverified`), a human-readable explanation, and source UUIDs where they were actually verified. The `status` is one of `issues`, `review`, `incomplete`, or `passed_scoped_checks`. In particular, **`passed_scoped_checks` is NOT a declaration of full D&D 2024 legality**. A character with missing compendium provenance or unverifiable third-party material is reported as `incomplete`, not incorrectly rejected. Scores currently below multiclass entry prerequisites are warnings because the *historical* score at entry may differ.
+
+```json
+{ "actor": "ACTOR_ID" }
+```
+
+The report includes `expected_spell_slots` (shared multiclass table, Pact Magic separately), `verified_sources` and explicit `limits`. Wizard spellbooks may legitimately contain additional copied spells: the audit **does not impose a false six-plus-two maximum**. Always-prepared feature spells and extra subclass spells are not treated as ordinary prepared-class selections. Historical advancement decisions, subclass-specific exceptions, feats, HP rolls and derived magic-item effects still require separate review; this tool neither rewrites the sheet nor invents PDF page citations.
 
 ### Change equipment and prepared spells on an existing character
 
