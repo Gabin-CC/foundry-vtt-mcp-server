@@ -326,6 +326,55 @@ test("class-level spell ceiling rejects Fireball even though shared slots reach 
   assert.deepEqual(f.writes, []);
 });
 
+test("class spells with mixed-case sourceClass still count toward official spell limits", async () => {
+  const f = fixture();
+  for (const spell of f.actor.items.filter(i => i.type === "spell"))
+    spell.system.sourceClass = "SoRcErEr";
+  f.actor.items.push({ ...makeSpell("acid", 0, "SORCERER"), _id: id("caseCantrip") });
+  const report = await audit(f.fs);
+  assert.ok(report.diagnostics.some(d => d.code === "too_many_cantrips" && d.severity === "error"));
+  assert.ok(!report.diagnostics.some(d => d.code === "orphan_spell_class"),
+    "Capitalization alone must not orphan a spell or hide it from its class");
+  assert.deepEqual(f.writes, []);
+});
+
+test("a noncaster class's attributed spell needs feature evidence, not a false scoped pass", async () => {
+  const f = subclassFixture();
+  const fighter = classItem("fighter", 3);
+  fighter.system.spellcasting.progression = "none";
+  f.actor.items = [fighter, makeSpell("shieldspell", 0, "FIGHTER")];
+  const report = await audit(f.fs);
+  assert.equal(report.status, "incomplete");
+  assert.ok(report.diagnostics.some(d => d.code === "noncaster_class_spell_origin" &&
+    d.severity === "unverified" && d.subject === fighter._id));
+  assert.ok(!report.diagnostics.some(d => d.code === "spell_above_class_level"),
+    "An unexplained class attribution does not prove an illegal feat-granted spell");
+  assert.deepEqual(f.writes, []);
+});
+
+test("official always-prepared subclass grants do not trigger a noncaster spell-origin warning", async () => {
+  const f = subclassFixture();
+  const paladin = classItem("paladin", 8);
+  paladin.system.spellcasting.progression = "none";
+  const oath = { _id: id("oathOwned"), type: "subclass", name: "Official Oath",
+    _stats: { compendiumSource: f.source }, system: {
+      identifier: "test-oath", classIdentifier: "paladin", source: { rules: "2024" } } };
+  f.actor.items = [paladin, oath, makeSpell("cure", 2, "paladin"), makeSpell("feather", 2, "paladin")];
+  const oldDoc = f.fs.doc.bind(f.fs);
+  f.fs.doc = async (action, type, opts = {}) => {
+    const docs = await oldDoc(action, type, opts);
+    if (action === "get" && type === "Item" && opts.pack === "dnd5e.classes24")
+      for (const doc of docs) if (doc._id === id("paladin")) doc.system.spellcasting.progression = "none";
+    return docs;
+  };
+  const report = await audit(f.fs);
+  assert.equal(report.status, "passed_scoped_checks", JSON.stringify(report.diagnostics));
+  assert.deepEqual(report.verified_sources.subclass_spells.sort(),
+    [spellUuid("cure"), spellUuid("feather")].sort());
+  assert.ok(!report.diagnostics.some(d => d.code === "noncaster_class_spell_origin"));
+  assert.deepEqual(f.writes, []);
+});
+
 test("a forged noncaster class field cannot skip official class spell checks", async () => {
   const f = fixture();
   f.actor.items[1].system.spellcasting.progression = "none"; // official sorcerer is full
@@ -533,6 +582,8 @@ test("official third-caster subclass uses the Wizard list and its own 2024 scale
   assert.equal(good.status, "passed_scoped_checks", JSON.stringify(good.diagnostics));
   assert.equal(good.expected_spell_slots.spell1, 2);
   assert.ok(!good.diagnostics.some(d => d.code === "third_caster_features"));
+  assert.ok(!good.diagnostics.some(d => d.code === "noncaster_class_spell_origin"),
+    "A verified third-caster subclass has an official casting progression");
   f.actor.items.push(makeSpell("fireball", 1, "fighter"));
   const bad = await audit(f.fs);
   assert.equal(bad.status, "issues");
