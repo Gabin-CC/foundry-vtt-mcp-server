@@ -77,6 +77,16 @@ export async function validateActor2024(fs, actor) {
   const verifiedSubclasses = new Map();
   const verifiedSpellcasting = new Map();
   const declaredAlwaysPrepared = new Set();
+  const scopedAlwaysPrepared = new Map();
+  const incompleteGrantTraces = new Set();
+  const verifiedClassGrantRoots = new Set();
+  const recordGrantEvidence = (classId, grants) => {
+    const sources = scopedAlwaysPrepared.get(classId) || new Set();
+    for (const uuid of grants.declared) { declaredAlwaysPrepared.add(uuid); sources.add(uuid); }
+    for (const [uuid] of grants.expected) sources.add(uuid);
+    scopedAlwaysPrepared.set(classId, sources);
+    if (grants.unresolved.length) incompleteGrantTraces.add(classId);
+  };
   const verifiedAdvancements = [];
   // Load each *exact* installed spell pack index at most once. Foundry's Item
   // index exposes official spell levels without fetching hundreds of full
@@ -156,7 +166,7 @@ export async function validateActor2024(fs, actor) {
       check("error", "subclass_spellcasting_progression_mismatch",
         `${sub.name}: its recorded spellcasting progression differs from the exact official 2024 subclass source.`, sub._id, [evidence.source]);
     const grants = await subclassAlwaysPrepared(fs, evidence.doc, Number(cls.system?.levels) || 0);
-    for (const uuid of grants.declared) declaredAlwaysPrepared.add(uuid);
+    recordGrantEvidence(id, grants);
     for (const reason of grants.unresolved)
       check("unverified", "subclass_grant_unverified", `${sub.name}: ${reason}`, sub._id, [evidence.source]);
     for (const [uuid] of grants.expected) {
@@ -205,8 +215,9 @@ export async function validateActor2024(fs, actor) {
     const owned = spells.filter(s => String(s.system?.sourceClass || "").trim().toLowerCase() === id);
     const level = Number(cls.system?.levels);
     if (officialClass) {
+      verifiedClassGrantRoots.add(id);
       const grants = await classAlwaysPrepared(fs, officialClass, level);
-      for (const uuid of grants.declared) declaredAlwaysPrepared.add(uuid);
+      recordGrantEvidence(id, grants);
       for (const reason of grants.unresolved)
         check("unverified", "class_grant_unverified", `${cls.name}: ${reason}`, cls._id, [classSource]);
       for (const [uuid] of grants.expected) {
@@ -330,6 +341,22 @@ export async function validateActor2024(fs, actor) {
     if (thirdCaster && cantripScale == null)
       check("unverified", "third_caster_cantrips_unknown",
         `${cls.name}: official subclass does not expose a verifiable cantrip progression.`, cls._id);
+  }
+
+  // Permanently prepared spells are exempt from ordinary class preparation
+  // limits, but the saved preparation flag alone never proves a feature grant.
+  // Only flag unknown grants once the class/subclass grant roots were traced
+  // without gaps. Otherwise existing source/ItemGrant uncertainty covers them.
+  for (const spell of spells.filter(s => Number(s.system?.prepared) === 2)) {
+    const owner = String(spell.system?.sourceClass || "").trim().toLowerCase();
+    if (!verifiedClassGrantRoots.has(owner) || incompleteGrantTraces.has(owner) ||
+        subclasses.some(s => String(s.system?.classIdentifier || "").toLowerCase() === owner &&
+          !verifiedSubclasses.has(owner))) continue;
+    const source = sourceUuid(spell);
+    if (scopedAlwaysPrepared.get(owner)?.has(source)) continue;
+    check("unverified", "always_prepared_origin_unverified",
+      `${spell.name}: permanently prepared for ${owner}, but no traced official class/subclass grant proves this state; a feat, item or other feature may explain it.`,
+      spell._id, UUID.test(source || "") ? [source] : []);
   }
 
   for (const spell of spells.filter(s => {
