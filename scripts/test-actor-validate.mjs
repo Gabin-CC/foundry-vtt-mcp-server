@@ -326,6 +326,36 @@ test("class-level spell ceiling rejects Fireball even though shared slots reach 
   assert.deepEqual(f.writes, []);
 });
 
+test("a forged noncaster class field cannot skip official class spell checks", async () => {
+  const f = fixture();
+  f.actor.items[1].system.spellcasting.progression = "none"; // official sorcerer is full
+  f.actor.items.push({ ...makeSpell("acid", 0), _id: id("extraCantrip") });
+  const report = await audit(f.fs);
+  assert.ok(report.diagnostics.some(d => d.code === "class_spellcasting_progression_mismatch" &&
+    d.severity === "error" && d.subject === f.actor.items[1]._id));
+  assert.ok(report.diagnostics.some(d => d.code === "too_many_cantrips" && d.severity === "error"),
+    "The official sorcerer progression must still check its cantrip limit");
+  assert.ok(report.verified_sources.classes.includes(classUuid("sorcerer")));
+  assert.equal(report.expected_spell_slots.spell3, 2,
+    "Expected multiclass slots must use the official sorcerer full-caster progression");
+  assert.deepEqual(f.writes, []);
+});
+
+test("a forged caster progression on an official noncaster class is a source mismatch", async () => {
+  const f = subclassFixture();
+  const fighter = classItem("fighter", 3);
+  fighter.system.spellcasting.progression = "full"; // official fighter is none
+  f.actor.items = [fighter];
+  const report = await audit(f.fs);
+  assert.ok(report.diagnostics.some(d => d.code === "class_spellcasting_progression_mismatch" &&
+    d.severity === "error"));
+  assert.ok(!report.diagnostics.some(d => d.code === "prepared_scale_unavailable"),
+    "A forged caster field must not force a noncaster spell audit");
+  assert.deepEqual(report.expected_spell_slots, {},
+    "Forging a full-caster fighter must not generate spell slots");
+  assert.deepEqual(f.writes, []);
+});
+
 test("excess class prepared spells, cantrips and duplicate classes are proven errors", async () => {
   const f = fixture();
   f.actor.items.push(makeSpell("burning", 1));
@@ -508,6 +538,27 @@ test("official third-caster subclass uses the Wizard list and its own 2024 scale
   assert.equal(bad.status, "issues");
   assert.ok(bad.diagnostics.some(d => d.code === "spell_above_class_level"));
   assert.ok(bad.diagnostics.some(d => d.code === "too_many_prepared"));
+  assert.deepEqual(f.writes, []);
+});
+
+test("a third-caster's owned subclass cannot disable verified official magic progression", async () => {
+  const f = subclassFixture();
+  const fighter = classItem("fighter", 3);
+  fighter.system.spellcasting.progression = "none";
+  const sub = { _id: id("eldritchOwned"), type: "subclass", name: "Eldritch Knight",
+    _stats: { compendiumSource: f.thirdSource }, system: {
+      identifier: "eldritch-knight", classIdentifier: "fighter", source: { rules: "2024" },
+      spellcasting: { progression: "none" } } };
+  f.actor.items = [fighter, sub, makeSpell("light", 0, "fighter"), makeSpell("magehand", 0, "fighter"),
+    makeSpell("shieldspell", 1, "fighter"), makeSpell("missile", 1, "fighter")];
+  const report = await audit(f.fs);
+  assert.ok(report.diagnostics.some(d => d.code === "subclass_spellcasting_progression_mismatch" &&
+    d.severity === "error" && d.subject === sub._id));
+  assert.ok(!report.diagnostics.some(d => d.code === "third_caster_features"),
+    "The official third-caster progression must still be recognized");
+  assert.ok(!report.diagnostics.some(d => d.code === "class_spellcasting_progression_mismatch"));
+  assert.equal(report.expected_spell_slots.spell1, 2,
+    "Verified Eldritch Knight must still have its third-caster slots at level 3");
   assert.deepEqual(f.writes, []);
 });
 
