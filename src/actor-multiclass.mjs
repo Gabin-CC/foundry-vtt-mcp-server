@@ -2,7 +2,7 @@
 
 // A group is OR (Fighter); separate groups would be AND. All other classes
 // have one AND group. Use official identifiers, never translated display names.
-const PRIMARY = Object.freeze({
+export const PRIMARY = Object.freeze({
   barbarian: [["str"]], bard: [["cha"]], cleric: [["wis"]], druid: [["wis"]],
   fighter: [["str", "dex"]], monk: [["dex"], ["wis"]],
   paladin: [["str"], ["cha"]], ranger: [["dex"], ["wis"]],

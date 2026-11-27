@@ -33,7 +33,7 @@ const query = (name, args, role = 2, audience = null) => rulesQuery(name, args,
   { foundryRole: role, audience, indexPath, accessPath });
 
 test("the MCP exposes three shared rules tools with complete English metadata", () => {
-  assert.equal(TOOLS.length, 49);
+  assert.equal(TOOLS.length, 50);
   for (const name of ["rules_list_sources", "rules_search", "rules_read_page"])
     assert.ok(TOOLS.find(t => t.name === name), name);
 });
