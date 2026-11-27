@@ -3,6 +3,7 @@ import { fetchUuid } from "./advancement.mjs";
 import { isOfficial2024Uuid } from "./subclass-spells.mjs";
 
 const UUID = /^Compendium\.[^.]+\.[^.]+\.Item\.[A-Za-z0-9]{16}$/;
+const PACK = /^Compendium\.([^.]+\.[^.]+)\.Item\./;
 const ABILITIES = new Set(["str", "dex", "con", "int", "wis", "cha"]);
 const sourceUuid = item => item?._stats?.compendiumSource || item?.flags?.dnd5e?.sourceId || item?.flags?.core?.sourceId;
 // Foundry stores some owned background/species advancements as keyed value-only
@@ -34,16 +35,10 @@ export async function auditRecordedAdvancements(fs, actor, sources, check) {
   const totalLevel = owned.filter(i => i.type === "class")
     .reduce((n, i) => n + (Number(i.system?.levels) || 0), 0);
 
-  async function checkFeat(root, adv, src) {
-    const pairs = entries(adv.value?.feat).filter(([, uuid]) => !!uuid);
-    if (pairs.length !== 1 || !UUID.test(pairs[0]?.[1] || "")) {
-      check("error", "invalid_recorded_feat", `${root.name}: feat advancement must record one exact source UUID.`, root._id, [src]);
-      return;
-    }
-    const [recordedId, uuid] = pairs[0];
+  async function verifyFeatChoice(root, recordedId, uuid, src, restriction = null) {
     const matching = owned.filter(item => item.type === "feat" && sourceUuid(item) === uuid);
     const direct = byId.get(recordedId);
-    if (direct && (direct.type !== "feat" || sourceUuid(direct) !== uuid))
+    if ((direct && (direct.type !== "feat" || sourceUuid(direct) !== uuid)) || (!direct && matching.length))
       check("unverified", "stale_feat_item_id", `${root.name}: saved feat item ID no longer identifies the recorded feat.`, recordedId, [src]);
     if (!matching.length)
       check("unverified", "recorded_feat_missing", `${root.name}: the feat's recorded source is not present on the actor.`, root._id, [src, uuid]);
@@ -54,9 +49,23 @@ export async function auditRecordedAdvancements(fs, actor, sources, check) {
     let feat;
     try { feat = await fetchUuid(fs, uuid); }
     catch { check("unverified", "feat_source_unavailable", `${root.name}: the official feat source cannot be loaded.`, root._id, [uuid]); return; }
+    if (feat.__pack !== PACK.exec(uuid)?.[1]) {
+      check("unverified", "feat_source_pack_unverified", `${root.name}: feat was resolved from a different compendium than its recorded source.`, root._id, [uuid]);
+      return;
+    }
     if (feat.type !== "feat" || feat.system?.source?.rules !== "2024") {
       check("error", "feat_source_mismatch", `${root.name}: recorded feat source is not a 2024 feat.`, root._id, [uuid]);
       return;
+    }
+    if (restriction) {
+      const kind = feat.system?.type || {};
+      if ((restriction.type && kind.value !== restriction.type) ||
+          (restriction.subtype && kind.subtype !== restriction.subtype)) {
+        check("error", "feat_choice_restriction_mismatch", `${root.name}: the selected feat violates its official type or subtype restriction.`, recordedId, [src, uuid]);
+        return;
+      }
+      if ((restriction.list || []).length || (restriction.school || []).length)
+        check("unverified", "feat_choice_extra_restriction", `${root.name}: additional official choice restrictions require separate review.`, root._id, [src, uuid]);
     }
     verifiedFeats.add(uuid);
     const requiredLevel = feat.system?.prerequisites?.level;
@@ -69,9 +78,66 @@ export async function auditRecordedAdvancements(fs, actor, sources, check) {
     }
     // Today's ability scores cannot establish scores when the feat was taken.
     const prereqs = feat.system?.prerequisites || {};
-    if (Object.entries(prereqs).some(([key, val]) => key !== "level" && val !== "" && val != null &&
+    if (Object.entries(prereqs).some(([key, val]) => !["level", "repeatable"].includes(key) && val !== "" && val !== false && val != null &&
         !(Array.isArray(val) && !val.length) && !(object(val) && !Object.keys(val).length)))
       check("unverified", "feat_historical_prerequisite", `${feat.name}: historical or conditional feat prerequisites cannot be certified from current attributes.`, root._id, [uuid]);
+  }
+
+  async function checkFeat(root, adv, src) {
+    const pairs = entries(adv.value?.feat).filter(([, uuid]) => !!uuid);
+    if (pairs.length !== 1 || !UUID.test(pairs[0]?.[1] || "")) {
+      check("error", "invalid_recorded_feat", `${root.name}: feat advancement must record one exact source UUID.`, root._id, [src]);
+      return;
+    }
+    await verifyFeatChoice(root, pairs[0][0], pairs[0][1], src);
+  }
+
+  async function checkItemChoice(root, saved, official, level, src) {
+    const config = official.configuration || {};
+    if (config.type !== "feat") {
+      check("unverified", "item_choice_type_unverified", `${root.name}: this official ItemChoice is not a feat selection.`, root._id, [src]);
+      return;
+    }
+    const groups = entries(config.choices);
+    if (!groups.length || groups.some(([at, rule]) => !/^\d+$/.test(at) ||
+      !Number.isInteger(Number(rule?.count)) || Number(rule.count) < 0)) {
+      check("unverified", "feat_choice_configuration_unreadable", `${root.name}: official feat choice counts cannot be read reliably.`, root._id, [src]);
+      return;
+    }
+    const configured = new Map(groups);
+    const added = saved.value?.added || {};
+    if (entries(added).some(([at, value]) => !/^\d+$/.test(at) || !object(value))) {
+      check("unverified", "feat_choice_record_format_unverified", `${root.name}: saved feat choices do not use the expected level-keyed format.`, root._id, [src]);
+      return;
+    }
+    for (const [at, value] of entries(added)) if (!configured.has(at) && entries(value).length)
+      check("unverified", "unknown_feat_choice_group", `${root.name}: a saved feat choice group is absent from the official source.`, root._id, [src]);
+    const pool = (config.pool || []).map(v => v?.uuid).filter(Boolean);
+    for (const [at, rule] of groups) {
+      const pairs = entries(added[at]).filter(([, uuid]) => !!uuid);
+      if (Number(at) > level) {
+        if (pairs.length) check("error", "future_feat_choice_recorded", `${root.name}: a feat is selected at future level ${at}, beyond character level ${level}.`, root._id, [src]);
+        continue;
+      }
+      if (pairs.length > Number(rule.count))
+        check("error", "too_many_recorded_feat_choices", `${root.name}: saved feat choices exceed the ${rule.count} official options at level ${at}.`, root._id, [src]);
+      else if (pairs.length < Number(rule.count))
+        check("unverified", "incomplete_recorded_feat_choices", `${root.name}: not every feat choice at level ${at} is saved.`, root._id, [src]);
+      for (const [recordedId, uuid] of pairs) {
+        if (!UUID.test(uuid)) {
+          check("error", "invalid_recorded_feat", `${root.name}: feat choice must record an exact compendium UUID.`, recordedId, [src]);
+          continue;
+        }
+        // allowDrops means that the pool is a *recommendation*, not a whitelist.
+        if (config.allowDrops === false && pool.length && !pool.includes(uuid)) {
+          check("error", "feat_choice_not_in_pool", `${root.name}: selected feat is outside the closed official pool.`, recordedId, [src, uuid]);
+          continue;
+        }
+        if (config.allowDrops === false && !pool.length)
+          check("unverified", "feat_choice_pool_unavailable", `${root.name}: a closed feat choice has no verifiable official pool.`, root._id, [src]);
+        await verifyFeatChoice(root, recordedId, uuid, src, config.restriction || {});
+      }
+    }
   }
 
   async function checkAdvancement(root, official, level, src) {
@@ -161,6 +227,8 @@ export async function auditRecordedAdvancements(fs, actor, sources, check) {
             else check("warning", "mandatory_feature_missing", `${root.name}: mandatory feature for level ${milestone} is absent from the actor.`, root._id, [src, grant.uuid]);
           }
         }
+      } else if (a.type === "ItemChoice") {
+        await checkItemChoice(root, saved, a, level, src);
       } else if (a.type === "Size") {
         const chosen = saved.value?.size;
         if (!chosen)
@@ -210,5 +278,25 @@ export async function auditRecordedAdvancements(fs, actor, sources, check) {
 
   for (const { embedded, official, level, uuid } of sources)
     await checkAdvancement(embedded, official, level, uuid);
+  // A bounded second pass checks official feat-granting features that already
+  // contain ItemChoice advancements. It does not crawl arbitrary feat graphs.
+  for (const item of owned.filter(i => i.type === "feat" && list(i).some(a => a.type === "ItemChoice"))) {
+    const uuid = sourceUuid(item);
+    if (!isOfficial2024Uuid(uuid)) {
+      check("unverified", "feat_choice_feature_source_unverified", `${item.name}: its choice-granting feature lacks official 2024 provenance.`, item._id);
+      continue;
+    }
+    let official;
+    try { official = await fetchUuid(fs, uuid); }
+    catch {
+      check("unverified", "feat_choice_feature_source_unavailable", `${item.name}: the exact feature source cannot be loaded.`, item._id, [uuid]);
+      continue;
+    }
+    if (official.__pack !== PACK.exec(uuid)?.[1] || official.type !== "feat" || official.system?.source?.rules !== "2024") {
+      check("unverified", "feat_choice_feature_source_mismatch", `${item.name}: the official feat-choice feature source could not be established.`, item._id, [uuid]);
+      continue;
+    }
+    await checkAdvancement(item, official, totalLevel, uuid);
+  }
   return [...verifiedFeats];
 }

@@ -203,6 +203,62 @@ function originFixture() {
   return { ...f, race, background, ids, origin: { human, soldier, speciesFeature, backgroundFeat }, official };
 }
 
+function nestedFeatChoiceFixture() {
+  const f = originFixture();
+  const ids = { style: id("styleItemChoice"), versatile: id("originItemChoice"),
+    defense: id("ownedDefense"), alert: id("ownedAlert") };
+  const sources = { style: classUuid("fightingStyle"), versatile: originUuid("versatile"),
+    defense: featUuid("defense"), alert: featUuid("alert") };
+  const styleAdv = { _id: ids.style, type: "ItemChoice", configuration: {
+    choices: { "2": { count: 1, replacement: false } }, allowDrops: true,
+    type: "feat", pool: [{ uuid: classUuid("blessedStyle") }],
+    restriction: { type: "feat", subtype: "fightingStyle", list: [], school: [] } }, value: {} };
+  const versatileAdv = { _id: ids.versatile, type: "ItemChoice", configuration: {
+    choices: { "0": { count: 1, replacement: false } }, allowDrops: true,
+    type: "feat", pool: [{ uuid: featUuid("skilled") }],
+    restriction: { type: "feat", subtype: "origin", list: [], school: [] } }, value: {} };
+  const featureDocs = [
+    { _id: id("fightingStyle"), name: "Fighting Style", type: "feat",
+      system: { source: { rules: "2024" }, advancement: { [ids.style]: styleAdv } } },
+    { _id: id("versatile"), name: "Versatile", type: "feat",
+      system: { source: { rules: "2024" }, advancement: { [ids.versatile]: versatileAdv } } }
+  ];
+  const featDocs = [
+    { _id: id("defense"), name: "Defense", type: "feat", system: {
+      source: { rules: "2024" }, type: { value: "feat", subtype: "fightingStyle" },
+      prerequisites: { level: null, repeatable: false } } },
+    { _id: id("alert"), name: "Alert", type: "feat", system: {
+      source: { rules: "2024" }, type: { value: "feat", subtype: "origin" },
+      prerequisites: { level: null, repeatable: false } } }
+  ];
+  const style = { _id: id("ownedStyle"), name: "Fighting Style", type: "feat",
+    _stats: { compendiumSource: sources.style }, system: { source: { rules: "2024" },
+      advancement: { [ids.style]: { ...structuredClone(styleAdv),
+        value: { added: { "2": { [ids.defense]: sources.defense } } } } } } };
+  const versatile = { _id: id("ownedVersatile"), name: "Versatile", type: "feat",
+    _stats: { compendiumSource: sources.versatile }, system: { source: { rules: "2024" },
+      advancement: { [ids.versatile]: { ...structuredClone(versatileAdv),
+        value: { added: { "0": { [ids.alert]: sources.alert } } } } } } };
+  f.actor.items.push(style, versatile,
+    { _id: ids.defense, name: "Defense", type: "feat", _stats: { compendiumSource: sources.defense }, system: {} },
+    { _id: ids.alert, name: "Alert", type: "feat", _stats: { compendiumSource: sources.alert }, system: {} });
+  const originalData = f.fs.worldData.bind(f.fs);
+  f.fs.worldData = async () => { const data = await originalData(); return { ...data, packs: [
+    ...data.packs, { id: "dnd5e.feats24", type: "Item", packageName: "dnd5e" }] }; };
+  const originalDoc = f.fs.doc.bind(f.fs);
+  f.fs.doc = async (action, type, opts = {}) => {
+    if (action === "get" && type === "Item" && ["dnd5e.origins24", "dnd5e.classes24", "dnd5e.feats24"].includes(opts.pack)) {
+      const extras = (opts.pack === "dnd5e.feats24" ? featDocs : featureDocs.filter(d =>
+        opts.pack === (d._id === id("versatile") ? "dnd5e.origins24" : "dnd5e.classes24")))
+        .filter(d => !opts.query?._id || d._id === opts.query._id);
+      const earlier = await originalDoc(action, type, opts);
+      return structuredClone([...extras, ...earlier.filter(d => !extras.some(e => e._id === d._id))]);
+    }
+    return originalDoc(action, type, opts);
+  };
+  return { ...f, ids, sources, style, versatile, featureDocs, featDocs };
+}
+
 async function audit(fs) {
   const result = await handleTool(fs, { name: "validate_actor", arguments: { actor: ACTOR } });
   assert.equal(result.isError, undefined, result.content?.[0]?.text);
@@ -477,5 +533,55 @@ test("species advancement choices recorded above current character level are err
   f.race.system.advancement[future] = { value: { size: "med" } };
   const report = await audit(f.fs);
   assert.ok(report.diagnostics.some(d => d.code === "future_advancement_recorded" && d.severity === "error"));
+  assert.deepEqual(f.writes, []);
+});
+
+test("official open feat choices accept allowed subtypes beyond the suggested compendium pool", async () => {
+  const f = nestedFeatChoiceFixture();
+  const report = await audit(f.fs);
+  assert.equal(report.status, "passed_scoped_checks", JSON.stringify(report.diagnostics));
+  assert.deepEqual(report.verified_sources.feats.sort(), [f.sources.defense, f.sources.alert].sort());
+  assert.deepEqual(f.writes, []);
+});
+
+test("feat choice subtype mismatch and excess selections are proven errors", async () => {
+  const f = nestedFeatChoiceFixture();
+  f.featDocs.find(d => d._id === id("alert")).system.type.subtype = "general";
+  f.style.system.advancement[f.ids.style].value.added["2"][id("extraStyle")] = f.sources.defense;
+  const report = await audit(f.fs);
+  assert.ok(report.diagnostics.some(d => d.code === "feat_choice_restriction_mismatch" && d.severity === "error"));
+  assert.ok(report.diagnostics.some(d => d.code === "too_many_recorded_feat_choices" && d.severity === "error"));
+  assert.deepEqual(f.writes, []);
+});
+
+test("closed ItemChoice pools reject a feat outside the source recommendations", async () => {
+  const f = nestedFeatChoiceFixture();
+  f.featureDocs[1].system.advancement[f.ids.versatile].configuration.allowDrops = false;
+  const report = await audit(f.fs);
+  assert.ok(report.diagnostics.some(d => d.code === "feat_choice_not_in_pool" && d.severity === "error"));
+  assert.deepEqual(f.writes, []);
+});
+
+test("missing feat choice provenance stays unverified and historic non-level prerequisites are not guessed", async () => {
+  const f = nestedFeatChoiceFixture();
+  f.featDocs[0].system.prerequisites.items = ["fighting-style"];
+  f.versatile.system.advancement[f.ids.versatile].value.added["0"] = {
+    [id("oldAlertItem")]: f.sources.alert };
+  const report = await audit(f.fs);
+  assert.ok(report.diagnostics.some(d => d.code === "feat_historical_prerequisite" && d.severity === "unverified"));
+  assert.ok(report.diagnostics.some(d => d.code === "stale_feat_item_id" && d.severity === "unverified"));
+  assert.ok(!report.diagnostics.some(d => d.code === "feat_choice_restriction_mismatch"));
+  assert.deepEqual(f.writes, []);
+});
+
+test("future nested feat choices and malformed group formats cannot silently pass", async () => {
+  const f = nestedFeatChoiceFixture();
+  f.featureDocs[0].system.advancement[f.ids.style].configuration.choices = { "12": { count: 1 } };
+  f.style.system.advancement[f.ids.style].value.added = { "12": { [f.ids.defense]: f.sources.defense } };
+  const future = await audit(f.fs);
+  assert.ok(future.diagnostics.some(d => d.code === "future_feat_choice_recorded" && d.severity === "error"));
+  f.versatile.system.advancement[f.ids.versatile].value.added = { [f.ids.alert]: f.sources.alert };
+  const malformed = await audit(f.fs);
+  assert.ok(malformed.diagnostics.some(d => d.code === "feat_choice_record_format_unverified" && d.severity === "unverified"));
   assert.deepEqual(f.writes, []);
 });
