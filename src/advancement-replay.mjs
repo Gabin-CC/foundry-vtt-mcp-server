@@ -17,20 +17,42 @@ const sourceUuid = item => item?._stats?.compendiumSource || item?.flags?.dnd5e?
  * unique current item. An ambiguous/missing match must remain a pending choice.
  */
 function recordedGrantAliases(items) {
-  const currentIds = new Set(items.map(i => i._id));
+  const byId = new Map(items.map(i => [i._id, i]));
+  // A stale ID can even be reused by another granted item. In that case,
+  // require additional evidence: the old occupant must contain an orphaned
+  // saved ItemChoice value that points to the exact descendant with the same
+  // compendium UUID and grant root. A legitimate advancement is never moved.
+  const displacedChoiceEvidence = (occupant, actual, oldId, grantOrigin) =>
+    list(actual).some(adv => {
+      if (adv.type !== "ItemChoice" || !adv._id) return false;
+      const orphan = occupant.system?.advancement?.[adv._id];
+      if (!orphan || orphan.type || !orphan.value?.added) return false;
+      return Object.values(orphan.value.added).some(level =>
+        Object.entries(level || {}).some(([childId, uuid]) => {
+          const child = byId.get(childId);
+          return child && sourceUuid(child) === uuid &&
+            child.flags?.dnd5e?.advancementOrigin === `${oldId}.${adv._id}` &&
+            child.flags?.dnd5e?.advancementRoot === grantOrigin;
+        }));
+    });
   const proposals = new Map();
   for (const parent of items) {
     for (const adv of list(parent)) {
       if (adv?.type !== "ItemGrant" || !adv._id) continue;
       const origin = `${parent._id}.${adv._id}`;
       for (const [oldId, uuid] of Object.entries(adv.value?.added || {})) {
-        if (!/^[A-Za-z0-9]{16}$/.test(oldId) || currentIds.has(oldId)
+        if (!/^[A-Za-z0-9]{16}$/.test(oldId)
           || typeof uuid !== "string" || !uuid.startsWith("Compendium.")) continue;
+        const occupant = byId.get(oldId);
+        if (occupant && sourceUuid(occupant) === uuid) continue; // no stale ID
         const matches = items.filter(child => sourceUuid(child) === uuid && (
           child.flags?.dnd5e?.advancementOrigin === origin ||
           child.flags?.dnd5e?.advancementRoot === origin
         ));
         if (matches.length !== 1) continue;
+        if (occupant && occupant.flags?.dnd5e?.advancementOrigin !== origin
+          && occupant.flags?.dnd5e?.advancementRoot !== origin) continue;
+        if (occupant && !displacedChoiceEvidence(occupant, matches[0], oldId, origin)) continue;
         const ids = proposals.get(oldId) || new Set();
         ids.add(matches[0]._id);
         proposals.set(oldId, ids);
