@@ -62,7 +62,7 @@ function fixture() {
           spells: specs.filter(([key]) => key !== "cure").map(([key]) => spellUuid(key)) } },
         { type: "spells", system: { type: "class", identifier: "paladin", spells: [spellUuid("cure")] } },
         { type: "spells", system: { type: "class", identifier: "wizard", spells:
-          ["shieldspell", "missile", "burning", "feather", "magearmor", "sleep", "detect", "grease"].map(spellUuid) } }
+          ["light", "magehand", "shieldspell", "missile", "burning", "fireball", "feather", "magearmor", "sleep", "detect", "grease"].map(spellUuid) } }
       ] }];
       if (type === "Item" && opts.pack === "dnd5e.classes24")
         return structuredClone(classes.filter(c => !opts.query?._id || opts.query._id === c._id));
@@ -72,6 +72,38 @@ function fixture() {
     }
   };
   return { actor, fs, writes };
+}
+
+function subclassFixture() {
+  const f = fixture();
+  const source = classUuid("subclassOath");
+  const featureSource = classUuid("domainSpells");
+  const thirdSource = classUuid("eldritchKnight");
+  const oath = { _id: id("subclassOath"), type: "subclass", name: "Official Oath",
+    system: { identifier: "test-oath", classIdentifier: "paladin", source: { rules: "2024" },
+      advancement: [{ type: "ItemGrant", level: 3, configuration: { items: [{ uuid: featureSource }] } }] } };
+  const feature = { _id: id("domainSpells"), type: "feat", name: "Oath Spells",
+    system: { source: { rules: "2024" }, advancement: [
+      { type: "ItemGrant", level: 3, configuration: { spell: { prepared: 2 }, items: [{ uuid: spellUuid("cure") }] } },
+      { type: "ItemGrant", level: 5, configuration: { spell: { prepared: 2 }, items: [{ uuid: spellUuid("feather") }] } }
+    ] } };
+  const eldritch = { _id: id("eldritchKnight"), type: "subclass", name: "Eldritch Knight",
+    system: { identifier: "eldritch-knight", classIdentifier: "fighter", source: { rules: "2024" },
+      spellcasting: { progression: "third" }, advancement: [
+        { type: "ScaleValue", configuration: { identifier: "max-prepared", scale: { 3: { value: 3 }, 4: { value: 4 } } } },
+        { type: "ScaleValue", configuration: { identifier: "cantrips-known", scale: { 3: { value: 2 } } } }
+      ] } };
+  const fighter = { ...officialClass("fighter", 0, 0),
+    system: { ...officialClass("fighter", 0, 0).system, spellcasting: { progression: "none" } } };
+  const orig = f.fs.doc.bind(f.fs);
+  f.fs.doc = async (action, type, opts = {}) => {
+    if (action === "get" && type === "Item" && opts.pack === "dnd5e.classes24") {
+      const extra = [oath, feature, eldritch, fighter].filter(i => !opts.query?._id || opts.query._id === i._id);
+      return [...extra, ...(await orig(action, type, opts))];
+    }
+    return orig(action, type, opts);
+  };
+  return { ...f, source, thirdSource };
 }
 
 async function audit(fs) {
@@ -161,5 +193,59 @@ test("Wizard can have additional copied spellbook entries without a false six-pl
   assert.equal(report.status, "incomplete");
   assert.ok(report.diagnostics.some(d => d.code === "wizard_spellbook_provenance" && d.severity === "unverified"));
   assert.ok(!report.diagnostics.some(d => d.code === "too_many_prepared" || d.code === "spell_above_class_level"));
+  assert.deepEqual(f.writes, []);
+});
+
+test("official subclass ItemGrant chains prove always-prepared spells without consuming class preparation", async () => {
+  const f = subclassFixture();
+  f.actor.items.push({ _id: id("oathOwned"), type: "subclass", name: "Official Oath",
+    _stats: { compendiumSource: f.source }, system: { identifier: "test-oath", classIdentifier: "paladin", source: { rules: "2024" } } });
+  f.actor.items.push(makeSpell("cure", 2, "paladin"));
+  f.actor.items.push(makeSpell("feather", 2, "paladin"));
+  const report = await audit(f.fs);
+  assert.equal(report.status, "passed_scoped_checks", JSON.stringify(report.diagnostics));
+  assert.deepEqual(report.verified_sources.subclasses, [f.source]);
+  assert.deepEqual(report.verified_sources.subclass_spells.sort(), [spellUuid("cure"), spellUuid("feather")].sort());
+  assert.ok(!report.diagnostics.some(d => d.code === "too_many_prepared"));
+  f.actor.items.find(i => i._id === id("ownedcure")).system.prepared = 1;
+  const wrong = await audit(f.fs);
+  assert.ok(wrong.diagnostics.some(d => d.code === "subclass_spell_not_always_prepared"));
+  f.actor.items = f.actor.items.filter(i => i._id !== id("ownedcure"));
+  const missing = await audit(f.fs);
+  assert.ok(missing.diagnostics.some(d => d.code === "missing_subclass_spell"));
+  assert.deepEqual(f.writes, []);
+});
+
+test("world-imported subclass is not mistaken for official PHB 2024 evidence", async () => {
+  const f = subclassFixture();
+  f.actor.items.push({ _id: id("oathOwned"), type: "subclass", name: "Unknown Oath",
+    _stats: { compendiumSource: `Compendium.world.classes.Item.${id("subclassOath")}` },
+    system: { identifier: "test-oath", classIdentifier: "paladin", source: { rules: "2024" } } });
+  const report = await audit(f.fs);
+  assert.equal(report.status, "incomplete");
+  assert.ok(report.diagnostics.some(d => d.code === "subclass_source_unverified"));
+  assert.deepEqual(report.verified_sources.subclasses, []);
+  assert.deepEqual(f.writes, []);
+});
+
+test("official third-caster subclass uses the Wizard list and its own 2024 scales, not shared slots", async () => {
+  const f = subclassFixture();
+  const fighter = classItem("fighter", 3);
+  fighter.system.spellcasting.progression = "none";
+  const sub = { _id: id("eldritchOwned"), type: "subclass", name: "Eldritch Knight",
+    _stats: { compendiumSource: f.thirdSource }, system: {
+      identifier: "eldritch-knight", classIdentifier: "fighter", source: { rules: "2024" },
+      spellcasting: { progression: "third" } } };
+  f.actor.items = [fighter, sub, makeSpell("light", 0, "fighter"), makeSpell("magehand", 0, "fighter"),
+    makeSpell("shieldspell", 1, "fighter"), makeSpell("missile", 1, "fighter"), makeSpell("burning", 1, "fighter")];
+  const good = await audit(f.fs);
+  assert.equal(good.status, "passed_scoped_checks", JSON.stringify(good.diagnostics));
+  assert.equal(good.expected_spell_slots.spell1, 2);
+  assert.ok(!good.diagnostics.some(d => d.code === "third_caster_features"));
+  f.actor.items.push(makeSpell("fireball", 1, "fighter"));
+  const bad = await audit(f.fs);
+  assert.equal(bad.status, "issues");
+  assert.ok(bad.diagnostics.some(d => d.code === "spell_above_class_level"));
+  assert.ok(bad.diagnostics.some(d => d.code === "too_many_prepared"));
   assert.deepEqual(f.writes, []);
 });

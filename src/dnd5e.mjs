@@ -218,7 +218,14 @@ const SLOTS = [[], [2], [3], [4, 2], [4, 3], [4, 3, 2], [4, 3, 3], [4, 3, 3, 1],
 export function slotMax(actor) {
   const classes = (actor.items || []).filter(i => i.type === "class" || i.type === "subclass");
   const cls = classes.filter(i => i.type === "class");
-  const single = cls.filter(c => (c.system?.spellcasting?.progression || "none") !== "none").length === 1;
+  // A single-class Eldritch Knight/Arcane Trickster casts through its
+  // subclass, not the parent class. It still uses the single-class third-
+  // caster progression (ceil(level/3)), unlike a multiclass third-caster.
+  const single = cls.filter(c => {
+    const sub = classes.find(s => s.type === "subclass" && s.system?.classIdentifier === c.system?.identifier);
+    const progression = c.system?.spellcasting?.progression || "none";
+    return (progression !== "none" ? progression : sub?.system?.spellcasting?.progression || "none") !== "none";
+  }).length === 1;
   let lvl = 0, pactLvl = 0;
   for (const c of cls) {
     let prog = c.system?.spellcasting?.progression || "none";

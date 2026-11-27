@@ -239,6 +239,7 @@ const casters = Object.fromEntries([
 
 const spellSpecs = [
   ["light", "Light", 0, ["sorcerer", "wizard"]],
+  ["ray", "Ray of Frost", 0, ["wizard"]],
   ["spark", "Sorcerous Spark", 0, ["sorcerer"]],
   ["shield", "Shield", 1, ["sorcerer", "wizard"]],
   ["missile", "Magic Missile", 1, ["sorcerer", "wizard"]],
@@ -403,6 +404,72 @@ test("multiclass spell selection rejects unsupported third-caster and 2014 spell
   await rejected(f.fs, { actor: ACTOR, class_source: src, spells: "selected",
     choices: { "spells:spellbook": [f.sources.shield] } }, /Wizard/);
   assert.deepEqual(f.writes, []);
+});
+
+test("official 2024 third-caster can add and explicitly replace its own spells with preview and rollback", async () => {
+  const f = casterFixture();
+  const subId = spellId("eldritchKnight");
+  const subUuid = `Compendium.dnd5e.classes24.Item.${subId}`;
+  const third = { _id: subId, name: "Eldritch Knight", type: "subclass", system: {
+    identifier: "eldritch-knight", classIdentifier: "fighter", source: { rules: "2024" },
+    spellcasting: { progression: "third" }, advancement: [
+      { type: "ScaleValue", configuration: { identifier: "cantrips-known", scale: { 3: { value: 2 } } } },
+      { type: "ScaleValue", configuration: { identifier: "max-prepared", scale: { 3: { value: 3 }, 4: { value: 4 } } } }
+    ] } };
+  const orig = f.fs.doc.bind(f.fs);
+  f.fs.doc = async (action, type, opts = {}) =>
+    action === "get" && type === "Item" && opts.pack === "dnd5e.classes24" && opts.query?._id === subId
+      ? [structuredClone(third)] : orig(action, type, opts);
+  const fighter = classDoc(FIGHTER, "fighter", 3);
+  fighter.system.spellcasting.progression = "none";
+  f.actor.items.push(fighter, { _id: spellId("ownedEK"), name: "Eldritch Knight", type: "subclass",
+    _stats: { compendiumSource: subUuid }, system: {
+      identifier: "eldritch-knight", classIdentifier: "fighter", source: { rules: "2024" },
+      spellcasting: { progression: "third" } } });
+  const item = (key, prepared) => ({ _id: spellId(`ek${key}`), name: spellSpecs.find(x => x[0] === key)[1],
+    type: "spell", _stats: { compendiumSource: f.sources[key] }, system: {
+      identifier: key, level: spellSpecs.find(x => x[0] === key)[2], sourceClass: "fighter", prepared,
+      source: { rules: "2024" } } });
+  f.actor.items.push(item("light", 0), item("magehand", 0), item("shield", 1), item("missile", 1), item("burning", 1));
+  const before = captureActorState(f.actor);
+  const replacement = [{ kind: "cantrip", from: spellId("eklight"), to: f.sources.ray },
+    { kind: "prepared", from: spellId("ekshield"), to: f.sources.armor }];
+  const choices = { "spells:prepared": [f.sources.grease], "spells:replace": replacement };
+  const preview = await call(f.fs, "multiclass_actor", { actor: ACTOR, item: FIGHTER, spells: "selected", choices });
+  assert.equal(preview.pret, true, JSON.stringify(preview));
+  assert.equal(preview.sorts.niveau_max_classe, 1);
+  assert.deepEqual(f.writes, []);
+  await rejected(f.fs, { actor: ACTOR, item: FIGHTER, spells: "selected", choices: {
+    ...choices, "spells:replace": [{ kind: "prepared", from: spellId("ekshield"), to: f.sources.fireball }]
+  } }, /distinct, eligible/);
+  await rejected(f.fs, { actor: ACTOR, item: FIGHTER, spells: "selected", choices: {
+    ...choices, "spells:replace": [...replacement, replacement[0]]
+  } }, /at most one/);
+  const applied = await call(f.fs, "multiclass_actor", {
+    actor: ACTOR, item: FIGHTER, spells: "selected", choices, apply: true });
+  assert.equal(applied.pret, true, JSON.stringify(applied));
+  const owned = f.actor.items.filter(i => i.type === "spell" && i.system?.sourceClass === "fighter");
+  assert.ok(owned.some(i => i._stats?.compendiumSource === f.sources.ray && i.system.prepared === 0));
+  assert.ok(owned.some(i => i._stats?.compendiumSource === f.sources.armor && i.system.prepared === 1));
+  assert.ok(owned.some(i => i._stats?.compendiumSource === f.sources.grease && i.system.prepared === 1));
+  assert.ok(!owned.some(i => [spellId("ekshield"), spellId("eklight")].includes(i._id)));
+  await call(f.fs, "snapshots", { action: "restore", id: applied.instantane });
+  assert.deepEqual(captureActorState(f.actor), before);
+  const healthyDoc = f.fs.doc.bind(f.fs);
+  let failDeleteOnce = true;
+  f.fs.doc = async (action, type, opts = {}) => {
+    if (failDeleteOnce && action === "delete" && type === "Item") {
+      failDeleteOnce = false;
+      throw new Error("Simulated replacement deletion failure");
+    }
+    return healthyDoc(action, type, opts);
+  };
+  const partial = await call(f.fs, "multiclass_actor", {
+    actor: ACTOR, item: FIGHTER, spells: "selected", choices, apply: true });
+  assert.match(partial.erreur, /Simulated replacement deletion failure/);
+  assert.equal(partial.restauration_disponible, true);
+  await call(f.fs, "snapshots", { action: "restore", id: partial.instantane });
+  assert.deepEqual(captureActorState(f.actor), before);
 });
 
 after(async () => { await rm(process.env.SNAPSHOT_DIR, { recursive: true, force: true }); });

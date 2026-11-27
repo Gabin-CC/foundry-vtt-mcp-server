@@ -2,9 +2,10 @@
 import { fetchUuid, spellLists } from "./advancement.mjs";
 import { slotMax } from "./dnd5e.mjs";
 import { classSpellList, scaleBonus, spellKey } from "./spells.mjs";
+import { verifySubclass, THIRD_CASTER_WIZARD_LIST } from "./subclass-spells.mjs";
 
 const UUID = /^Compendium\.[^.]+\.[^.]+\.Item\.[A-Za-z0-9]{16}$/;
-const CHOICE_KEYS = new Set(["spells:cantrips", "spells:prepared", "spells:spellbook"]);
+const CHOICE_KEYS = new Set(["spells:cantrips", "spells:prepared", "spells:spellbook", "spells:replace"]);
 
 function scaleAt(cls, identifier, level) {
   const advancements = cls.system?.advancement || [];
@@ -20,9 +21,9 @@ function scaleAt(cls, identifier, level) {
 const identity = spell => spellKey(spell.system?.identifier || spell.key || spell.name);
 const sourceUuid = spell => spell._stats?.compendiumSource || spell.flags?.dnd5e?.sourceId;
 
-function singleClassSlots(cls, level) {
+function singleClassSlots(cls, level, subclass = null) {
   const one = { ...cls, system: { ...cls.system, levels: level } };
-  return slotMax({ items: [one], system: { spells: {} } });
+  return slotMax({ items: subclass ? [one, subclass] : [one], system: { spells: {} } });
 }
 
 /**
@@ -36,20 +37,35 @@ export async function planMulticlassSpells(fs, actor, cls, level, choices = {}) 
     if (key.startsWith("spells:") && !CHOICE_KEYS.has(key)) throw new Error(`Unsupported spell choice: ${key}`);
   const id = String(cls.system?.identifier || "").toLowerCase();
   const progression = cls.system?.spellcasting?.progression || "none";
-  if (!["full", "half", "pact", "artificer"].includes(progression))
-    throw new Error(`${id}: selected class spells require a supported 2024 Spellcasting or Pact Magic progression; subclass third-casters need separate verification.`);
-  const official = (await spellLists(fs)).get(`class:${id}`) || new Set();
-  if (!official.size) throw new Error(`${id}: no installed official class spell list; cannot verify spell choices.`);
-  const listed = await classSpellList(fs, cls);
+  const subclass = (actor.items || []).find(i => i.type === "subclass" &&
+    String(i.system?.classIdentifier || "").toLowerCase() === id);
+  let third = null;
+  if (progression === "none" && subclass) {
+    const verified = await verifySubclass(fs, subclass, cls);
+    if (verified.doc?.system?.spellcasting?.progression === "third" &&
+        THIRD_CASTER_WIZARD_LIST[id] === verified.doc.system?.identifier)
+      third = verified.doc;
+  }
+  if (!["full", "half", "pact", "artificer"].includes(progression) && !third)
+    throw new Error(`${id}: selected class spells require supported 2024 Spellcasting, Pact Magic or a verified existing third-caster subclass.`);
+  const listClass = third ? "wizard" : id;
+  const official = (await spellLists(fs)).get(`class:${listClass}`) || new Set();
+  if (!official.size) throw new Error(`${id}: no installed official ${listClass} spell list; cannot verify spell choices.`);
+  const listClassDoc = third ? { ...cls, system: { ...cls.system, identifier: listClass } } : cls;
+  const listed = await classSpellList(fs, listClassDoc);
   const allowed = listed.filter(s => official.has(s.uuid) && s.rules === "2024" && UUID.test(s.uuid));
   const own = (actor.items || []).filter(i => i.type === "spell" && i.system?.sourceClass === id);
   const existing = new Set(own.map(identity));
   const available = allowed.filter(s => !existing.has(identity(s)));
-  const single = singleClassSlots(cls, level);
+  const single = singleClassSlots(cls, level, third);
   const maxLevel = Math.max(0, Number(single.pactLevel) || 0,
     ...Object.keys(single).filter(k => /^spell\d$/.test(k)).map(k => Number(k.slice(5))));
-  const cantripMax = (scaleAt(cls, "cantrips-known", level) ?? 0) + scaleBonus(actor, id, "cantrips-known");
-  const basePreparedMax = scaleAt(cls, "max-prepared", level);
+  const scaleSource = third || cls;
+  const baseCantripsMax = scaleAt(scaleSource, "cantrips-known", level);
+  if (third && baseCantripsMax == null)
+    throw new Error(`${id}: official third-caster subclass has no verifiable cantrip progression.`);
+  const cantripMax = (baseCantripsMax ?? 0) + scaleBonus(actor, id, "cantrips-known");
+  const basePreparedMax = scaleAt(scaleSource, "max-prepared", level);
   if (basePreparedMax == null) throw new Error(`${id}: no verifiable prepared-spell progression; refuse automatic selection.`);
   const preparedMax = basePreparedMax + scaleBonus(actor, id, "max-prepared");
   const haveCantrips = own.filter(s => Number(s.system?.level) === 0).length;
@@ -99,9 +115,43 @@ export async function planMulticlassSpells(fs, actor, cls, level, choices = {}) 
   const prepPool = id === "wizard" ? [...spellbook, ...existingUnprepared]
     : [...leveledPool, ...existingUnprepared];
   const prepared = await pick("spells:prepared", counts.prepared, prepPool);
+  // 2024 Eldritch Knight/Arcane Trickster: on each class level-up, at most
+  // one cantrip and one prepared spell can be replaced. Keep this opt-in;
+  // replacing other classes' spells is a separate rules-specific workflow.
+  const replacements = [];
+  if (choices["spells:replace"] !== undefined) {
+    if (!third) throw new Error("spells:replace is currently supported only for verified 2024 third-caster subclasses.");
+    const requests = choices["spells:replace"];
+    if (!Array.isArray(requests) || requests.length > 2 || requests.some(r => !r || typeof r !== "object" || Array.isArray(r)))
+      throw new Error("spells:replace requires an array of at most one cantrip and one prepared-spell replacement.");
+    const seenKinds = new Set(), seenSource = new Set();
+    const newSelected = new Set([...cantrips, ...prepared].map(s => s.uuid));
+    for (const request of requests) {
+      const { kind, from, to } = request;
+      if (!["cantrip", "prepared"].includes(kind) || seenKinds.has(kind))
+        throw new Error("spells:replace permits one cantrip and one prepared-spell replacement at most.");
+      seenKinds.add(kind);
+      const current = own.find(i => i._id === from);
+      if (!current || Number(current.system?.prepared) === 2 ||
+          (kind === "cantrip" ? Number(current.system?.level) !== 0 :
+            Number(current.system?.level) < 1 || Number(current.system?.prepared) !== 1) ||
+          !official.has(sourceUuid(current)) || current.system?.source?.rules !== "2024")
+        throw new Error(`spells:replace: ${String(from)} is not an eligible owned, ordinary 2024 ${id} ${kind}.`);
+      const pool = available.filter(s => kind === "cantrip" ? s.level === 0 : s.level >= 1 && s.level <= maxLevel);
+      const chosen = pool.find(s => s.uuid === to);
+      if (!UUID.test(to || "") || !chosen || newSelected.has(to) || seenSource.has(to) ||
+          identity(current) === identity(chosen))
+        throw new Error(`spells:replace: ${String(to)} is not a distinct, eligible official 2024 ${listClass} spell.`);
+      const doc = await fetchUuid(fs, to);
+      if (doc.type !== "spell" || doc.system?.source?.rules !== "2024" || Number(doc.system?.level) !== chosen.level)
+        throw new Error(`spells:replace: ${to} has invalid type, edition or level.`);
+      seenSource.add(to);
+      replacements.push({ from, to: chosen, kind });
+    }
+  }
   const added = id === "wizard" ? spellbook : prepared.filter(s => !existing.has(identity(s)));
   return { pending, counts, maxLevel, classSlots: single,
     step: { cls, level, cantrips, leveled: added, prepared: new Set(prepared.map(identity)),
-      maxLvl: maxLevel, perClass: true },
-    selectedUuids: [...cantrips, ...added].map(s => s.uuid) };
+      replacements, maxLvl: maxLevel, perClass: true },
+    selectedUuids: [...cantrips, ...added, ...replacements.map(r => r.to)].map(s => s.uuid) };
 }

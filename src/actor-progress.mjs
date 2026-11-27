@@ -9,8 +9,13 @@ const obj = v => v !== null && typeof v === "object" && !Array.isArray(v);
 export function captureActorState(actor) {
   const fields = doc => Object.fromEntries(FIELDS.filter(k => doc[k] !== undefined)
     .map(k => [k, copy(doc[k])]));
+  // Preserve immutable compendium provenance for items that must be recreated
+  // during rollback (notably a spell removed by a class-level replacement).
+  // Do not record volatile _stats timestamps, which would block safe restores.
+  const itemFields = item => ({ ...fields(item),
+    ...(item._stats?.compendiumSource ? { _stats: { compendiumSource: item._stats.compendiumSource } } : {}) });
   return { actor_id: actor._id, actor: fields(actor),
-    items: (actor.items || []).map(i => ({ _id: i._id, ...fields(i), type: i.type }))
+    items: (actor.items || []).map(i => ({ _id: i._id, ...itemFields(i), type: i.type }))
       .sort((a, b) => a._id.localeCompare(b._id)) };
 }
 
