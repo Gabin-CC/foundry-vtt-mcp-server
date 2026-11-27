@@ -3,7 +3,7 @@ import { fetchUuid, spellLists } from "./advancement.mjs";
 import { slotMax } from "./dnd5e.mjs";
 import { PRIMARY } from "./actor-multiclass.mjs";
 import { scaleBonus } from "./spells.mjs";
-import { verifySubclass, subclassAlwaysPrepared, isOfficial2024ClassUuid, THIRD_CASTER_WIZARD_LIST } from "./subclass-spells.mjs";
+import { verifySubclass, subclassAlwaysPrepared, classAlwaysPrepared, isOfficial2024ClassUuid, THIRD_CASTER_WIZARD_LIST } from "./subclass-spells.mjs";
 import { auditRecordedAdvancements } from "./advancement-audit.mjs";
 
 const UUID = /^Compendium\.[^.]+\.[^.]+\.Item\.[A-Za-z0-9]{16}$/;
@@ -73,9 +73,10 @@ export async function validateActor2024(fs, actor) {
   }
 
   const rulesSources = { classes: [], subclasses: [], species: [], backgrounds: [],
-    spells: [], subclass_spells: [], feats: [] };
+    spells: [], subclass_spells: [], class_granted_spells: [], feats: [] };
   const verifiedSubclasses = new Map();
   const verifiedSpellcasting = new Map();
+  const declaredAlwaysPrepared = new Set();
   const verifiedAdvancements = [];
   for (const origin of items.filter(i => ["race", "background"].includes(i.type))) {
     const uuid = sourceUuid(origin);
@@ -128,6 +129,7 @@ export async function validateActor2024(fs, actor) {
       check("error", "subclass_spellcasting_progression_mismatch",
         `${sub.name}: its recorded spellcasting progression differs from the exact official 2024 subclass source.`, sub._id, [evidence.source]);
     const grants = await subclassAlwaysPrepared(fs, evidence.doc, Number(cls.system?.levels) || 0);
+    for (const uuid of grants.declared) declaredAlwaysPrepared.add(uuid);
     for (const reason of grants.unresolved)
       check("unverified", "subclass_grant_unverified", `${sub.name}: ${reason}`, sub._id, [evidence.source]);
     for (const [uuid] of grants.expected) {
@@ -175,6 +177,20 @@ export async function validateActor2024(fs, actor) {
     // from every preparation/cantrip audit without being reported as orphaned.
     const owned = spells.filter(s => String(s.system?.sourceClass || "").trim().toLowerCase() === id);
     const level = Number(cls.system?.levels);
+    if (officialClass) {
+      const grants = await classAlwaysPrepared(fs, officialClass, level);
+      for (const uuid of grants.declared) declaredAlwaysPrepared.add(uuid);
+      for (const reason of grants.unresolved)
+        check("unverified", "class_grant_unverified", `${cls.name}: ${reason}`, cls._id, [classSource]);
+      for (const [uuid] of grants.expected) {
+        const granted = spells.filter(spell => sourceUuid(spell) === uuid);
+        if (!granted.length)
+          check("warning", "missing_class_granted_spell", `${cls.name}: a mandatory always-prepared class-granted spell is absent.`, cls._id, [classSource, uuid]);
+        else if (!granted.some(spell => Number(spell.system?.prepared) === 2))
+          check("warning", "class_granted_spell_not_always_prepared", `${cls.name}: a mandatory class-granted spell lacks permanent preparation.`, granted[0]._id, [classSource, uuid]);
+        else rulesSources.class_granted_spells.push(uuid);
+      }
+    }
     const sub = subclasses.find(s => s.system?.classIdentifier === id);
     const verifiedSub = verifiedSubclasses.get(id)?.doc;
     const officialProgression = officialClass?.system?.spellcasting?.progression;
@@ -191,8 +207,9 @@ export async function validateActor2024(fs, actor) {
       // A feat or another feature can grant a spell to a noncaster. Do not
       // declare those spells illegal, but neither silently certify them as
       // ordinary class spells without a verified casting progression.
-      const unexplained = owned.filter(s => Number(s.system?.prepared) !== 2 ||
-        !rulesSources.subclass_spells.includes(sourceUuid(s)));
+      const explained = new Set([...rulesSources.subclass_spells,
+        ...rulesSources.class_granted_spells, ...declaredAlwaysPrepared]);
+      const unexplained = owned.filter(s => Number(s.system?.prepared) !== 2 || !explained.has(sourceUuid(s)));
       if (unexplained.length)
         check("unverified", "noncaster_class_spell_origin",
           `${cls.name}: ${unexplained.length} spell(s) are attributed to a class without ordinary spellcasting; their feat or feature origin requires separate evidence.`, cls._id);
@@ -279,9 +296,10 @@ export async function validateActor2024(fs, actor) {
   // class attribution, but they must not silently count as certified spells.
   // An exact, independently traced always-prepared subclass grant is enough
   // evidence to avoid repeating an unnecessary uncertainty.
-  const provenSubclassSpells = new Set(rulesSources.subclass_spells);
+  const provenSpells = new Set([...rulesSources.subclass_spells, ...rulesSources.class_granted_spells]);
   for (const spell of spells.filter(s => !String(s.system?.sourceClass || "").trim())) {
-    if (Number(spell.system?.prepared) === 2 && provenSubclassSpells.has(sourceUuid(spell))) continue;
+    if (Number(spell.system?.prepared) === 2 &&
+        (provenSpells.has(sourceUuid(spell)) || declaredAlwaysPrepared.has(sourceUuid(spell)))) continue;
     const source = sourceUuid(spell);
     check("unverified", "unattributed_spell_origin",
       `${spell.name}: no class is recorded for this spell; a feat, feature or other grant may explain its origin.`,
