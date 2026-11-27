@@ -14,6 +14,8 @@ import { chatTimestamp, compareChatMessages } from "./chat-history.mjs";
 import { createFoundryOAuth, oauthEncryptionKey } from "./oauth.mjs";
 import { plan as advPlan, apply as advApply, fetchUuid, preferOfficialClass, retrofitClass } from "./advancement.mjs";
 import { advancementBlueprint, compareAdvancementSheets } from "./advancement-replay.mjs";
+import { planActorRebuild, copyResidualItems, copyResidualActorEffects,
+  syncRebuiltItemState, compareRebuiltItemDetails } from "./actor-rebuild.mjs";
 import { planClassSpells, applyClassSpells } from "./spells.mjs";
 import { ensureCastSpells } from "./cast.mjs";
 import { GM_TOOLS, GM_ROLE, handleGm } from "./gm.mjs";
@@ -219,12 +221,22 @@ export const TOOL_DEFINITIONS = [
       item: { type: "string", description: "Classe déjà présente sur l'acteur (nom ou _id) à faire monter" },
       level: { type: "number", description: "Niveau de classe visé (défaut : niveau actuel + 1, ou 1 pour un import)" },
       replay_from: { type: "string", description: "Acteur source (ID de préférence) : rejoue ses choix d'avancement enregistrés sur la même classe officielle ; pour un acteur vierge, restaure aussi les caractéristiques avant la montée de niveau. Les choix absents restent demandés." },
+      skip_starting_equipment: { type: "boolean", description: "Ne pas ajouter l'équipement de départ de l'avancement ; réservé à une reconstruction qui réimporte ensuite l'inventaire source." },
       choices: { type: "object" }, hp: { type: "string", enum: ["avg", "max"], default: "avg" },
       spells: { type: "string", enum: ["none", "all"], default: "none", description: "'all' : ajoute tous les sorts de la classe accessibles (liste construite depuis tous les compendiums installés) et demande sorts mineurs (choices['spells:cantrips']) et sorts préparés (choices['spells:prepared'])" } } } },
   { name: "advancement_blueprint", description: "Inspecte un acteur à classe unique et renvoie sa classe/source, ses choix d'avancement réellement enregistrés et ses caractéristiques avant progression de classe, sans rien modifier. Les équipements et sorts non enregistrés comme choix restent à contrôler.",
     inputSchema: { type: "object", required: ["actor"], properties: { actor: { type: "string" } } } },
   { name: "compare_actors", description: "Compare deux fiches calculées (niveaux, PV, caractéristiques, sorts, inventaire, aptitudes, ressources) sans modifier les acteurs. Une comparaison structurelle ne remplace pas l'audit des règles.",
     inputSchema: { type: "object", required: ["source", "target"], properties: { source: { type: "string" }, target: { type: "string" } } } },
+  { name: "rebuild_actor", description: "Reconstruit une fiche à classe unique de zéro depuis une fiche source : relit les décisions de classe/espèce/historique, les rejoue depuis les compendiums, puis réconcilie sorts, équipement et récompenses. Aperçu sans écriture par défaut ; apply=true crée une nouvelle fiche et renvoie un rapport d'écarts. Les choix impossibles à retrouver bloquent l'application.",
+    inputSchema: { type: "object", required: ["source", "name"], properties: {
+      source: { type: "string", description: "Acteur source (identifiant recommandé)" },
+      name: { type: "string", description: "Nom de la nouvelle fiche ; doit être unique" },
+      apply: { type: "boolean", default: false, description: "Créer réellement la fiche ; par défaut, uniquement planifier" },
+      choices: { type: "object", description: "Choix manquants fournis explicitement (identifiant d'avancement vers valeur)" },
+      hp: { type: "string", enum: ["avg", "max"], description: "Mode de PV si non enregistré sur la source" },
+      folder: { type: "string", description: "Dossier cible optionnel, sinon même dossier que l'acteur source" }
+    } } },
   { name: "audit_translation", description: "Audit de traduction FR du monde et/ou des compendiums : champs restés en anglais (nom, description, activités, pages de journal, faces de cartes, résultats de tables, effets, objets des acteurs) avec UUID, champ, extrait, statut (anglais / mixte / inconnu ; « traduit » = traduction Babele) et correctif disponible (localize_actor). mode=coverage : part des entrées traduites par compendium / type de document. Heuristique mots-outils FR/EN + noms connus des compendiums traduits. Les compendiums complets sont lourds (≈ 40 s pour tout) : préférer 'packs'.",
     inputSchema: { type: "object", properties: {
       scope: { type: "string", enum: ["world", "packs", "all"], default: "world" },
@@ -513,6 +525,84 @@ async function runTool(session, params) {
           const source = await findActor(fs, a.source), target = await findActor(fs, a.target);
           return out({ source: { id: source._id, name: source.name }, target: { id: target._id, name: target.name },
             ...compareAdvancementSheets(sheet(source), sheet(target)) });
+        }
+        case "rebuild_actor": {
+          const source = await findActor(fs, a.source);
+          const newName = String(a.name || "").trim();
+          if (!newName || newName.length > 100) throw new Error(message(
+            "A new actor name (1–100 characters) is required.", "Un nom de fiche (1 à 100 caractères) est nécessaire."));
+          const existing = (await fs.doc("get", "Actor", { query: {} })).filter(x => x.name?.trim().toLowerCase() === newName.toLowerCase());
+          if (existing.length) throw new Error(message(
+            `An actor named "${newName}" already exists; choose a distinct name.`,
+            `Une fiche « ${newName} » existe déjà ; choisis un autre nom.`));
+          const plan = await planActorRebuild(fs, source, a);
+          const preview = { simulation: !a.apply, source: { id: source._id, name: source.name },
+            cible: newName, niveau: plan.blueprint.level, caracteristiques_initiales: plan.blueprint.pre_origin_abilities,
+            etapes: plan.stages, choix_recuperes: plan.recorded.length, choix_requis: plan.pending,
+            avertissements: plan.warnings, objets_source: plan.items_to_reconcile, notes: plan.notes };
+          if (!a.apply || !plan.ready) return out(preview);
+          const base = Object.fromEntries(Object.entries(plan.blueprint.pre_origin_abilities).map(([k, v]) => [k, { value: v }]));
+          const actorData = { name: newName, type: "character", img: source.img,
+            ...(a.folder || source.folder ? { folder: a.folder || source.folder } : {}),
+            system: { abilities: base } };
+          const [created] = await fs.doc("create", "Actor", { data: [actorData], modifiedTime: Date.now() });
+          if (!created?._id) throw new Error("Foundry did not return an actor ID after creation.");
+          const log = [];
+          try {
+            for (const stage of plan.stages) {
+              const result = await runTool(session, { name: "advance", arguments: {
+                actor: created._id, source: { uuid: stage.source },
+                ...(stage.type === "class" ? { level: stage.level } : {}),
+                choices: plan.choices, hp: a.hp || plan.blueprint.hp_mode || "avg",
+                skip_starting_equipment: true
+              } });
+              if (!result[OUT]) throw new Error(result.content?.[0]?.text || "Advancement failed.");
+              if (result.value?.choix_requis?.length) throw new Error(
+                `Unresolved choices after preflight: ${result.value.choix_requis.map(x => x.id).join(", ")}`);
+              log.push({ type: stage.type, name: stage.name, applique: result.value?.applique || [] });
+            }
+            const progressed = await findActor(fs, created._id);
+            const inventory = await copyResidualItems(fs, source, progressed);
+            const actorEffects = await copyResidualActorEffects(fs, source, await findActor(fs, created._id), inventory.mapping);
+            const etatsRestaures = await syncRebuiltItemState(fs, source, await findActor(fs, created._id), inventory.mapping);
+            // Restore session state (spent spell slots, gold and current HP),
+            // not derived attributes or proficiency values.
+            const upd = { _id: created._id };
+            if (source.system?.currency) upd["system.currency"] = structuredClone(source.system.currency);
+            if (source.system?.spells) upd["system.spells"] = structuredClone(source.system.spells);
+            if (source.system?.resources) upd["system.resources"] = structuredClone(source.system.resources);
+            if (source.system?.bonuses) upd["system.bonuses"] = structuredClone(source.system.bonuses);
+            const descriptiveKeys = ["biography", "alignment", "faith", "ideal", "bond", "flaw",
+              "personality", "appearance", "age", "height", "weight", "eyes", "hair", "skin", "notes", "xp"];
+            for (const key of descriptiveKeys) if (source.system?.details?.[key] !== undefined)
+              upd[`system.details.${key}`] = structuredClone(source.system.details[key]);
+            for (const key of ["exhaustion", "inspiration", "death"]) if (source.system?.attributes?.[key] !== undefined)
+              upd[`system.attributes.${key}`] = structuredClone(source.system.attributes[key]);
+            const maxHp = sheet(await findActor(fs, created._id)).pv.max;
+            const hp = Number(source.system?.attributes?.hp?.value);
+            if (Number.isFinite(hp)) upd["system.attributes.hp.value"] = Math.min(maxHp, Math.max(0, hp));
+            if (Object.keys(upd).length > 1) await fs.doc("update", "Actor", {
+              updates: [upd], diff: true, modifiedTime: Date.now()
+            });
+            const target = await findActor(fs, created._id);
+            const rapport = compareAdvancementSheets(sheet(source), sheet(target));
+            const details = compareRebuiltItemDetails(source, target);
+            rapport.integrite_objets = details;
+            rapport.conforme = rapport.conforme && details.conforme;
+            return out({ simulation: false, acteur: { id: target._id, name: target.name },
+              source: { id: source._id, name: source.name }, niveau: sheet(target).niveau,
+              etapes_appliquees: log, objets_copies: inventory.counts,
+              effets_acteur_copies: actorEffects, etats_objets_restaures: etatsRestaures,
+              objets_generes_sans_equivalent: inventory.additional,
+              rapport,
+              avertissements: plan.warnings });
+          } catch (e) {
+            // Do not silently remove partially rebuilt actors: the deletion
+            // endpoint may be unavailable, and the GM must retain an audit trail.
+            return out({ erreur: e.message, acteur_partiel: { id: created._id, name: newName },
+              note: message("Rebuild interrupted; inspect this target before retrying. The source was not modified.",
+                "Reconstruction interrompue ; inspecte cette fiche avant de réessayer. La source n'a pas été modifiée.") });
+          }
         }
         case "roll": {
           const actor = a.actor ? await findActor(fs, a.actor) : null;
@@ -909,7 +999,7 @@ async function runTool(session, params) {
           const from = isClass ? current + 1 : 0;
           // inclut les avancements de la sous-classe existante
           const { steps, pending, warnings } = onlySpells ? { steps: [], pending: [], warnings: [] }
-            : await advPlan(fs, actor, root, { fromLevel: from, toLevel: target, choices: effectiveChoices, isFirstClass });
+            : await advPlan(fs, actor, root, { fromLevel: from, toLevel: target, choices: effectiveChoices, isFirstClass, skipStartingEquipment: !!a.skip_starting_equipment });
           warnings.unshift(...notes);
           // niveaux déjà acquis d'une classe complétée : aptitudes et maîtrises reconstruites qui manquent sur la fiche
           if (retro && current > 0) {

@@ -46,6 +46,53 @@ function classLineage(items, classId) {
   return descendants;
 }
 
+/** Choices persisted in advancement values or in a granted item's exact advancementOrigin. */
+export function recordedActorChoices(actor, rootIds = null) {
+  const items = actor?.items || [];
+  const included = rootIds == null ? new Set(items.map(i => i._id)) :
+    new Set(rootIds.flatMap(id => [...classLineage(items, id)]));
+  const byOrigin = new Map();
+  for (const child of items) {
+    const origin = child.flags?.dnd5e?.advancementOrigin;
+    if (origin) { const arr = byOrigin.get(origin) || []; arr.push(child); byOrigin.set(origin, arr); }
+  }
+  const choices = {}, recorded = [], conflicts = [];
+  const add = (key, picked, item, adv, inferred = false) => {
+    if (key in choices && JSON.stringify(choices[key]) !== JSON.stringify(picked)) conflicts.push(key);
+    else {
+      choices[key] = picked;
+      recorded.push({ item: item.name, type: adv.type, key, ...(inferred ? { recovered_from_item_origin: true } : {}) });
+    }
+  };
+  for (const item of items.filter(i => included.has(i._id))) {
+    for (const adv of list(item)) {
+      if (!adv?._id) continue;
+      const picked = choicesAt(adv);
+      if (picked != null) add(adv.level > 0 ? `${adv._id}@${adv.level}` : adv._id, picked, item, adv);
+      if (adv.type !== "ItemChoice") continue;
+      const configurations = Object.entries(adv.configuration?.choices || {});
+      const added = adv.value?.added || {};
+      for (const [i, [lv, config]] of configurations.entries()) {
+        const level = Number(lv);
+        const levelAdded = added[lv] || (configurations.length === 1 && i === 0 ? added[0] : null);
+        let uuids = [...new Set(Object.values(levelAdded || {}).filter(Boolean))];
+        let recovered = false;
+        if (!uuids.length) {
+          const directChildren = byOrigin.get(`${item._id}.${adv._id}`) || [];
+          const expected = Number(config?.count ?? config) || 1;
+          const candidates = directChildren.map(sourceUuid).filter(Boolean);
+          if (candidates.length === expected) {
+            uuids = candidates; recovered = true;
+          }
+        }
+        if (uuids.length) add(level > 0 ? `${adv._id}@${level}` : adv._id, uuids, item, adv, recovered);
+      }
+    }
+  }
+  if (conflicts.length) throw new Error(`Conflicting recorded advancement choices: ${[...new Set(conflicts)].join(", ")}`);
+  return { choices, recorded };
+}
+
 /**
  * Build an exact replay plan for one class from a finished Foundry dnd5e actor.
  * No selected value is inferred from an item's title or from its description.
@@ -63,38 +110,14 @@ export function advancementBlueprint(actor) {
   const level = Number(cls.system?.levels);
   if (!Number.isInteger(level) || level < 1 || level > 20) throw new Error("Source class level is invalid.");
 
-  const choices = {};
-  const replayed = [];
-  const conflicts = [];
   const lineage = classLineage(items, cls._id);
-  // All nested class-granted feats/items may carry their own ItemChoice/ASI
-  // advancements (e.g. Divine Order or Resilient).
-  for (const item of items.filter(i => lineage.has(i._id))) {
-    for (const adv of list(item)) {
-      if (!adv?._id || (adv.level != null && Number(adv.level) > level)) continue;
-      const picked = choicesAt(adv);
-      if (picked != null) {
-        const key = adv.level > 0 ? `${adv._id}@${adv.level}` : adv._id;
-        if (key in choices && JSON.stringify(choices[key]) !== JSON.stringify(picked)) conflicts.push(key);
-        else { choices[key] = picked; replayed.push({ item: item.name, type: adv.type, key }); }
-      }
-      if (adv.type === "ItemChoice") {
-        const configurations = Object.keys(adv.configuration?.choices || {}).map(Number).filter(n => n <= level);
-        const added = adv.value?.added || {};
-        for (const [i, lvl] of configurations.entries()) {
-          // Foundry often persists the first selection under added[0],
-          // even when its configured choice is at character level 1 or 7.
-          const levelAdded = added[lvl] || (configurations.length === 1 && i === 0 ? added[0] : null);
-          const uuids = [...new Set(Object.values(levelAdded || {}).filter(Boolean))];
-          if (!uuids.length) continue;
-          const key = lvl > 0 ? `${adv._id}@${lvl}` : adv._id;
-          if (key in choices && JSON.stringify(choices[key]) !== JSON.stringify(uuids)) conflicts.push(key);
-          else { choices[key] = uuids; replayed.push({ item: item.name, type: adv.type, key }); }
-        }
-      }
-    }
-  }
-  if (conflicts.length) throw new Error(`Conflicting recorded advancement choices: ${[...new Set(conflicts)].join(", ")}`);
+  // Nested class-granted feats/items carry their own ItemChoice/ASI
+  // advancements (e.g. Divine Order and Resilient).
+  const { choices, recorded: replayed } = recordedActorChoices(actor, [cls._id]);
+  // Never reuse advancement choices from levels beyond the source class level.
+  for (const item of items.filter(i => lineage.has(i._id)))
+    for (const adv of list(item))
+      if (Number(adv.level || 0) > level) delete choices[`${adv._id}@${adv.level}`];
 
   // Actor abilities include earlier advancement changes. Undo only changes
   // granted by this class, not race/background choices already applied before

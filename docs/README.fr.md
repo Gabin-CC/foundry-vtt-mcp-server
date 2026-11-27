@@ -36,6 +36,7 @@ Claude (CLI / Desktop) ──HTTPS + Basic auth──▶ foundry-vtt-mcp-server 
 | `actor_sheet` | Fiche calculée : niveau, maîtrise, mods, CA estimée, PV, compétences, attaque/DD de sort, emplacements |
 | `advancement_blueprint` | Lit les choix de progression réellement enregistrés sur une fiche à classe unique, la source exacte de la classe et les caractéristiques avant progression de classe (lecture seule) |
 | `advance` avec `replay_from` | Rejoue automatiquement ces choix sur une autre fiche avec la même classe ; demande uniquement les choix introuvables dans la source |
+| `rebuild_actor` | Reconstruit dans une nouvelle fiche classe + espèce + historique par avancement, puis réconcilie les sorts, objets et récompenses ; **simulation par défaut**, écriture seulement avec `apply: true` |
 | `compare_actors` | Compare deux fiches calculées et détaille les différences de caractéristiques, PV, sorts, aptitudes et inventaire (lecture seule) |
 | `roll` | Jet de dés libre posté dans le chat (`2d20kh1+5`, `8d6`, `4d6kh3`…) |
 | `check` | Test de caractéristique, sauvegarde, compétence, initiative |
@@ -82,6 +83,17 @@ Les jets peuvent être publics, `mj`, `aveugle` ou `prive`.
 **Traduction FR** : si le module [`dnd5e_fr-FR`](https://foundryvtt.com/packages/dnd5e_fr-FR) est installé, les noms et descriptions des compendiums sont traduits (recherche et import).
 
 ### Reconstruire un personnage pour tester le MCP
+
+**Workflow intégral :**
+
+1. `rebuild_actor({ "source": "ID_SOURCE", "name": "Personnage reconstruit" })` vérifie les compendiums et tous les choix enregistrés (classe, espèce, historique, dons imbriqués). La simulation **n'écrit rien**.
+2. Si `choix_requis` est non vide, seuls ces choix doivent être fournis dans `choices`. Un don dont la valeur d'avancement est absente peut être récupéré depuis l'**origine d'avancement exacte** de l'objet présent sur la fiche source ; aucune déduction par le nom.
+3. Avec `apply: true`, l'outil crée une **nouvelle fiche**, applique les avancements de la classe, de l'espèce et de l'historique depuis les sources enregistrées, puis restaure les sorts, l'équipement, les récompenses et les effets actifs de l'acteur. Les états des objets (préparation, utilisation, équipement) sont repris. Les équipements de départ ne sont pas attribués deux fois : c'est l'inventaire réel qui fait foi.
+4. Le résultat contient `rapport` (différences de caractéristiques, PV, aptitudes, inventaire, sorts et `integrite_objets` pour leurs états). Une erreur d'écriture laisse éventuellement un acteur partiel **identifié** plutôt que de supprimer une fiche sans contrôle ; l'original n'est jamais modifié.
+
+Limites : une seule classe et des UUID de compendiums vérifiables ; le contrôle est structurel, pas une preuve de légalité de chaque règle ni de tous les effets actifs.
+
+**Workflow ciblé sur la classe uniquement :**
 
 1. `advancement_blueprint({ "actor": "ID_SOURCE" })` renvoie les choix effectivement sauvegardés (sous-classe, dons, augmentations de caractéristique, maîtrises et choix imbriqués) ainsi que la provenance du compendium de classe. Privilégier les **identifiants** d'acteurs aux noms partiels.
 2. Créer un acteur **vierge** avec `create_documents`. Ne pas y copier directement les caractéristiques finales du personnage niveau 12.

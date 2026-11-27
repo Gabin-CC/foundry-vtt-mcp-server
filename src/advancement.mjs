@@ -207,7 +207,7 @@ export async function planStartingEquipment(fs, item, choices) {
  * Construit le plan d'avancement d'un objet (et récursivement des objets accordés).
  * @returns {steps, pending} — pending = choix manquants à demander.
  */
-export async function plan(fs, actor, item, { fromLevel, toLevel, choices = {}, isFirstClass, depth = 0 }) {
+export async function plan(fs, actor, item, { fromLevel, toLevel, choices = {}, isFirstClass, depth = 0, skipStartingEquipment = false }) {
   const steps = [], pending = [], warnings = [];
   const isClass = item.type === "class", isSub = item.type === "subclass";
   const lvlOk = adv => { const l = Number(adv.level ?? 0); return l >= fromLevel && l <= toLevel; };
@@ -449,7 +449,7 @@ export async function plan(fs, actor, item, { fromLevel, toLevel, choices = {}, 
     }
   }
   // équipement de départ : historique à l'import, classe au niveau 1 de la 1re classe
-  if (depth === 0 && ((item.type === "background" && fromLevel <= 0) || (isClass && isFirstClass && fromLevel <= 1 && toLevel >= 1))) {
+  if (!skipStartingEquipment && depth === 0 && ((item.type === "background" && fromLevel <= 0) || (isClass && isFirstClass && fromLevel <= 1 && toLevel >= 1))) {
     const se = await planStartingEquipment(fs, item, choices);
     pending.push(...se.pending); warnings.push(...se.warnings);
     if (se.step && !se.pending.length) steps.push(se.step);
