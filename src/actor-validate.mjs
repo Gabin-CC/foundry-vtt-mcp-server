@@ -3,6 +3,7 @@ import { fetchUuid, spellLists } from "./advancement.mjs";
 import { slotMax } from "./dnd5e.mjs";
 import { PRIMARY } from "./actor-multiclass.mjs";
 import { scaleBonus } from "./spells.mjs";
+import { verifySubclass, subclassAlwaysPrepared, THIRD_CASTER_WIZARD_LIST } from "./subclass-spells.mjs";
 
 const UUID = /^Compendium\.[^.]+\.[^.]+\.Item\.[A-Za-z0-9]{16}$/;
 const attr = (actor, key) => Number(actor.system?.abilities?.[key]?.value);
@@ -70,13 +71,37 @@ export async function validateActor2024(fs, actor) {
     }
   }
 
+  const rulesSources = { classes: [], subclasses: [], spells: [], subclass_spells: [] };
+  const verifiedSubclasses = new Map();
   for (const sub of subclasses) {
     const id = String(sub.system?.classIdentifier || "").toLowerCase();
-    if (!id || !ids.includes(id))
+    if (!id || !ids.includes(id)) {
       check("unverified", "unlinked_subclass", `${sub.name}: subclass has no verifiable matching classIdentifier.`, sub._id);
+      continue;
+    }
+    const cls = classes.find(c => String(c.system?.identifier || "").toLowerCase() === id);
+    const evidence = await verifySubclass(fs, sub, cls);
+    if (!evidence.doc) {
+      check(evidence.mismatch ? "error" : "unverified",
+        evidence.mismatch ? "subclass_source_mismatch" : "subclass_source_unverified",
+        `${sub.name}: ${evidence.reason}`, sub._id, evidence.source ? [evidence.source] : []);
+      continue;
+    }
+    verifiedSubclasses.set(id, evidence);
+    rulesSources.subclasses.push(evidence.source);
+    const grants = await subclassAlwaysPrepared(fs, evidence.doc, Number(cls.system?.levels) || 0);
+    for (const reason of grants.unresolved)
+      check("unverified", "subclass_grant_unverified", `${sub.name}: ${reason}`, sub._id, [evidence.source]);
+    for (const [uuid] of grants.expected) {
+      const owned = spells.filter(s => sourceUuid(s) === uuid);
+      if (!owned.length)
+        check("warning", "missing_subclass_spell", `${sub.name}: a mandatory always-prepared spell is missing from this character.`, sub._id, [evidence.source, uuid]);
+      else if (!owned.some(s => Number(s.system?.prepared) === 2))
+        check("warning", "subclass_spell_not_always_prepared", `${sub.name}: an official always-prepared spell is present but its preparation state is not permanent.`, owned[0]._id, [evidence.source, uuid]);
+      else rulesSources.subclass_spells.push(uuid);
+    }
   }
 
-  const rulesSources = { classes: [], spells: [] };
   let officialLists = null;
   try { officialLists = await spellLists(fs); }
   catch { check("unverified", "spell_lists_unavailable", "Official class spell lists could not be read from installed compendiums."); }
@@ -101,15 +126,26 @@ export async function validateActor2024(fs, actor) {
     const owned = spells.filter(s => s.system?.sourceClass === id);
     const level = Number(cls.system?.levels);
     const sub = subclasses.find(s => s.system?.classIdentifier === id);
-    const progression = cls.system?.spellcasting?.progression || sub?.system?.spellcasting?.progression || "none";
+    const classProgression = cls.system?.spellcasting?.progression || "none";
+    const progression = classProgression !== "none" ? classProgression : sub?.system?.spellcasting?.progression || "none";
     if (progression === "none") continue;
     if (!officialClass) {
       check("unverified", "spell_progression_unavailable", `${cls.name}: prepared/cantrip limits cannot be checked without the official class source.`, cls._id);
       continue;
     }
-    const preparedScale = scaleAt(officialClass, "max-prepared", level);
-    const cantripScale = scaleAt(officialClass, "cantrips-known", level);
-    const allowed = officialLists?.get(`class:${id}`);
+    const verifiedSub = verifiedSubclasses.get(id)?.doc;
+    const thirdCaster = progression === "third" && verifiedSub?.system?.spellcasting?.progression === "third" &&
+      THIRD_CASTER_WIZARD_LIST[id] === verifiedSub?.system?.identifier;
+    if (progression === "third" && !thirdCaster) {
+      check("unverified", "third_caster_features",
+        `${cls.name}: the 2024 subclass spell progression and eligible spell list lack exact official evidence.`, cls._id);
+      continue;
+    }
+    const casterSource = thirdCaster ? verifiedSub : officialClass;
+    const preparedScale = scaleAt(casterSource, "max-prepared", level);
+    const cantripScale = scaleAt(casterSource, "cantrips-known", level);
+    const listClass = thirdCaster ? "wizard" : id;
+    const allowed = officialLists?.get(`class:${listClass}`);
     // Only official class-list spells can *prove* a class-preparation violation.
     // Subclass/feat spells can be prepared in addition to the class limit.
     const ordinary = owned.filter(s => allowed?.has(sourceUuid(s)) && Number(s.system?.prepared) !== 2);
@@ -130,12 +166,12 @@ export async function validateActor2024(fs, actor) {
         check("error", "too_many_cantrips", `${cls.name}: ${cantrips.length} class cantrips exceed the verified limit of ${limit}.`, cls._id, [classSource]);
     }
     if (!allowed?.size)
-      check("unverified", "class_spell_list_missing", `${cls.name}: no installed official class spell list was found.`, cls._id);
-    const highest = maxSpellLevel({ ...cls, system: { ...cls.system, spellcasting: officialClass.system?.spellcasting || cls.system.spellcasting } }, sub);
+        check("unverified", "class_spell_list_missing", `${cls.name}: no installed official ${listClass} spell list was found.`, cls._id);
+    const highest = maxSpellLevel({ ...cls, system: { ...cls.system, spellcasting: officialClass.system?.spellcasting || cls.system.spellcasting } }, thirdCaster ? verifiedSub : sub);
     for (const spell of owned) {
       const lvl = Number(spell.system?.level);
       const src = sourceUuid(spell);
-      if (Number(spell.system?.prepared) !== 2 && progression !== "third" && lvl >= 1 && lvl > highest) {
+      if (Number(spell.system?.prepared) !== 2 && lvl >= 1 && lvl > highest) {
         if (allowed?.has(src))
           check("error", "spell_above_class_level",
             `${cls.name}: ${spell.name} (spell level ${lvl}) is beyond this class's unlocked spell level ${highest}, irrespective of shared multiclass slots.`, spell._id, [classSource, src]);
@@ -147,15 +183,15 @@ export async function validateActor2024(fs, actor) {
         check("unverified", "spell_source_missing", `${spell.name}: class spell has no verifiable compendium UUID.`, spell._id);
       else if (!allowed?.has(src))
         check("unverified", "spell_class_list_unconfirmed",
-          `${spell.name}: its exact source is absent from the installed official ${cls.name} class spell list; a subclass, older book or variant could explain this.`, spell._id, [src]);
+          `${spell.name}: its exact source is absent from the installed official ${listClass} spell list; a subclass, older book or variant could explain this.`, spell._id, [src]);
       else rulesSources.spells.push(src);
     }
     if (id === "wizard")
       check("unverified", "wizard_spellbook_provenance",
         "Wizard spellbook entries may also be copied from other sources. Current items do not prove when or how every spell entered the book; there is no fixed spellbook maximum.", cls._id);
-    if (progression === "third")
-      check("unverified", "third_caster_features",
-        `${cls.name}: subclass-based spell choices and progression need separate rules verification.`, cls._id);
+    if (thirdCaster && cantripScale == null)
+      check("unverified", "third_caster_cantrips_unknown",
+        `${cls.name}: official subclass does not expose a verifiable cantrip progression.`, cls._id);
   }
 
   for (const spell of spells.filter(s => s.system?.sourceClass && !ids.includes(String(s.system.sourceClass).toLowerCase())))
@@ -185,10 +221,11 @@ export async function validateActor2024(fs, actor) {
     status: counts.errors ? "issues" : counts.unverified ? "incomplete" : counts.warnings ? "review" : "passed_scoped_checks",
     summary: counts,
     expected_spell_slots: slotMax(actor),
-    verified_sources: { classes: [...new Set(rulesSources.classes)], spells: [...new Set(rulesSources.spells)] },
+    verified_sources: Object.fromEntries(Object.entries(rulesSources)
+      .map(([kind, sources]) => [kind, [...new Set(sources)]])),
     diagnostics,
     limits: ["This reports only deterministic checks supported by installed sources, not full D&D 2024 legality.",
       "Advancement decisions, feat choices, hit point rolls, historical ability scores and subclass exceptions require separate evidence.",
-      "Wizard spellbook copies, always-prepared feature spells and unusual magic items require case-by-case review."],
+      "Unknown subclass sources, unverified feature grants, spell replacements and unusual magic items require case-by-case review."],
   };
 }

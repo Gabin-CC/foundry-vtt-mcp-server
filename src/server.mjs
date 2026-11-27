@@ -252,13 +252,13 @@ export const TOOL_DEFINITIONS = [
       hp: { type: "string", enum: ["avg", "max"], default: "avg" },
       apply: { type: "boolean", default: false, description: "Appliquer à la fiche existante uniquement une fois tous les choix vérifiés" }
     } } },
-  { name: "multiclass_actor", description: "Ajoute une classe secondaire D&D 2024 ou fait progresser l'une des classes existantes d'un personnage multiclasse : vérifie les prérequis (13+), les éditions et la limite de niveau 20. Un niveau par appel, simulation sans écriture par défaut, choix explicites et instantané récupérable avant application. spells=selected sélectionne uniquement les sorts 2024 officiels de cette classe.",
+  { name: "multiclass_actor", description: "Ajoute une classe secondaire D&D 2024 ou fait progresser l'une des classes existantes d'un personnage multiclasse : vérifie les prérequis (13+), les éditions et la limite de niveau 20. Un niveau par appel, simulation sans écriture par défaut, choix explicites et instantané récupérable avant application. spells=selected vérifie les sorts de classe 2024, y compris ceux d'une sous-classe lanceuse tierce officielle déjà présente et leurs remplacements explicites.",
     inputSchema: { type: "object", required: ["actor"], properties: {
       actor: { type: "string", description: "Personnage existant, nom ou identifiant" },
       class_source: { type: "string", description: "UUID exact d'une nouvelle classe de compendium D&D 2024 ; exclusif avec item" },
       item: { type: "string", description: "Identifiant de classe embarquée à augmenter ; exclusif avec class_source" },
       level: { type: "integer", minimum: 1, maximum: 20, description: "Niveau cible dans la classe choisie, exactement un niveau après l'actuel (ou 1 si nouvelle classe)" },
-      choices: { type: "object", description: "Choix exacts demandés pendant la simulation ; pour spells=selected : spells:cantrips, spells:prepared, et spells:spellbook (Wizard seulement), valeurs UUID officiels 2024" },
+      choices: { type: "object", description: "Choix exacts demandés pendant la simulation ; pour spells=selected : spells:cantrips, spells:prepared, spells:spellbook (Magicien) et spells:replace (sous-classe lanceuse tierce officielle, [{kind:'cantrip'|'prepared', from:'ID possédé', to:'UUID officiel'}])" },
       spells: { type: "string", enum: ["none", "selected"], default: "none", description: "none : aucune sélection de sorts ; selected : choix stricts et validés pour la seule classe qui progresse" },
       hp: { type: "string", enum: ["avg", "max"], default: "avg" },
       apply: { type: "boolean", default: false, description: "false : simulation sans écriture ; true : appliquer avec instantané de récupération" }
@@ -270,7 +270,7 @@ export const TOOL_DEFINITIONS = [
       prepared_spells: { type: "object", description: "Sort possédé par _id vers true=préparer / false=ne plus préparer ; les sorts accordés en permanence ne sont pas modifiables" , additionalProperties: { type: "boolean" } },
       apply: { type: "boolean", default: false, description: "false par défaut : simulation ; true : appliquer avec instantané de récupération" }
     } } },
-  { name: "validate_actor", description: "Audite une fiche D&D 2024 sans aucune écriture : niveaux et classes, provenance officielle, préparation des sorts par classe, limites de niveau propres aux classes et conflits d'équipement. Sépare erreurs prouvées, avertissements et contrôles impossibles à vérifier ; ne certifie pas la conformité globale.",
+  { name: "validate_actor", description: "Audite une fiche D&D 2024 sans aucune écriture : niveaux, provenance officielle, limites de sorts par classe/sous-classe, sorts toujours préparés accordés par aptitudes et conflits d'équipement. Sépare erreurs prouvées, avertissements et contrôles impossibles à vérifier ; ne certifie pas la conformité globale.",
     inputSchema: { type: "object", required: ["actor"], properties: {
       actor: { type: "string", description: "Nom ou identifiant de la fiche à examiner (lecture seule)" }
     } } },
@@ -1241,6 +1241,7 @@ async function runTool(session, params, { rulesAudience } = {}) {
             etapes: preflight.value?.etapes || [], avertissements: preflight.value?.avertissements || [],
             emplacements_apres: slotMax({ ...actor, items: projectedItems }),
             ...(spellPlan ? { sorts: { classe: incoming.system?.identifier, selections: spellPlan.counts,
+              remplacements: spellPlan.step.replacements?.length || 0,
               niveau_max_classe: spellPlan.maxLevel, emplacements_classe: spellPlan.classSlots } } : {}),
             rappel: "Resolve every advancement and class-specific spell choice before apply=true. Shared slots never unlock higher-level spells for an individual class." };
           if (!a.apply || !ready) return out(preview);
@@ -1275,6 +1276,11 @@ async function runTool(session, params, { rulesAudience } = {}) {
               if ([...spellPlan.step.prepared].some(key => !ownSpells.some(s =>
                 spellKey(s.system?.identifier || s.name) === key && Number(s.system?.prepared) === 1)))
                 throw new Error("Selected class prepared spells were not prepared; inspect and restore the partial actor.");
+              if ((spellPlan.step.replacements || []).some(r =>
+                ownSpells.some(s => s._id === r.from) || !ownSpells.some(s =>
+                  (s._stats?.compendiumSource || s.flags?.dnd5e?.sourceId) === r.to.uuid &&
+                  (r.kind !== "prepared" || Number(s.system?.prepared) === 1))))
+                throw new Error("A third-caster spell replacement was not applied as planned; inspect and restore the partial actor.");
             }
             await finalizeActorSnapshot(snapshot, actor._id, captureActorState(fresh));
             finalized = true;

@@ -205,6 +205,7 @@ const UUID_SPELL = /^Compendium\.[^.]+\.[^.]+\.Item\.[A-Za-z0-9]{16}$/;
 
 export async function applyClassSpells(fs, actor, step, classItemId) {
   const data = [];
+  const replacements = step.replacements || [];
   // l'acteur est relu après l'avancement : on saute ce qui a été accordé entre-temps (ex. sorts de domaine)
   const id = step.cls.system?.identifier;
   const own = i => i.type === "spell" && (!step.perClass || i.system?.sourceClass === id);
@@ -214,14 +215,20 @@ export async function applyClassSpells(fs, actor, step, classItemId) {
   const cMax = (scaleAt(step.cls, "cantrips-known", step.level) ?? 0) + scaleBonus(actor, id, "cantrips-known");
   const cOwn = (actor.items || []).filter(i => i.type === "spell" && Number(i.system?.level) === 0 && i.system?.sourceClass === id).length;
   step.cantrips = step.cantrips.filter(c => !have.has(selectionKey(c))).slice(0, Math.max(0, cMax - cOwn));
-  for (const s of [...step.cantrips, ...step.leveled]) {
+  const replacementKinds = new Map(replacements.map(r => [r.to.uuid, r.kind]));
+  for (const s of [...step.cantrips, ...step.leveled, ...replacements.map(r => r.to)]) {
     if (have.has(selectionKey(s))) continue;
     let d;
-    try { d = structuredClone(await fetchUuid(fs, s.uuid)); } catch { continue; }
+    try { d = structuredClone(await fetchUuid(fs, s.uuid)); }
+    catch (error) {
+      if (replacementKinds.has(s.uuid)) throw error; // Never delete the old spell if its replacement is unavailable.
+      continue;
+    }
     delete d._id; delete d.folder; delete d.sort; delete d.ownership; delete d.__pack;
     d._stats = { ...(d._stats || {}), compendiumSource: s.uuid };
     d.system.sourceClass = step.cls.system?.identifier;
-    if (s.level >= 1) d.system.prepared = step.prepared.has(selectionKey(s)) ? 1 : 0;
+    if (s.level >= 1) d.system.prepared = replacementKinds.get(s.uuid) === "prepared" ||
+      step.prepared.has(selectionKey(s)) ? 1 : 0;
     if (d.system.method === undefined || d.system.method === "") d.system.method = "spell";
     data.push(d);
   }
@@ -229,5 +236,7 @@ export async function applyClassSpells(fs, actor, step, classItemId) {
   const upd = (actor.items || []).filter(i => own(i) && step.prepared.has(itemKey(i)) && Number(i.system?.prepared) === 0).map(i => ({ _id: i._id, "system.prepared": 1 }));
   if (data.length) await fs.doc("create", "Item", { parentUuid: `Actor.${actor._id}`, data, modifiedTime: Date.now() });
   if (upd.length) await fs.doc("update", "Item", { parentUuid: `Actor.${actor._id}`, updates: upd, modifiedTime: Date.now() });
-  return message(`${step.cantrips.length} cantrip(s), ${step.leveled.length} class spell(s) (levels 1 to ${step.maxLvl}), ${step.prepared.size} prepared`, `${step.cantrips.length} sort(s) mineur(s), ${step.leveled.length} sort(s) de classe (niv. 1 à ${step.maxLvl}), ${step.prepared.size} préparé(s)`);
+  if (replacements.length) await fs.doc("delete", "Item", { parentUuid: `Actor.${actor._id}`,
+    ids: replacements.map(r => r.from), modifiedTime: Date.now() });
+  return message(`${step.cantrips.length} cantrip(s), ${step.leveled.length} class spell(s) (levels 1 to ${step.maxLvl}), ${step.prepared.size} prepared${replacements.length ? `, ${replacements.length} replaced` : ""}`, `${step.cantrips.length} sort(s) mineur(s), ${step.leveled.length} sort(s) de classe (niv. 1 à ${step.maxLvl}), ${step.prepared.size} préparé(s)${replacements.length ? `, ${replacements.length} remplacé(s)` : ""}`);
 }
