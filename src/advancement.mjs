@@ -176,9 +176,13 @@ async function equipmentTraitChoices(fs) {
 async function concreteTraitPool(fs, pool, mode, weaponProfs) {
   const keys = new Set(expandPool(pool).filter(k => !k.includes("*")));
   const labels = new Map(), toolAbilities = {};
-  if (pool.includes("weapon:*") || pool.includes("tool:game:*")) {
+  // dnd5e 2024 classes use category-scoped mastery pools (weapon:sim:* and
+  // weapon:mar:*), whereas older entries use weapon:* for both categories.
+  const weaponWildcards = pool.filter(p => p === "weapon:*" || /^weapon:(?:sim|mar):\*$/.test(p));
+  if (weaponWildcards.length || pool.includes("tool:game:*")) {
     for (const e of await equipmentTraitChoices(fs)) {
       if (!pool.some(p => p === "weapon:*" ? e.key.startsWith("weapon:") :
+        /^weapon:(?:sim|mar):\*$/.test(p) ? e.key.startsWith(p.slice(0, -1)) :
         p === "tool:game:*" && e.key.startsWith("tool:game:"))) continue;
       // Foundry only offers mastery for weapons the actor can use proficiently.
       if (mode === "mastery" && e.key.startsWith("weapon:")) {
@@ -400,7 +404,8 @@ export async function plan(fs, actor, item, { fromLevel, toLevel, choices = {}, 
         const submitted = Array.isArray(raw) ? raw : [];
         const availableKeys = new Set(), labels = new Map(), toolAbilities = {};
         const expectedPicks = (c.choices || []).reduce((n, ch) => n + ((ch.pool || []).length ? ch.count : 0), 0);
-        const concreteWildcards = (c.choices || []).some(ch => (ch.pool || []).some(k => ["weapon:*", "tool:game:*"].includes(k)));
+        const concreteWildcards = (c.choices || []).some(ch => (ch.pool || []).some(k =>
+          k === "weapon:*" || /^weapon:(?:sim|mar):\*$/.test(k) || k === "tool:game:*"));
         for (const [i, ch] of (c.choices || []).entries()) {
           if (!(ch.pool || []).length) continue; // choix sans liste (défaut de données) : ignoré, comme dans Foundry
           const pool = await concreteTraitPool(fs, ch.pool, c.mode, weaponProfs);

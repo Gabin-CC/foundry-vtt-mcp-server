@@ -94,7 +94,7 @@ function fixture() {
   return { session, actors, writes, sources, set failOnItemCreate(value) { failOnItemCreate = value; } };
 }
 
-function with2024TraitChoices(f) {
+function with2024TraitChoices(f, masteryPool = ["weapon:*"]) {
   const mastery = id("weaponMastery"), gaming = id("gamingSet");
   const feat = source("dnd5e.classes24", "weaponFeature");
   f.sources[0].system.advancement.push(
@@ -107,7 +107,7 @@ function with2024TraitChoices(f) {
     _stats: { compendiumSource: feat },
     system: { source: { rules: "2024" }, advancement: [{ _id: mastery, type: "Trait", level: 0,
       title: "Weapon Mastery", configuration: { mode: "mastery", grants: [],
-        choices: [{ count: 2, pool: ["weapon:*"] }] } }] } });
+        choices: [{ count: 2, pool: masteryPool }] } }] } });
   f.sources[2].system.advancement.push({ _id: gaming, type: "Trait", level: 0,
     title: "Gaming Set", configuration: { mode: "default", grants: [],
       choices: [{ count: 1, pool: ["tool:game:*"] }] } });
@@ -299,6 +299,42 @@ test("weapon mastery and gaming-set wildcards resolve to actual 2024 equipment o
   assert.equal(gp.options.some(v => v.includes("tool:game:*")), false);
   assert.equal(wp.options.some(v => v.includes("Longsword +1")), false);
   assert.deepEqual(f.writes, []);
+});
+
+test("Fighter 2024 category-scoped mastery pools expand only permitted base weapons", async () => {
+  const f = fixture();
+  const { mastery } = with2024TraitChoices(f, ["weapon:sim:*", "weapon:mar:*"]);
+  const preview = await planActorBuild(f.session, request());
+  const pending = preview.choix_requis.find(x => x.id === mastery);
+  assert.ok(pending.options.includes("Longsword (weapon:mar:longsword)"), JSON.stringify(pending));
+  assert.ok(pending.options.includes("Dagger (weapon:sim:dagger)"));
+  assert.ok(!pending.options.some(x => x.includes("Longsword +1")));
+  const valid = await planActorBuild(f.session, request({ choices: {
+    ...CHOICES, [mastery]: ["weapon:mar:longsword", "weapon:sim:dagger"],
+    [id("gamingSet")]: ["tool:game:dice"]
+  } }));
+  assert.equal(valid.pret, true, JSON.stringify(valid.choix_requis));
+  const invalid = await planActorBuild(f.session, request({ choices: {
+    ...CHOICES, [mastery]: ["weapon:mar:longsword", "weapon:mar:longsword"],
+    [id("gamingSet")]: ["tool:game:dice"]
+  } }));
+  assert.equal(invalid.pret, false, "Duplicate mastery selections must be rejected");
+  assert.deepEqual(f.writes, []);
+});
+
+test("a martial-only category pool never proposes simple weapons, or vice versa", async () => {
+  for (const [wildcard, present, absent] of [
+    ["weapon:mar:*", "weapon:mar:longsword", "weapon:sim:dagger"],
+    ["weapon:sim:*", "weapon:sim:dagger", "weapon:mar:longsword"]
+  ]) {
+    const f = fixture();
+    const { mastery } = with2024TraitChoices(f, [wildcard]);
+    const p = await planActorBuild(f.session, request());
+    const options = p.choix_requis.find(x => x.id === mastery).options;
+    assert.ok(options.some(x => x.includes(present)), wildcard);
+    assert.ok(!options.some(x => x.includes(absent)), wildcard);
+    assert.deepEqual(f.writes, []);
+  }
 });
 
 test("a partially filled mastery choice is missing, not invalid; Dragonchess is accepted", async () => {
