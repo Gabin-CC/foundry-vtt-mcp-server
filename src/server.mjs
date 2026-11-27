@@ -539,6 +539,8 @@ async function runTool(session, params) {
           const preview = { simulation: !a.apply, source: { id: source._id, name: source.name },
             cible: newName, niveau: plan.blueprint.level, caracteristiques_initiales: plan.blueprint.pre_origin_abilities,
             etapes: plan.stages, choix_recuperes: plan.recorded.length, choix_requis: plan.pending,
+            choix_recuperes_via_provenance: plan.recorded.filter(x => x.recovered_from_item_origin)
+              .map(x => ({ objet: x.item, id: x.key, identifiant_historique: !!x.recovered_from_stale_origin })),
             avertissements: plan.warnings, objets_source: plan.items_to_reconcile, notes: plan.notes };
           if (!a.apply || !plan.ready) return out(preview);
           const base = Object.fromEntries(Object.entries(plan.blueprint.pre_origin_abilities).map(([k, v]) => [k, { value: v }]));

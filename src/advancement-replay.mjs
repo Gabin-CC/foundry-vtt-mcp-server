@@ -9,6 +9,42 @@ const list = item => {
 };
 
 const sourceUuid = item => item?._stats?.compendiumSource || item?.flags?.dnd5e?.sourceId || null;
+
+/**
+ * Foundry can replace an embedded item's ID without updating the IDs stored
+ * by the ItemGrant that originally created it. Resolve such legacy IDs only
+ * when the saved grant UUID AND the item's advancement lineage identify one
+ * unique current item. An ambiguous/missing match must remain a pending choice.
+ */
+function recordedGrantAliases(items) {
+  const currentIds = new Set(items.map(i => i._id));
+  const proposals = new Map();
+  for (const parent of items) {
+    for (const adv of list(parent)) {
+      if (adv?.type !== "ItemGrant" || !adv._id) continue;
+      const origin = `${parent._id}.${adv._id}`;
+      for (const [oldId, uuid] of Object.entries(adv.value?.added || {})) {
+        if (!/^[A-Za-z0-9]{16}$/.test(oldId) || currentIds.has(oldId)
+          || typeof uuid !== "string" || !uuid.startsWith("Compendium.")) continue;
+        const matches = items.filter(child => sourceUuid(child) === uuid && (
+          child.flags?.dnd5e?.advancementOrigin === origin ||
+          child.flags?.dnd5e?.advancementRoot === origin
+        ));
+        if (matches.length !== 1) continue;
+        const ids = proposals.get(oldId) || new Set();
+        ids.add(matches[0]._id);
+        proposals.set(oldId, ids);
+      }
+    }
+  }
+  // Reject one-to-many and many-to-one remappings rather than guessing.
+  const unique = [...proposals].filter(([, ids]) => ids.size === 1)
+    .map(([oldId, ids]) => [oldId, [...ids][0]]);
+  const counts = new Map();
+  for (const [, id] of unique) counts.set(id, (counts.get(id) || 0) + 1);
+  return new Map(unique.filter(([, id]) => counts.get(id) === 1));
+}
+
 const choicesAt = adv => {
   const value = adv.value || {};
   if (adv.type === "AbilityScoreImprovement") {
@@ -29,6 +65,7 @@ const choicesAt = adv => {
 
 function classLineage(items, classId) {
   const descendants = new Set([classId]);
+  const aliases = recordedGrantAliases(items);
   // Older dnd5e imports have advancementOrigin but no advancementRoot.
   // Follow the ancestry transitively, without writing missing flags.
   for (let changed = true; changed;) {
@@ -37,7 +74,8 @@ function classLineage(items, classId) {
       if (descendants.has(item._id)) continue;
       const f = item.flags?.dnd5e || {};
       const parent = f.advancementOrigin?.split(".")[0];
-      if (descendants.has(parent) || f.advancementRoot?.startsWith(classId + ".")) {
+      if (descendants.has(parent) || descendants.has(aliases.get(parent))
+        || f.advancementRoot?.startsWith(classId + ".")) {
         descendants.add(item._id);
         changed = true;
       }
@@ -49,19 +87,34 @@ function classLineage(items, classId) {
 /** Choices persisted in advancement values or in a granted item's exact advancementOrigin. */
 export function recordedActorChoices(actor, rootIds = null) {
   const items = actor?.items || [];
+  const aliases = recordedGrantAliases(items);
   const included = rootIds == null ? new Set(items.map(i => i._id)) :
     new Set(rootIds.flatMap(id => [...classLineage(items, id)]));
-  const byOrigin = new Map();
+  const byOrigin = new Map(), remappedOrigins = new Set();
+  const registerOrigin = (origin, child) => {
+    const arr = byOrigin.get(origin) || [];
+    arr.push(child); byOrigin.set(origin, arr);
+  };
   for (const child of items) {
     const origin = child.flags?.dnd5e?.advancementOrigin;
-    if (origin) { const arr = byOrigin.get(origin) || []; arr.push(child); byOrigin.set(origin, arr); }
+    if (!origin) continue;
+    registerOrigin(origin, child);
+    const separator = origin.indexOf(".");
+    if (separator < 0) continue;
+    const alias = aliases.get(origin.slice(0, separator));
+    if (!alias) continue;
+    const resolved = alias + origin.slice(separator);
+    registerOrigin(resolved, child);
+    remappedOrigins.add(resolved);
   }
   const choices = {}, recorded = [], conflicts = [];
-  const add = (key, picked, item, adv, inferred = false) => {
+  const add = (key, picked, item, adv, inferred = false, stale = false) => {
     if (key in choices && JSON.stringify(choices[key]) !== JSON.stringify(picked)) conflicts.push(key);
     else {
       choices[key] = picked;
-      recorded.push({ item: item.name, type: adv.type, key, ...(inferred ? { recovered_from_item_origin: true } : {}) });
+      recorded.push({ item: item.name, type: adv.type, key,
+        ...(inferred ? { recovered_from_item_origin: true } : {}),
+        ...(stale ? { recovered_from_stale_origin: true } : {}) });
     }
   };
   for (const item of items.filter(i => included.has(i._id))) {
@@ -85,7 +138,8 @@ export function recordedActorChoices(actor, rootIds = null) {
             uuids = candidates; recovered = true;
           }
         }
-        if (uuids.length) add(level > 0 ? `${adv._id}@${level}` : adv._id, uuids, item, adv, recovered);
+        if (uuids.length) add(level > 0 ? `${adv._id}@${level}` : adv._id, uuids, item, adv,
+          recovered, recovered && remappedOrigins.has(`${item._id}.${adv._id}`));
       }
     }
   }
