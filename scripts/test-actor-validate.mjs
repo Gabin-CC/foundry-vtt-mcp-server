@@ -352,6 +352,29 @@ test("a noncaster class's attributed spell needs feature evidence, not a false s
   assert.deepEqual(f.writes, []);
 });
 
+test("a spell with no sourceClass cannot silently pass class spell limits", async () => {
+  const f = fixture();
+  const unexplained = makeSpell("fireball", 0, "");
+  f.actor.items.push(unexplained);
+  const report = await audit(f.fs);
+  assert.equal(report.status, "incomplete");
+  assert.ok(report.diagnostics.some(d => d.code === "unattributed_spell_origin" &&
+    d.severity === "unverified" && d.subject === unexplained._id));
+  assert.ok(!report.diagnostics.some(d => d.code === "spell_above_class_level"),
+    "Missing class attribution is not proof that a feat-granted spell is illegal");
+  assert.deepEqual(f.writes, []);
+});
+
+test("whitespace-only sourceClass is also treated as unrecorded provenance", async () => {
+  const f = fixture();
+  const unexplained = makeSpell("detect", 0, "  ");
+  f.actor.items.push(unexplained);
+  const report = await audit(f.fs);
+  assert.ok(report.diagnostics.some(d => d.code === "unattributed_spell_origin" &&
+    d.subject === unexplained._id));
+  assert.deepEqual(f.writes, []);
+});
+
 test("official always-prepared subclass grants do not trigger a noncaster spell-origin warning", async () => {
   const f = subclassFixture();
   const paladin = classItem("paladin", 8);
@@ -496,6 +519,12 @@ test("official subclass ItemGrant chains prove always-prepared spells without co
   assert.deepEqual(report.verified_sources.subclasses, [f.source]);
   assert.deepEqual(report.verified_sources.subclass_spells.sort(), [spellUuid("cure"), spellUuid("feather")].sort());
   assert.ok(!report.diagnostics.some(d => d.code === "too_many_prepared"));
+  f.actor.items.find(i => i._id === id("ownedcure")).system.sourceClass = "";
+  f.actor.items.find(i => i._id === id("ownedfeather")).system.sourceClass = "  ";
+  const noClass = await audit(f.fs);
+  assert.equal(noClass.status, "passed_scoped_checks", JSON.stringify(noClass.diagnostics));
+  assert.ok(!noClass.diagnostics.some(d => d.code === "unattributed_spell_origin"),
+    "Exact always-prepared subclass spell provenance is already established");
   f.actor.items.find(i => i._id === id("ownedcure")).system.prepared = 1;
   const wrong = await audit(f.fs);
   assert.ok(wrong.diagnostics.some(d => d.code === "subclass_spell_not_always_prepared"));

@@ -269,8 +269,24 @@ export async function validateActor2024(fs, actor) {
         `${cls.name}: official subclass does not expose a verifiable cantrip progression.`, cls._id);
   }
 
-  for (const spell of spells.filter(s => s.system?.sourceClass && !ids.includes(String(s.system.sourceClass).trim().toLowerCase())))
+  for (const spell of spells.filter(s => {
+    const recorded = String(s.system?.sourceClass || "").trim().toLowerCase();
+    return recorded && !ids.includes(recorded);
+  }))
     check("unverified", "orphan_spell_class", `${spell.name}: sourceClass does not match any embedded class.`, spell._id);
+  // No sourceClass means none of the class spell limits above could inspect
+  // this spell. Feat, species and equipment grants can legitimately lack a
+  // class attribution, but they must not silently count as certified spells.
+  // An exact, independently traced always-prepared subclass grant is enough
+  // evidence to avoid repeating an unnecessary uncertainty.
+  const provenSubclassSpells = new Set(rulesSources.subclass_spells);
+  for (const spell of spells.filter(s => !String(s.system?.sourceClass || "").trim())) {
+    if (Number(spell.system?.prepared) === 2 && provenSubclassSpells.has(sourceUuid(spell))) continue;
+    const source = sourceUuid(spell);
+    check("unverified", "unattributed_spell_origin",
+      `${spell.name}: no class is recorded for this spell; a feat, feature or other grant may explain its origin.`,
+      spell._id, UUID.test(source || "") ? [source] : []);
+  }
   rulesSources.feats.push(...await auditRecordedAdvancements(fs, actor, verifiedAdvancements, check));
   const worn = items.filter(i => ["weapon", "equipment"].includes(i.type) && i.system?.equipped);
   const armor = worn.filter(i => i.type === "equipment" && equipmentKind(i) && equipmentKind(i) !== "shl");
