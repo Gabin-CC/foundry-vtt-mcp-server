@@ -8,8 +8,9 @@ The earlier four-step plan was **feature-oriented**; its proposed PR numbers no 
 | Create a new character with class, species, background, advancements and equipment | Available | `build_actor` in PR #24; concrete Trait choices and replay validation in PRs #25–#26 |
 | Finish a new character ready to play | Available | Equip starting gear and select an exact official spell set (`spells=selected`); PR #27, live-tested with a Paladin 2024 level 8 (AC 19, seven selected spells) |
 | Level an existing single-class 2024 character with preview and rollback | Available | `progress_actor`, write-free `advance` preflight and recoverable snapshots; PR #28, live-tested 8→9→8 |
-| Edit owned equipment and prepared class spells | In progress | `edit_actor` previews state changes and validates equipment/spell constraints, with restorable snapshots; PR #29 |
-| Multiclass and new spell acquisition | Planned | Multi-class advancements, authorized spell discovery and verified class eligibility, not merely preparation toggles |
+| Edit owned equipment and prepared class spells | Available | `edit_actor` previews state changes and validates equipment/spell constraints, with restorable snapshots; PR #29 |
+| Multiclass progression | Available | `multiclass_actor`: verified D&D 2024 class prerequisites, one level at a time, secondary-class proficiencies, preview and recoverable snapshots; PR #30 |
+| Multiclass spell acquisition | Planned | Class-by-class verified spell selection, prepared-spell and spellbook limits beyond shared multiclass slot calculation |
 | Certify D&D 2024 rules legality | Planned | Validate prerequisites, edition, class/subclass/feat progression, spellbook limits, selected equipment, and derived sheet values against verified sources |
 
 ## Principles

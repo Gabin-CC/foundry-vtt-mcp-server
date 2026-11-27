@@ -226,7 +226,9 @@ export function slotMax(actor) {
     if (prog === "none" && sub?.system?.spellcasting?.progression) prog = sub.system.spellcasting.progression;
     const L = num(c.system.levels);
     if (prog === "full") lvl += L;
-    else if (prog === "half") lvl += single ? Math.ceil(L / 2) : Math.floor(L / 2);
+    // PHB 2024: Paladin/Ranger round UP for multiclass spell slots. The 2014
+    // multiclass table instead rounds their contribution down.
+    else if (prog === "half") lvl += c.system?.source?.rules === "2024" || single ? Math.ceil(L / 2) : Math.floor(L / 2);
     else if (prog === "third") lvl += single ? Math.ceil(L / 3) : Math.floor(L / 3);
     else if (prog === "artificer") lvl += Math.ceil(L / 2);
     else if (prog === "pact") pactLvl += L;

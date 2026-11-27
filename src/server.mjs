@@ -33,6 +33,7 @@ import { TABLE_TOOLS, CARD_TOOLS, handleTable, handleCards } from "./tables.mjs"
 import { resolveTarget, propose, applyDamage } from "./targets.mjs";
 import { diffUpdates, saveSnapshot, finalizeActorSnapshot, currentDocs, listSnapshots, showSnapshot, restoreSnapshot } from "./snapshots.mjs";
 import { captureActorState, summarizeLevelPlan } from "./actor-progress.mjs";
+import { planMulticlass } from "./actor-multiclass.mjs";
 import { planActorEdits } from "./actor-edit.mjs";
 import { rollFormula, derive, checkBonus, sheet, slotMax, useItem, translations, translateDoc, trFor, refreshUnits, localizeItem, actorTranslationContext, actorMetricUpdates, UNITS, ABIL, SKILLS } from "./dnd5e.mjs";
 import { setSafePath } from "./security.mjs";
@@ -235,6 +236,16 @@ export const TOOL_DEFINITIONS = [
       choices: { type: "object", description: "Choix de progression explicitement fournis après simulation (avancement id → valeur)" },
       hp: { type: "string", enum: ["avg", "max"], default: "avg" },
       apply: { type: "boolean", default: false, description: "Appliquer à la fiche existante uniquement une fois tous les choix vérifiés" }
+    } } },
+  { name: "multiclass_actor", description: "Ajoute une classe secondaire D&D 2024 ou fait progresser l'une des classes existantes d'un personnage multiclasse : vérifie les prérequis (13+), les éditions et la limite de niveau 20. Un niveau par appel, simulation sans écriture par défaut, choix explicites et instantané récupérable avant application. Ne prépare pas les sorts automatiquement.",
+    inputSchema: { type: "object", required: ["actor"], properties: {
+      actor: { type: "string", description: "Personnage existant, nom ou identifiant" },
+      class_source: { type: "string", description: "UUID exact d'une nouvelle classe de compendium D&D 2024 ; exclusif avec item" },
+      item: { type: "string", description: "Identifiant de classe embarquée à augmenter ; exclusif avec class_source" },
+      level: { type: "integer", minimum: 1, maximum: 20, description: "Niveau cible dans la classe choisie, exactement un niveau après l'actuel (ou 1 si nouvelle classe)" },
+      choices: { type: "object", description: "Choix exacts demandés pendant la simulation, identifiant d'avancement vers valeur" },
+      hp: { type: "string", enum: ["avg", "max"], default: "avg" },
+      apply: { type: "boolean", default: false, description: "false : simulation sans écriture ; true : appliquer avec instantané de récupération" }
     } } },
   { name: "edit_actor", description: "Modifie l'équipement porté et les sorts de classe préparés d'un personnage D&D 2024 existant. Simulation sans écriture par défaut ; vérifie les maîtrises, le bouclier et les armes à deux mains, les sorts possédés, l'édition et le maximum préparé. apply=true sauvegarde l'état avant les changements pour une restauration via snapshots.",
     inputSchema: { type: "object", required: ["actor"], properties: {
@@ -1144,6 +1155,84 @@ async function runTool(session, params) {
                 : "Snapshot exists but post-state finalization failed; automatic restore is unavailable; inspect the actor." });
           }
         }
+        case "multiclass_actor": {
+          const actor = await findActor(fs, a.actor);
+          if (!!a.class_source === !!a.item)
+            throw new Error("Specify exactly one of class_source (new class) or item (existing class ID).");
+          if (a.hp !== undefined && !["avg", "max"].includes(a.hp)) throw new Error("hp must be avg or max.");
+          if (a.choices != null && (typeof a.choices !== "object" || Array.isArray(a.choices)))
+            throw new Error("choices must be an object.");
+          if (Object.keys(a.choices || {}).some(k => k.startsWith("spells:")))
+            throw new Error("Multiclass spell selection is not automated; use separately verified class spell choices.");
+          const classes = (actor.items || []).filter(i => i.type === "class");
+          let incoming, src;
+          if (a.class_source) {
+            if (!/^Compendium\.[^.]+\.[^.]+\.Item\.[A-Za-z0-9]{16}$/.test(a.class_source))
+              throw new Error("class_source must be an exact Item UUID in a compendium.");
+            src = a.class_source;
+            incoming = await fetchUuid(fs, src);
+            if (incoming.__pack !== src.split(".").slice(1, 3).join("."))
+              throw new Error("The exact requested class source is unavailable; refusing fallback to another compendium.");
+            if (incoming.type !== "class") throw new Error("class_source must resolve to a class item.");
+          } else {
+            incoming = classes.find(c => c._id === a.item);
+            if (!incoming) throw new Error("item must be the exact embedded ID of an existing class.");
+          }
+          const plan = planMulticlass(actor, { incoming, existingItem: a.item, level: a.level });
+          const params = { actor: actor._id, ...(src ? { source: { uuid: src } } : { item: a.item }),
+            level: plan.newLevel, hp: a.hp || "avg", choices: a.choices || {}, spells: "none",
+            skip_starting_equipment: true };
+          const preflight = await runTool(session, { name: "advance", arguments: { ...params, apply: false } });
+          if (!preflight[OUT]) return preflight;
+          const choicesNeeded = preflight.value?.choix_requis || [];
+          const ready = !!preflight.value?.pret && choicesNeeded.length === 0;
+          const preview = { simulation: true, pret: ready,
+            acteur: { id: actor._id, name: actor.name },
+            classe: { name: incoming.name, identifiant: incoming.system?.identifier,
+              ...(a.item ? { id: a.item } : { source: src }) },
+            niveau_classe_avant: plan.oldLevel, niveau_classe_apres: plan.newLevel,
+            niveau_total_avant: plan.totalBefore, niveau_total_apres: plan.totalAfter,
+            prerequis: plan.requirements, choix_requis: choicesNeeded,
+            etapes: preflight.value?.etapes || [], avertissements: preflight.value?.avertissements || [],
+            rappel: "Resolve all choices before apply=true. Class spells must be selected separately for each class." };
+          if (!a.apply || !ready) return out(preview);
+
+          const before = captureActorState(actor);
+          const snapshot = await saveSnapshot(fs, "multiclass_actor",
+            `${actor.name} ${incoming.name} ${plan.oldLevel}→${plan.newLevel}`,
+            [{ action: "actor_state", type: "Actor", actor_id: actor._id, before }]);
+          let finalized = false;
+          try {
+            const applied = await runTool(session, { name: "advance", arguments: { ...params, apply: true } });
+            if (!applied[OUT]) throw new Error(applied.content?.[0]?.text || "Multiclass advancement failed.");
+            if (applied.value?.choix_requis?.length) throw new Error("Unresolved choices during multiclass apply.");
+            const fresh = await findActor(fs, actor._id);
+            await finalizeActorSnapshot(snapshot, actor._id, captureActorState(fresh));
+            finalized = true;
+            const afterClasses = (fresh.items || []).filter(i => i.type === "class");
+            const selected = afterClasses.filter(c => c.system?.identifier === incoming.system?.identifier);
+            if (selected.length !== 1 || Number(selected[0].system?.levels) !== plan.newLevel ||
+                afterClasses.reduce((n, c) => n + (Number(c.system?.levels) || 0), 0) !== plan.totalAfter ||
+                plan.existingClasses.some(c => Number(afterClasses.find(x => x._id === c.id)?.system?.levels) !==
+                  (c.id === a.item ? plan.newLevel : c.level)))
+              throw new Error("Class levels after advancement differ from the verified multiclass plan.");
+            return out({ ...preview, simulation: false, pret: true, choix_requis: [],
+              acteur: { id: fresh._id, name: fresh.name },
+              classe: { id: selected[0]._id, name: selected[0].name, identifiant: selected[0].system?.identifier },
+              applique: applied.value?.applique || [], avertissements: applied.value?.avertissements || [],
+              instantane: snapshot,
+              rappel: "Review/restore this pre-change state using snapshots; choose spells separately for each class." });
+          } catch (error) {
+            if (!finalized) {
+              try { await finalizeActorSnapshot(snapshot, actor._id,
+                captureActorState(await findActor(fs, actor._id))); finalized = true; } catch { /* note below */ }
+            }
+            return out({ erreur: error.message, acteur_partiel: { id: actor._id, name: actor.name },
+              instantane: snapshot, restauration_disponible: finalized,
+              note: finalized ? "Preview snapshots.restore before reverting this partial multiclass operation."
+                : "Snapshot finalization failed; inspect the actor manually before recovery." });
+          }
+        }
         case "advance": {
           let actor = await findActor(fs, a.actor);
           const blueprint = a.replay_from ? advancementBlueprint(await findActor(fs, a.replay_from)) : null;
@@ -1231,24 +1320,32 @@ async function runTool(session, params) {
             steps.unshift(...pp.steps.filter(s => s.kind !== "grant" || s.docs.length));
             pending.push(...pp.pending); warnings.push(...pp.warnings);
           }
-          if (isClass && !isNew && !onlySpells) {
-            const sub = (actor.items || []).find(i => i.type === "subclass" && i.system?.classIdentifier === root.system?.identifier);
-            // paliers liés au niveau de personnage : espèce, historique et ce qu'ils ont accordé (ex. lignage Haut-elfe aux niv. 3 et 5)
-            const originItems = (actor.items || []).filter(i => ["race", "background"].includes(i.type));
-            // fermeture transitive : tout ce qui a été accordé (directement ou en chaîne) par la classe,
-            // la sous-classe, l'espèce ou l'historique (ex. Elfe → Lignage elfique → Haut-elfe)
-            const origins = new Set([root._id, sub?._id, ...originItems.map(i => i._id)].filter(Boolean));
-            for (let grew = true; grew;) {
-              grew = false;
-              for (const i of actor.items || []) {
-                const o = i.flags?.dnd5e?.advancementOrigin?.split(".")[0];
-                if (o && origins.has(o) && !origins.has(i._id)) { origins.add(i._id); grew = true; }
+          if (isClass && !onlySpells) {
+            const sub = !isNew && (actor.items || []).find(i => i.type === "subclass" && i.system?.classIdentifier === root.system?.identifier);
+            // Multiclass feature levels use the *selected class* level; species
+            // and background feature levels use *total character* level.
+            const descendants = roots => {
+              const ids = new Set(roots.filter(Boolean));
+              for (let grew = true; grew;) {
+                grew = false;
+                for (const i of actor.items || []) {
+                  const parent = i.flags?.dnd5e?.advancementOrigin?.split(".")[0];
+                  if (parent && ids.has(parent) && !ids.has(i._id)) { ids.add(i._id); grew = true; }
+                }
               }
+              return ids;
+            };
+            const classItems = descendants([isNew ? null : root._id, sub?._id]);
+            const originItems = descendants((actor.items || []).filter(i => ["race", "background"].includes(i.type)).map(i => i._id));
+            for (const it of actor.items || []) {
+              if (it._id === root._id || (!classItems.has(it._id) && !originItems.has(it._id))) continue;
+              if (!Object.values(it.system?.advancement || {}).some(x => Number(x.level) > 0
+                || (x.type === "ItemChoice" && Object.entries(x.configuration?.choices || {}).some(([lv, v]) => Number(lv) > 0 && Number(v?.count ?? v) > 0)))) continue;
+              const fromLevel = originItems.has(it._id) && !classItems.has(it._id) ? charLevel + 1 : from;
+              const toLevel = originItems.has(it._id) && !classItems.has(it._id) ? charLevel + target - current : target;
+              const p2 = await advPlan(fs, actor, it, { fromLevel, toLevel, choices: effectiveChoices, isFirstClass });
+              steps.push(...p2.steps); pending.push(...p2.pending); warnings.push(...p2.warnings);
             }
-            const leveled = (actor.items || []).filter(i => i._id !== root._id && origins.has(i._id)
-              && Object.values(i.system?.advancement || {}).some(x => Number(x.level) > 0
-                || (x.type === "ItemChoice" && Object.entries(x.configuration?.choices || {}).some(([lv, v]) => Number(lv) > 0 && Number(v?.count ?? v) > 0))));
-            for (const it of leveled) { const p2 = await advPlan(fs, actor, it, { fromLevel: from, toLevel: target, choices: effectiveChoices, isFirstClass }); steps.push(...p2.steps); pending.push(...p2.pending); warnings.push(...p2.warnings); }
           }
           let spellPlan = null;
           if (wantSpells && isClass && root.system?.spellcasting?.progression && root.system.spellcasting.progression !== "none") {
