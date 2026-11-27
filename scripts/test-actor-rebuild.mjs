@@ -104,6 +104,97 @@ test("item-origin reference recovers an origin feat missing from ItemChoice.valu
   assert.equal(versatile.system.advancement[0].value.added && Object.keys(versatile.system.advancement[0].value.added).length, 0);
 });
 
+// Observed in Sir Aurel Fierdestin AI: Human.ItemGrant still refers to the
+// original Versatile item ID, while the embedded Versatile item was re-IDed.
+// Alert retains advancementOrigin=<old Versatile ID>.<ItemChoice ID>.
+function staleVersatileFixture() {
+  const f = fixture(), { rootRace, versatile, alert } = f;
+  const oldId = uid("oldVersatile");
+  rootRace.system.advancement[1].value.added = { [oldId]: versatile._stats.compendiumSource };
+  versatile.flags.dnd5e.advancementRoot = `${rootRace._id}.${uid("humanGrant")}`;
+  alert.flags.dnd5e.advancementOrigin = `${oldId}.${uid("featChoice")}`;
+  alert.flags.dnd5e.advancementRoot = versatile.flags.dnd5e.advancementRoot;
+  return { ...f, oldId };
+}
+
+test("Aurel regression: recover Alert from a stale granted-parent ID with verified UUID and ancestry", async () => {
+  const { actor, rootRace, alert, session, writes } = staleVersatileFixture();
+  const r = recordedActorChoices(actor, [rootRace._id]);
+  assert.deepEqual(r.choices[uid("featChoice")], [alert._stats.compendiumSource]);
+  assert.ok(r.recorded.some(x => x.key === uid("featChoice") && x.recovered_from_stale_origin));
+  const plan = await planActorRebuild(session, actor);
+  assert.equal(plan.ready, true, JSON.stringify(plan.pending));
+  assert.equal(plan.choices[uid("featChoice")][0], alert._stats.compendiumSource);
+  assert.deepEqual(writes, [], "the recovered choice must not write to Foundry");
+});
+
+test("rebuild_actor preview explicitly reports verifiable historical item IDs", async () => {
+  const { actor, session, writes } = staleVersatileFixture();
+  const { handleTool } = await import("../src/server.mjs");
+  const response = await handleTool(session, { name: "rebuild_actor", arguments: {
+    source: actor._id, name: "Aurel historical ID recovery" } });
+  assert.equal(response.isError, undefined, JSON.stringify(response));
+  const preview = JSON.parse(response.content[0].text);
+  assert.deepEqual(preview.choix_requis, []);
+  assert.ok(preview.choix_recuperes_via_provenance.some(x =>
+    x.id === uid("featChoice") && x.identifiant_historique === true));
+  assert.deepEqual(writes, []);
+});
+
+test("stale IDs are not recovered by names or matching UUIDs without confirmed ancestry", async () => {
+  const { actor, rootRace, versatile, session } = staleVersatileFixture();
+  versatile.flags.dnd5e.advancementOrigin = "UnrelatedOriginAA.UnrelatedGrantAB";
+  versatile.flags.dnd5e.advancementRoot = "UnrelatedOriginAA.UnrelatedGrantAB";
+  const r = recordedActorChoices(actor, [rootRace._id]);
+  assert.equal(r.choices[uid("featChoice")], undefined);
+  const plan = await planActorRebuild(session, actor);
+  assert.equal(plan.ready, false);
+  assert.ok(plan.pending.some(x => x.id === uid("featChoice")));
+});
+
+test("multiple plausible recipients of an old grant ID keep the choice unresolved", () => {
+  const { actor, rootRace, versatile } = staleVersatileFixture();
+  actor.items.push({ ...structuredClone(versatile), _id: uid("otherVersatile") });
+  const r = recordedActorChoices(actor, [rootRace._id]);
+  assert.equal(r.choices[uid("featChoice")], undefined);
+});
+
+test("a persisted grant ID now belonging to another item is never remapped", () => {
+  const { actor, rootRace, oldId } = staleVersatileFixture();
+  actor.items.push(item(oldId, "Unrelated", "feat", sourceOf("dnd5e.feats24", uid("unrelated"))));
+  const r = recordedActorChoices(actor, [rootRace._id]);
+  assert.equal(r.choices[uid("featChoice")], undefined);
+});
+
+test("stale IDs must match the compendium UUID stored in the granting advancement", () => {
+  const { actor, rootRace, oldId } = staleVersatileFixture();
+  rootRace.system.advancement[1].value.added[oldId] = sourceOf("dnd5e.origins24", uid("otherFeat"));
+  const r = recordedActorChoices(actor, [rootRace._id]);
+  assert.equal(r.choices[uid("featChoice")], undefined);
+});
+
+test("a shared distant advancement root does not prove a nested grant's stale ID", () => {
+  const { actor, rootRace, versatile } = fixture();
+  const commonRoot = `${rootRace._id}.${uid("humanGrant")}`;
+  versatile.flags.dnd5e.advancementRoot = commonRoot;
+  const oldId = uid("oldNestedFeat"), grantId = uid("nestedGrant");
+  const nestedUuid = sourceOf("dnd5e.feats24", uid("nestedFeat"));
+  versatile.system.advancement.push({ _id: grantId, type: "ItemGrant",
+    value: { added: { [oldId]: nestedUuid } } });
+  const nested = item(uid("newNestedFeat"), "Nested feat", "feat", nestedUuid, [
+    { _id: uid("nestedChoice"), type: "ItemChoice",
+      configuration: { choices: { 0: { count: 1 } } }, value: { added: {} } }
+  ], { flags: { dnd5e: {
+    advancementOrigin: `${rootRace._id}.${uid("otherGrant")}`,
+    advancementRoot: commonRoot
+  } } });
+  const chosen = item(uid("chosenNested"), "Chosen feat", "feat",
+    sourceOf("dnd5e.feats24", uid("selectedFeat")), [],
+    { flags: { dnd5e: { advancementOrigin: `${oldId}.${uid("nestedChoice")}` } } });
+  actor.items.push(nested, chosen);
+  assert.equal(recordedActorChoices(actor).choices[uid("nestedChoice")], undefined);
+});
+
 test("full rebuild plans class, species and background without prompting for starting equipment", async () => {
   const { actor, session, writes } = fixture();
   const plan = await planActorRebuild(session, actor);
