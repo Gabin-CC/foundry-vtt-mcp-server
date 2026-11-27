@@ -335,9 +335,61 @@ test("validate_actor is registered, read-only and distinguishes scoped success f
   assert.deepEqual(report.summary, { errors: 0, warnings: 0, unverified: 0 });
   assert.equal(report.actor.total_level, 9);
   assert.equal(report.expected_spell_slots.spell3, 2, "Paladin 8/Sorcerer 1 has shared 3rd-level slots");
+  assert.equal(report.official_base_spell_slots.spell3, 2, "Verified official classes prove the base slots");
   assert.deepEqual(report.verified_sources.classes.sort(), [classUuid("paladin"), classUuid("sorcerer")].sort());
   assert.equal(report.verified_sources.spells.length, 6);
   assert.match(report.limits.join(" "), /not full D&D 2024 legality/);
+  assert.deepEqual(f.writes, []);
+});
+
+test("official slot baseline is independent of a recorded spell slot override", async () => {
+  const f = fixture();
+  f.actor.system.spells.spell1 = { value: 6, override: 8 };
+  const report = await audit(f.fs);
+  assert.equal(report.status, "incomplete");
+  assert.equal(report.expected_spell_slots.spell1, 8, "Existing sheet-specific output remains compatible");
+  assert.equal(report.official_base_spell_slots.spell1, 4, "The official class table is not overwritten");
+  assert.ok(report.diagnostics.some(d => d.code === "spell_slot_override_unverified" &&
+    d.severity === "unverified"));
+  assert.ok(!report.diagnostics.some(d => d.code === "invalid_spell_slot_value"));
+  assert.deepEqual(f.writes, []);
+});
+
+test("an override equal to the official slot table does not cause a spurious warning", async () => {
+  const f = fixture();
+  f.actor.system.spells.spell1 = { value: 2, override: 4 };
+  const report = await audit(f.fs);
+  assert.equal(report.status, "passed_scoped_checks", JSON.stringify(report.diagnostics));
+  assert.equal(report.official_base_spell_slots.spell1, 4);
+  assert.deepEqual(f.writes, []);
+});
+
+test("spell slot resource values cannot be negative, and unexplained excess stays unverified", async () => {
+  const f = fixture();
+  f.actor.system.spells.spell1 = { value: -1 };
+  const wrong = await audit(f.fs);
+  assert.ok(wrong.diagnostics.some(d => d.code === "invalid_spell_slot_value" &&
+    d.severity === "error"));
+  f.actor.system.spells.spell1.value = 5;
+  const excess = await audit(f.fs);
+  assert.ok(excess.diagnostics.some(d => d.code === "spell_slots_above_official_base" &&
+    d.severity === "unverified"));
+  assert.ok(!excess.diagnostics.some(d => d.code === "invalid_spell_slot_value"));
+  f.actor.system.spells.spell1.value = 0;
+  const spent = await audit(f.fs);
+  assert.equal(spent.status, "passed_scoped_checks", JSON.stringify(spent.diagnostics));
+  assert.deepEqual(f.writes, []);
+});
+
+test("an unverified class source cannot certify a universal slot baseline", async () => {
+  const f = fixture();
+  delete f.actor.items[1]._stats;
+  f.actor.system.spells.spell1 = { value: 7, override: 8 };
+  const report = await audit(f.fs);
+  assert.equal(report.official_base_spell_slots, null);
+  assert.ok(report.diagnostics.some(d => d.code === "class_source_missing"));
+  assert.ok(!report.diagnostics.some(d => d.code === "spell_slot_override_unverified"),
+    "The audit cannot compare against an official multiclass table without all classes");
   assert.deepEqual(f.writes, []);
 });
 
