@@ -117,6 +117,25 @@ function staleVersatileFixture() {
   return { ...f, oldId };
 }
 
+function reusedVersatileFixture() {
+  const f = staleVersatileFixture();
+  const { rootRace, versatile, alert, oldId } = f;
+  const resourcefulUuid = sourceOf("dnd5e.origins24", uid("resourceful"));
+  // The real Aurel actor has a swapped pair of saved ItemGrant IDs: the old
+  // Versatile ID now belongs to Resourceful, which carries the orphaned value
+  // of Versatile's ItemChoice without the corresponding advancement type.
+  rootRace.system.advancement[1].value.added[versatile._id] = resourcefulUuid;
+  const resourceful = item(oldId, "Resourceful", "feat", resourcefulUuid, [], {
+    system: { advancement: { [uid("featChoice")]: {
+      value: { added: { 0: { [alert._id]: alert._stats.compendiumSource } } }
+    } } },
+    flags: { dnd5e: { advancementOrigin: `${rootRace._id}.${uid("humanGrant")}`,
+      advancementRoot: `${rootRace._id}.${uid("humanGrant")}` } }
+  });
+  f.actor.items.push(resourceful);
+  return { ...f, resourceful };
+}
+
 test("Aurel regression: recover Alert from a stale granted-parent ID with verified UUID and ancestry", async () => {
   const { actor, rootRace, alert, session, writes } = staleVersatileFixture();
   const r = recordedActorChoices(actor, [rootRace._id]);
@@ -139,6 +158,50 @@ test("rebuild_actor preview explicitly reports verifiable historical item IDs", 
   assert.ok(preview.choix_recuperes_via_provenance.some(x =>
     x.id === uid("featChoice") && x.identifiant_historique === true));
   assert.deepEqual(writes, []);
+});
+
+test("Aurel live regression: reused Versatile ID with orphaned Alert choice is recovered without overrides", async () => {
+  const { actor, rootRace, resourceful, alert, session, writes } = reusedVersatileFixture();
+  assert.equal(resourceful.system.advancement[uid("featChoice")].type, undefined);
+  const r = recordedActorChoices(actor, [rootRace._id]);
+  assert.deepEqual(r.choices[uid("featChoice")], [alert._stats.compendiumSource]);
+  assert.ok(r.recorded.some(x => x.key === uid("featChoice") && x.recovered_from_stale_origin));
+  const plan = await planActorRebuild(session, actor);
+  assert.equal(plan.ready, true, JSON.stringify(plan.pending));
+  const { handleTool } = await import("../src/server.mjs");
+  const response = await handleTool(session, { name: "rebuild_actor", arguments: {
+    source: actor._id, name: "Reused-ID Aurel live regression" } });
+  const preview = JSON.parse(response.content[0].text);
+  assert.deepEqual(preview.choix_requis, []);
+  assert.ok(preview.choix_recuperes_via_provenance.some(x => x.id === uid("featChoice")
+    && x.identifiant_historique));
+  assert.deepEqual(writes, []);
+});
+
+test("a reused ID without matching orphaned advancement value stays unresolved", async () => {
+  const { actor, resourceful, session } = reusedVersatileFixture();
+  resourceful.system.advancement[uid("featChoice")].value.added = {};
+  assert.equal(recordedActorChoices(actor).choices[uid("featChoice")], undefined);
+  assert.equal((await planActorRebuild(session, actor)).ready, false);
+});
+
+test("a reused ID with the wrong descendant root stays unresolved", () => {
+  const { actor, alert } = reusedVersatileFixture();
+  alert.flags.dnd5e.advancementRoot = `UnrelatedRootAAA.UnrelatedGrantAB`;
+  assert.equal(recordedActorChoices(actor).choices[uid("featChoice")], undefined);
+});
+
+test("a reused ID belonging to another grant cannot donate an orphaned choice", () => {
+  const { actor, resourceful } = reusedVersatileFixture();
+  resourceful.flags.dnd5e.advancementOrigin = "UnrelatedOriginAA.UnrelatedGrantAB";
+  resourceful.flags.dnd5e.advancementRoot = "UnrelatedOriginAA.UnrelatedGrantAB";
+  assert.equal(recordedActorChoices(actor).choices[uid("featChoice")], undefined);
+});
+
+test("a legitimate typed advancement on a reused ID is never moved", () => {
+  const { actor, resourceful } = reusedVersatileFixture();
+  resourceful.system.advancement[uid("featChoice")].type = "ItemChoice";
+  assert.equal(recordedActorChoices(actor).choices[uid("featChoice")], undefined);
 });
 
 test("stale IDs are not recovered by names or matching UUIDs without confirmed ancestry", async () => {
