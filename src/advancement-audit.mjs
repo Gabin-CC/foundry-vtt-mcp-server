@@ -5,8 +5,11 @@ import { isOfficial2024Uuid } from "./subclass-spells.mjs";
 const UUID = /^Compendium\.[^.]+\.[^.]+\.Item\.[A-Za-z0-9]{16}$/;
 const ABILITIES = new Set(["str", "dex", "con", "int", "wis", "cha"]);
 const sourceUuid = item => item?._stats?.compendiumSource || item?.flags?.dnd5e?.sourceId || item?.flags?.core?.sourceId;
+// Foundry stores some owned background/species advancements as keyed value-only
+// overrides. Their keys, not the partial values, are the advancement IDs.
 const list = item => Array.isArray(item?.system?.advancement)
-  ? item.system.advancement : Object.values(item?.system?.advancement || {});
+  ? item.system.advancement : Object.entries(item?.system?.advancement || {})
+    .map(([id, value]) => ({ ...value, _id: value?._id || id }));
 const object = value => value && typeof value === "object" && !Array.isArray(value);
 const entries = value => object(value) ? Object.entries(value) : [];
 
@@ -75,7 +78,8 @@ export async function auditRecordedAdvancements(fs, actor, sources, check) {
     const recorded = new Map(list(root).filter(a => a?._id).map(a => [a._id, a]));
     const source = new Map(list(official).filter(a => a?._id).map(a => [a._id, a]));
 
-    for (const a of list(root)) if (a?._id && !source.has(a._id) && recordedChoice(a))
+    for (const a of list(root)) if (a?._id && !source.has(a._id) &&
+      (recordedChoice(a) || Object.keys(a.value || {}).some(key => key !== "type")))
       check("unverified", "unknown_recorded_advancement", `${root.name}: a recorded choice is absent from the installed official source revision.`, root._id, [src]);
 
     for (const a of source.values()) {
@@ -85,13 +89,16 @@ export async function auditRecordedAdvancements(fs, actor, sources, check) {
           check("unverified", "advancement_record_missing", `${root.name}: an official ${a.type} advancement is absent from the embedded item.`, root._id, [src]);
         continue;
       }
-      if (step.type !== a.type) {
+      // A saved value-only override inherits its type and configuration from
+      // this exact, already-verified official advancement.
+      if (step.type && step.type !== a.type) {
         check("error", "advancement_type_mismatch", `${root.name}: recorded advancement type differs from the official source.`, root._id, [src]);
         continue;
       }
+      const saved = { ...a, ...step, value: step.value || {} };
       const milestone = Number(a.level || 0);
       if (milestone > level) {
-        if (recordedChoice(step))
+        if (recordedChoice(saved))
           check("error", "future_advancement_recorded", `${root.name}: a decision is recorded for level ${milestone}, above the current class level ${level}.`, root._id, [src]);
         continue;
       }
@@ -154,6 +161,46 @@ export async function auditRecordedAdvancements(fs, actor, sources, check) {
             else check("warning", "mandatory_feature_missing", `${root.name}: mandatory feature for level ${milestone} is absent from the actor.`, root._id, [src, grant.uuid]);
           }
         }
+      } else if (a.type === "Size") {
+        const chosen = saved.value?.size;
+        if (!chosen)
+          check("unverified", "origin_size_not_recorded", `${root.name}: the species size selection is not recorded.`, root._id, [src]);
+        else if (Array.isArray(a.configuration?.sizes) && !a.configuration.sizes.includes(chosen))
+          check("error", "invalid_origin_size", `${root.name}: recorded species size is not an official option.`, root._id, [src]);
+      } else if (a.type === "Trait" && ["race", "background"].includes(root.type)) {
+        const chosen = saved.value?.chosen;
+        const grants = Array.isArray(a.configuration?.grants) ? a.configuration.grants : [];
+        const choices = Array.isArray(a.configuration?.choices) ? a.configuration.choices : [];
+        if (!Array.isArray(chosen)) {
+          check("unverified", "origin_trait_choice_missing", `${root.name}: no trait choices were saved.`, root._id, [src]);
+          continue;
+        }
+        // Exact, single-pool choices can be checked. Multiple choice groups,
+        // replacement modes and custom options are deliberately not guessed.
+        if (a.configuration?.allowReplacements ||
+            (a.configuration?.mode && a.configuration.mode !== "default") || choices.length > 1 ||
+            (choices.length === 1 && !Array.isArray(choices[0]?.pool))) {
+          check("unverified", "origin_trait_complex_choice", `${root.name}: the official trait choice format needs a separate review.`, root._id, [src]);
+          continue;
+        }
+        if (!choices.length) continue;
+        const selected = chosen.filter(key => !grants.some(grant => grant === key ||
+          (typeof grant === "string" && typeof key === "string" &&
+            grant.endsWith("*") && key.startsWith(grant.slice(0, -1)))));
+        const pool = choices[0].pool;
+        const expected = Number(choices[0].count);
+        if (!Number.isInteger(expected) || expected < 0 || pool.some(option => typeof option !== "string") ||
+            selected.some(key => typeof key !== "string")) {
+          check("unverified", "origin_trait_choice_unreadable", `${root.name}: the saved trait choice or official option pool is not a comparable list.`, root._id, [src]);
+          continue;
+        }
+        const permitted = key => pool.some(option => option === key ||
+          (option.endsWith("*") && key.startsWith(option.slice(0, -1))));
+        if (selected.some(key => !permitted(key)) ||
+            new Set(selected).size !== selected.length || selected.length > expected)
+          check("error", "invalid_origin_trait_choice", `${root.name}: the recorded trait selection violates the official choice pool or count.`, root._id, [src]);
+        else if (selected.length < expected)
+          check("unverified", "origin_trait_choice_incomplete", `${root.name}: not all official trait choices are recorded.`, root._id, [src]);
       } else if (a.type === "HitPoints") {
         for (const key of Object.keys(step.value || {})) if (/^\d+$/.test(key) && Number(key) > level)
           check("error", "future_hit_points_recorded", `${root.name}: HP progression is recorded at character class level ${key} above level ${level}.`, root._id, [src]);
