@@ -595,6 +595,46 @@ test("missing mandatory feature is a warning; forged official advancement grants
   assert.deepEqual(f.writes, []);
 });
 
+test("a stale ItemGrant item ID cannot borrow evidence from another matching feature copy", async () => {
+  const f = advancementFixture();
+  const ward = f.actor.items.find(i => i._id === id("ownedWard"));
+  f.actor.items = f.actor.items.filter(i => i !== ward);
+  f.actor.items.push({ ...structuredClone(ward), _id: id("replacementWard") });
+  const report = await audit(f.fs);
+  assert.equal(report.status, "incomplete");
+  assert.ok(report.diagnostics.some(d => d.code === "stale_grant_item_id" &&
+    d.severity === "unverified" && d.subject === ward._id));
+  assert.ok(!report.diagnostics.some(d => d.code === "mandatory_feature_missing"),
+    "The official feature is present, but its recorded grant relationship is no longer proven");
+  assert.deepEqual(f.writes, []);
+});
+
+test("a reused ItemGrant ID cannot borrow proof from a separate official copy", async () => {
+  const f = advancementFixture();
+  const ward = f.actor.items.find(i => i._id === id("ownedWard"));
+  f.actor.items.push({ ...structuredClone(ward), _id: id("copyOfWard") });
+  ward._stats.compendiumSource = classUuid("unrelatedFeat");
+  const report = await audit(f.fs);
+  assert.equal(report.status, "incomplete");
+  assert.ok(report.diagnostics.some(d => d.code === "grant_item_source_mismatch" &&
+    d.severity === "unverified" && d.subject === ward._id));
+  assert.ok(!report.diagnostics.some(d => d.code === "mandatory_feature_missing"));
+  assert.deepEqual(f.writes, []);
+});
+
+test("optional and origin grants verify saved item IDs without inventing missing mandatory features", async () => {
+  const f = originFixture();
+  const granted = f.actor.items.find(i => i._id === id("ownedSavage"));
+  f.actor.items = f.actor.items.filter(i => i !== granted);
+  f.actor.items.push({ ...structuredClone(granted), _id: id("newSavage") });
+  f.official[1].system.advancement[f.ids.bgGrant].configuration.items[0].optional = true;
+  const report = await audit(f.fs);
+  assert.ok(report.diagnostics.some(d => d.code === "stale_grant_item_id" &&
+    d.severity === "unverified" && d.subject === granted._id));
+  assert.ok(!report.diagnostics.some(d => d.code === "mandatory_feature_missing"));
+  assert.deepEqual(f.writes, []);
+});
+
 test("feat level requirement can be proved but historical ability prerequisites remain unverifiable", async () => {
   const f = advancementFixture();
   f.featDoc.system.prerequisites.level = 15;

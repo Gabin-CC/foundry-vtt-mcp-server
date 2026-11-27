@@ -265,8 +265,19 @@ export async function auditRecordedAdvancements(fs, actor, sources, check) {
       } else if (a.type === "ItemGrant") {
         const configured = (a.configuration?.items || []).map(i => i.uuid).filter(Boolean);
         const additions = entries(step.value?.added).filter(([, uuid]) => typeof uuid === "string");
-        for (const [, uuid] of additions) if (!configured.includes(uuid))
-          check("error", "unexpected_recorded_grant", `${root.name}: a recorded grant UUID is not in the official advancement.`, root._id, [src]);
+        for (const [itemId, uuid] of additions) {
+          if (!configured.includes(uuid)) {
+            check("error", "unexpected_recorded_grant", `${root.name}: a recorded grant UUID is not in the official advancement.`, root._id, [src]);
+            continue;
+          }
+          // A surviving copy with the same source UUID does not repair a
+          // saved ItemGrant pointing to a deleted or repurposed owned item ID.
+          const granted = byId.get(itemId);
+          if (!granted)
+            check("unverified", "stale_grant_item_id", `${root.name}: a recorded grant item ID no longer exists on this actor.`, itemId, [src, uuid]);
+          else if (sourceUuid(granted) !== uuid)
+            check("unverified", "grant_item_source_mismatch", `${root.name}: a recorded grant item ID now identifies an item with different or missing provenance.`, itemId, [src, uuid]);
+        }
         for (const grant of a.configuration?.items || []) {
           if (grant.optional || !grant.uuid) continue;
           const found = owned.filter(item => sourceUuid(item) === grant.uuid);
