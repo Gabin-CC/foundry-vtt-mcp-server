@@ -218,13 +218,15 @@ const SLOTS = [[], [2], [3], [4, 2], [4, 3], [4, 3, 2], [4, 3, 3], [4, 3, 3, 1],
 export function slotMax(actor) {
   const classes = (actor.items || []).filter(i => i.type === "class" || i.type === "subclass");
   const cls = classes.filter(i => i.type === "class");
-  // A single-class Eldritch Knight/Arcane Trickster casts through its
-  // subclass, not the parent class. It still uses the single-class third-
-  // caster progression (ceil(level/3)), unlike a multiclass third-caster.
-  const single = cls.filter(c => {
+  // The multiclass Spellcasting table applies only when MORE THAN ONE class
+  // grants Spellcasting. Pact Magic is separate and must not cause a lone
+  // Eldritch Knight/Arcane Trickster or half-caster to round its class
+  // progression down. Third-casters get Spellcasting via their subclass.
+  const singleSpellcaster = cls.filter(c => {
     const sub = classes.find(s => s.type === "subclass" && s.system?.classIdentifier === c.system?.identifier);
     const progression = c.system?.spellcasting?.progression || "none";
-    return (progression !== "none" ? progression : sub?.system?.spellcasting?.progression || "none") !== "none";
+    const effective = progression !== "none" ? progression : sub?.system?.spellcasting?.progression || "none";
+    return effective !== "none" && effective !== "pact";
   }).length === 1;
   let lvl = 0, pactLvl = 0;
   for (const c of cls) {
@@ -235,8 +237,8 @@ export function slotMax(actor) {
     if (prog === "full") lvl += L;
     // PHB 2024: Paladin/Ranger round UP for multiclass spell slots. The 2014
     // multiclass table instead rounds their contribution down.
-    else if (prog === "half") lvl += c.system?.source?.rules === "2024" || single ? Math.ceil(L / 2) : Math.floor(L / 2);
-    else if (prog === "third") lvl += single ? Math.ceil(L / 3) : Math.floor(L / 3);
+    else if (prog === "half") lvl += c.system?.source?.rules === "2024" || singleSpellcaster ? Math.ceil(L / 2) : Math.floor(L / 2);
+    else if (prog === "third") lvl += singleSpellcaster ? Math.ceil(L / 3) : Math.floor(L / 3);
     else if (prog === "artificer") lvl += Math.ceil(L / 2);
     else if (prog === "pact") pactLvl += L;
   }

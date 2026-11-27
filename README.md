@@ -115,6 +115,8 @@ When every embedded 2024 class and subclass has exact official progression evide
 
 A blank Foundry slot `override: ""` is treated as **unset**, not zero: both the shared spell-slot calculation and Pact Magic keep their automatic class progression. Explicit numeric overrides (including zero) retain their existing behavior.
 
+Warlock **Pact Magic does not count as a second Spellcasting class** when deciding whether an Eldritch Knight, Arcane Trickster or half-caster follows its single-class slot progression. Only two or more classes actually granting Spellcasting activate multiclass rounding; Pact Magic slots remain separate and can be used across those classes as permitted by the rules.
+
 Source verification requires the **exact recorded official compendium pack**, not just a matching 16-character item ID: a class, subclass or nested subclass feature/spell resolved through a different pack is `unverified`. Generic compendium lookups may still fall back for other workflows, but the read-only audit never treats those fallbacks as authoritative rules evidence.
 
 For a class or subclass with an exact verified 2024 source, the audit also compares its embedded spellcasting progression to the official one. A contradiction is an `error`, and prepared/cantrip checks plus the reported expected slot table use the verified progression even if the embedded item says `none` or another caster type. Sources that cannot be verified never become authoritative by inference. Configured slot overrides are still not a general rules-legality certification.

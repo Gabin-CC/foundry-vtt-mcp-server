@@ -243,6 +243,30 @@ test("blank spell slot overrides defer to automatic class and Pact Magic tables"
   assert.deepEqual(slotMax(actor), { pact: 0, pactLevel: 2 }, "Numeric Pact Magic zero stays explicit");
 });
 
+test("Pact Magic does not turn the only Spellcasting class into a multiclass spellcaster", () => {
+  const fighter = classDoc(FIGHTER, "fighter", 4);
+  const knight = { type: "subclass", system: { classIdentifier: "fighter",
+    spellcasting: { progression: "third" } } };
+  const warlock = classDoc("warlockClass2024", "warlock", 3);
+  warlock.system.spellcasting.progression = "pact";
+  const actor = { items: [fighter, knight, warlock], system: { spells: {} } };
+  assert.deepEqual(slotMax(actor), { spell1: 3, pact: 2, pactLevel: 2 },
+    "An Eldritch Knight 4 keeps its single-class 3 spell slots alongside Pact Magic");
+
+  const paladin = classDoc(PALADIN, "paladin", 3);
+  paladin.system.spellcasting.progression = "half";
+  paladin.system.source.rules = "2014";
+  actor.items = [paladin, warlock];
+  assert.deepEqual(slotMax(actor), { spell1: 3, pact: 2, pactLevel: 2 },
+    "A 2014 Paladin 3 still follows its single-class slot table with a Warlock");
+
+  const wizard = classDoc(WIZARD, "wizard", 3);
+  wizard.system.spellcasting.progression = "full";
+  actor.items = [fighter, knight, warlock, wizard];
+  assert.deepEqual(slotMax(actor), { spell1: 4, spell2: 3, pact: 2, pactLevel: 2 },
+    "Two actual Spellcasting classes use the shared multiclass table; Pact Magic stays separate");
+});
+
 // Exact official spell-list fixtures. Each candidate is identifiable only by
 // a 2024 compendium UUID, never by a model-generated spell name.
 const spellId = name => (name + "0000000000000000").slice(0, 16);
