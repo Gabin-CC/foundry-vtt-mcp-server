@@ -72,9 +72,34 @@ export async function validateActor2024(fs, actor) {
     }
   }
 
-  const rulesSources = { classes: [], subclasses: [], spells: [], subclass_spells: [], feats: [] };
+  const rulesSources = { classes: [], subclasses: [], species: [], backgrounds: [],
+    spells: [], subclass_spells: [], feats: [] };
   const verifiedSubclasses = new Map();
   const verifiedAdvancements = [];
+  for (const origin of items.filter(i => ["race", "background"].includes(i.type))) {
+    const uuid = sourceUuid(origin);
+    const pack = /^Compendium\.([^.]+\.[^.]+)\.Item\./.exec(uuid || "")?.[1];
+    if (!UUID.test(uuid || "") || !(pack === "dnd5e.origins24" || pack?.startsWith("dnd-players-handbook."))) {
+      check("unverified", "origin_source_unverified", `${origin.name}: no exact official 2024 species/background source is available.`, origin._id);
+      continue;
+    }
+    try {
+      const official = await fetchUuid(fs, uuid);
+      if (official.__pack !== pack) {
+        check("unverified", "origin_source_unavailable", `${origin.name}: its source was resolved through a different compendium, not the recorded one.`, origin._id, [uuid]);
+      } else if (official.type !== origin.type || official.system?.source?.rules !== "2024" ||
+          (origin.system?.source?.rules && origin.system.source.rules !== "2024") ||
+          (official.system?.identifier && origin.system?.identifier &&
+            String(official.system.identifier).toLowerCase() !== String(origin.system.identifier).toLowerCase())) {
+        check("error", "origin_source_mismatch", `${origin.name}: recorded species/background contradicts its official 2024 source.`, origin._id, [uuid]);
+      } else {
+        rulesSources[origin.type === "race" ? "species" : "backgrounds"].push(uuid);
+        verifiedAdvancements.push({ embedded: origin, official, level: sum, uuid });
+      }
+    } catch {
+      check("unverified", "origin_source_unavailable", `${origin.name}: the exact official 2024 source cannot be loaded.`, origin._id, [uuid]);
+    }
+  }
   for (const sub of subclasses) {
     const id = String(sub.system?.classIdentifier || "").toLowerCase();
     if (!id || !ids.includes(id)) {
@@ -232,7 +257,7 @@ export async function validateActor2024(fs, actor) {
       .map(([kind, sources]) => [kind, [...new Set(sources)]])),
     diagnostics,
     limits: ["This reports only deterministic checks supported by installed sources, not full D&D 2024 legality.",
-      "Recorded ability increases, feats, subclass choices and class feature grants are checked only against exact official advancements; historical ability scores, custom feats and HP rolls remain unverifiable.",
+      "Recorded class, subclass, species and background choices are checked only against exact official advancements; historical ability scores, custom feats and HP rolls remain unverifiable.",
       "Unknown subclass sources, unverified feature grants, spell replacements and unusual magic items require case-by-case review."],
   };
 }

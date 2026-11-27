@@ -7,6 +7,8 @@ const { TOOLS, handleTool } = await import("../src/server.mjs");
 const id = name => (name + "0000000000000000").slice(0, 16);
 const spellUuid = name => `Compendium.dnd5e.spells24.Item.${id(name)}`;
 const classUuid = name => `Compendium.dnd5e.classes24.Item.${id(name)}`;
+const originUuid = name => `Compendium.dnd5e.origins24.Item.${id(name)}`;
+const featUuid = name => `Compendium.dnd5e.feats24.Item.${id(name)}`;
 const ACTOR = id("validateCharacter");
 const classItem = (name, level) => ({ _id: id(`embedded${name}`), name, type: "class", flags: {},
   _stats: { compendiumSource: classUuid(name) },
@@ -149,6 +151,56 @@ function advancementFixture() {
     return originalDoc(action, type, opts);
   };
   return { ...f, ids, source: { feature, feat, sub }, featDoc };
+}
+
+function originFixture() {
+  const f = fixture();
+  const ids = { size: id("originSize"), speciesGrant: id("originGrant"),
+    bgAsi: id("backgroundAsi"), bgTrait: id("backgroundTrait"),
+    bgGrant: id("backgroundGrant") };
+  const human = originUuid("human");
+  const soldier = originUuid("soldier");
+  const speciesFeature = originUuid("resourceful");
+  const backgroundFeat = featUuid("savageAttacks");
+  const speciesAdv = {
+    [ids.size]: { _id: ids.size, type: "Size", level: 0, configuration: { sizes: ["sm", "med"] }, value: {} },
+    [ids.speciesGrant]: { _id: ids.speciesGrant, type: "ItemGrant", level: 0,
+      configuration: { items: [{ uuid: speciesFeature, optional: false }] }, value: {} }
+  };
+  const backgroundAdv = {
+    [ids.bgAsi]: { _id: ids.bgAsi, type: "AbilityScoreImprovement", level: 0,
+      configuration: { cap: 2, points: 3, fixed: { str: 0 }, locked: ["int", "wis", "cha"] }, value: {} },
+    [ids.bgTrait]: { _id: ids.bgTrait, type: "Trait", level: 0,
+      configuration: { grants: ["skills:ath"], choices: [{ count: 1, pool: ["tool:game:*"] }] }, value: {} },
+    [ids.bgGrant]: { _id: ids.bgGrant, type: "ItemGrant", level: 0,
+      configuration: { items: [{ uuid: backgroundFeat, optional: false }] }, value: {} }
+  };
+  const race = { _id: id("ownedHuman"), name: "Human", type: "race",
+    _stats: { compendiumSource: human }, system: { identifier: "human", source: { rules: "2024" },
+      advancement: { [ids.size]: { value: { size: "med" } },
+        [ids.speciesGrant]: { value: { added: { [id("ownedResource")]: speciesFeature } } } } } };
+  const background = { _id: id("ownedSoldier"), name: "Soldier", type: "background",
+    _stats: { compendiumSource: soldier }, system: { identifier: "soldier", source: { rules: "2024" },
+      advancement: { [ids.bgAsi]: { value: { type: "asi", assignments: { str: 2, con: 1 } } },
+        [ids.bgTrait]: { value: { chosen: ["skills:ath", "tool:game:dice"] } },
+        [ids.bgGrant]: { value: { added: { [id("ownedSavage")]: backgroundFeat } } } } } };
+  f.actor.items.push(race, background,
+    { _id: id("ownedResource"), name: "Resourceful", type: "feat",
+      _stats: { compendiumSource: speciesFeature }, system: {} },
+    { _id: id("ownedSavage"), name: "Savage Attacker", type: "feat",
+      _stats: { compendiumSource: backgroundFeat }, system: {} });
+  const official = [
+    { _id: id("human"), type: "race", system: { identifier: "human", source: { rules: "2024" }, advancement: speciesAdv } },
+    { _id: id("soldier"), type: "background", system: { identifier: "soldier", source: { rules: "2024" }, advancement: backgroundAdv } }
+  ];
+  const originalData = f.fs.worldData.bind(f.fs);
+  f.fs.worldData = async () => ({ ...await originalData(), packs: [...(await originalData()).packs,
+    { id: "dnd5e.origins24", type: "Item", packageName: "dnd5e" }] });
+  const originalDoc = f.fs.doc.bind(f.fs);
+  f.fs.doc = async (action, type, opts = {}) => action === "get" && type === "Item" &&
+    opts.pack === "dnd5e.origins24" ? structuredClone(official.filter(i =>
+      !opts.query?._id || opts.query._id === i._id)) : originalDoc(action, type, opts);
+  return { ...f, race, background, ids, origin: { human, soldier, speciesFeature, backgroundFeat }, official };
 }
 
 async function audit(fs) {
@@ -360,5 +412,70 @@ test("fixed ability bonuses are not falsely counted as invalid selectable ASI po
   const report = await audit(f.fs);
   assert.ok(report.diagnostics.some(d => d.code === "asi_fixed_allocation_unverified"));
   assert.ok(!report.diagnostics.some(d => d.code === "invalid_asi_allocation"));
+  assert.deepEqual(f.writes, []);
+});
+
+test("official 2024 species and background keyed value-only choices pass without writes", async () => {
+  const f = originFixture();
+  const report = await audit(f.fs);
+  assert.equal(report.status, "passed_scoped_checks", JSON.stringify(report.diagnostics));
+  assert.deepEqual(report.verified_sources.species, [f.origin.human]);
+  assert.deepEqual(report.verified_sources.backgrounds, [f.origin.soldier]);
+  assert.deepEqual(f.writes, []);
+});
+
+test("official origin ASI locks, species size, trait pool and grant violations are detected", async () => {
+  const f = originFixture();
+  f.background.system.advancement[f.ids.bgAsi].value.assignments.cha = 1;
+  f.race.system.advancement[f.ids.size].value.size = "lg";
+  f.background.system.advancement[f.ids.bgTrait].value.chosen.push("tool:smith");
+  f.background.system.advancement[f.ids.bgGrant].value.added[id("forgedGrant")] = featUuid("unlistedFeat");
+  const report = await audit(f.fs);
+  for (const code of ["invalid_asi_allocation", "invalid_origin_size", "invalid_origin_trait_choice", "unexpected_recorded_grant"])
+    assert.ok(report.diagnostics.some(d => d.code === code && d.severity === "error"), code);
+  assert.deepEqual(f.writes, []);
+});
+
+test("missing origin choices and feature grants remain reviewable without invented decisions", async () => {
+  const f = originFixture();
+  delete f.background.system.advancement[f.ids.bgTrait].value;
+  f.actor.items = f.actor.items.filter(i => i._id !== id("ownedResource"));
+  const report = await audit(f.fs);
+  assert.ok(report.diagnostics.some(d => d.code === "origin_trait_choice_missing" && d.severity === "unverified"));
+  assert.ok(report.diagnostics.some(d => d.code === "mandatory_feature_missing" && d.severity === "warning"));
+  assert.deepEqual(f.writes, []);
+});
+
+test("origin sources absent or claiming the wrong rules edition cannot certify advancement", async () => {
+  const f = originFixture();
+  f.race._stats.compendiumSource = "Compendium.world.characters.Item." + id("human");
+  const missing = await audit(f.fs);
+  assert.ok(missing.diagnostics.some(d => d.code === "origin_source_unverified"));
+  assert.deepEqual(missing.verified_sources.species, []);
+  f.race._stats.compendiumSource = f.origin.human;
+  f.official[0].system.source.rules = "2014";
+  const mismatch = await audit(f.fs);
+  assert.ok(mismatch.diagnostics.some(d => d.code === "origin_source_mismatch" && d.severity === "error"));
+  assert.deepEqual(f.writes, []);
+});
+
+test("complex origin trait choice pools are not falsely rejected as illegal", async () => {
+  const f = originFixture();
+  f.official[1].system.advancement[f.ids.bgTrait].configuration.choices = [
+    { count: 1, pool: ["tool:game:*"] }, { count: 1, pool: ["skills:*"] } ];
+  const report = await audit(f.fs);
+  assert.ok(report.diagnostics.some(d => d.code === "origin_trait_complex_choice" && d.severity === "unverified"));
+  assert.ok(!report.diagnostics.some(d => d.code === "invalid_origin_trait_choice"));
+  assert.deepEqual(f.writes, []);
+});
+
+test("species advancement choices recorded above current character level are errors", async () => {
+  const f = originFixture();
+  const future = id("futureOriginSize");
+  f.official[0].system.advancement[future] = { _id: future, type: "Size", level: 12,
+    configuration: { sizes: ["sm", "med"] }, value: {} };
+  f.race.system.advancement[future] = { value: { size: "med" } };
+  const report = await audit(f.fs);
+  assert.ok(report.diagnostics.some(d => d.code === "future_advancement_recorded" && d.severity === "error"));
   assert.deepEqual(f.writes, []);
 });
