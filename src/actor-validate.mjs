@@ -75,6 +75,7 @@ export async function validateActor2024(fs, actor) {
   const rulesSources = { classes: [], subclasses: [], species: [], backgrounds: [],
     spells: [], subclass_spells: [], feats: [] };
   const verifiedSubclasses = new Map();
+  const verifiedSpellcasting = new Map();
   const verifiedAdvancements = [];
   for (const origin of items.filter(i => ["race", "background"].includes(i.type))) {
     const uuid = sourceUuid(origin);
@@ -118,6 +119,14 @@ export async function validateActor2024(fs, actor) {
     rulesSources.subclasses.push(evidence.source);
     verifiedAdvancements.push({ embedded: sub, official: evidence.doc,
       level: Number(cls.system?.levels) || 0, uuid: evidence.source });
+    // The owned subclass can carry stale spellcasting fields. Once its exact
+    // official source is verified, a contradictory progression is provable.
+    const officialProgression = evidence.doc.system?.spellcasting?.progression;
+    if (typeof officialProgression === "string") verifiedSpellcasting.set(sub._id, officialProgression);
+    if (typeof officialProgression === "string" &&
+        (sub.system?.spellcasting?.progression || "none") !== officialProgression)
+      check("error", "subclass_spellcasting_progression_mismatch",
+        `${sub.name}: its recorded spellcasting progression differs from the exact official 2024 subclass source.`, sub._id, [evidence.source]);
     const grants = await subclassAlwaysPrepared(fs, evidence.doc, Number(cls.system?.levels) || 0);
     for (const reason of grants.unresolved)
       check("unverified", "subclass_grant_unverified", `${sub.name}: ${reason}`, sub._id, [evidence.source]);
@@ -152,6 +161,8 @@ export async function validateActor2024(fs, actor) {
         else if (doc.type !== "class" || String(doc.system?.identifier || "").toLowerCase() !== id || doc.system?.source?.rules !== "2024")
           check("error", "class_source_mismatch", `${cls.name}: recorded class source disagrees with its identifier or rules edition.`, cls._id, [classSource]);
         else { officialClass = doc; rulesSources.classes.push(classSource);
+          if (typeof doc.system?.spellcasting?.progression === "string")
+            verifiedSpellcasting.set(cls._id, doc.system.spellcasting.progression);
           verifiedAdvancements.push({ embedded: cls, official: doc,
             level: Number(cls.system?.levels) || 0, uuid: classSource }); }
       } catch {
@@ -162,14 +173,22 @@ export async function validateActor2024(fs, actor) {
     const owned = spells.filter(s => s.system?.sourceClass === id);
     const level = Number(cls.system?.levels);
     const sub = subclasses.find(s => s.system?.classIdentifier === id);
-    const classProgression = cls.system?.spellcasting?.progression || "none";
-    const progression = classProgression !== "none" ? classProgression : sub?.system?.spellcasting?.progression || "none";
+    const verifiedSub = verifiedSubclasses.get(id)?.doc;
+    const officialProgression = officialClass?.system?.spellcasting?.progression;
+    if (typeof officialProgression === "string" &&
+        (cls.system?.spellcasting?.progression || "none") !== officialProgression)
+      check("error", "class_spellcasting_progression_mismatch",
+        `${cls.name}: its recorded spellcasting progression differs from the exact official 2024 class source.`, cls._id, [classSource]);
+    // Base spell limits on verified rules sources, not potentially stale owned
+    // class/subclass fields. Unknown source data remains explicitly scoped.
+    const classProgression = officialProgression ?? cls.system?.spellcasting?.progression ?? "none";
+    const subProgression = verifiedSub?.system?.spellcasting?.progression ?? sub?.system?.spellcasting?.progression ?? "none";
+    const progression = classProgression !== "none" ? classProgression : subProgression;
     if (progression === "none") continue;
     if (!officialClass) {
       check("unverified", "spell_progression_unavailable", `${cls.name}: prepared/cantrip limits cannot be checked without the official class source.`, cls._id);
       continue;
     }
-    const verifiedSub = verifiedSubclasses.get(id)?.doc;
     const thirdCaster = progression === "third" && verifiedSub?.system?.spellcasting?.progression === "third" &&
       THIRD_CASTER_WIZARD_LIST[id] === verifiedSub?.system?.identifier;
     if (progression === "third" && !thirdCaster) {
@@ -258,13 +277,19 @@ export async function validateActor2024(fs, actor) {
 
   const counts = { errors: 0, warnings: 0, unverified: 0 };
   for (const d of diagnostics) counts[d.severity === "error" ? "errors" : d.severity === "warning" ? "warnings" : "unverified"]++;
+  // The expected slot table must not inherit a contradictory progression from
+  // an owned class or subclass once the exact official source was verified.
+  const slotItems = items.map(item => verifiedSpellcasting.has(item._id) ? {
+    ...item, system: { ...item.system,
+      spellcasting: { ...item.system?.spellcasting, progression: verifiedSpellcasting.get(item._id) } }
+  } : item);
   return {
     actor: { id: actor._id, name: actor.name, class_levels: classes.map(c => ({ id: c._id, name: c.name,
       identifier: c.system?.identifier, level: c.system?.levels })), total_level: sum },
     read_only: true,
     status: counts.errors ? "issues" : counts.unverified ? "incomplete" : counts.warnings ? "review" : "passed_scoped_checks",
     summary: counts,
-    expected_spell_slots: slotMax(actor),
+    expected_spell_slots: slotMax({ ...actor, items: slotItems }),
     verified_sources: Object.fromEntries(Object.entries(rulesSources)
       .map(([kind, sources]) => [kind, [...new Set(sources)]])),
     diagnostics,
