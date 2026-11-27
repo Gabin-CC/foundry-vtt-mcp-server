@@ -37,6 +37,7 @@ Claude (CLI / Desktop) ──HTTPS + Basic auth──▶ foundry-vtt-mcp-server 
 | `advancement_blueprint` | Lit les choix de progression réellement enregistrés sur une fiche à classe unique, la source exacte de la classe et les caractéristiques avant progression de classe (lecture seule) |
 | `advance` avec `replay_from` | Rejoue automatiquement ces choix sur une autre fiche avec la même classe ; demande uniquement les choix introuvables dans la source |
 | `progress_actor` | Fait progresser une **fiche existante** D&D 2024 à classe unique : simulation sans écriture par défaut, choix explicites, sauvegarde avant application et restauration contrôlée |
+| `multiclass_actor` | Ajoute une classe secondaire ou fait monter une classe d'une **fiche multiclasse D&D 2024** : prérequis de caractéristiques, un niveau par appel, simulation, choix et restauration |
 | `edit_actor` | Modifie l'équipement porté et les sorts de classe préparés d'une fiche existante : simulation, contrôles D&D 2024, instantané et restauration |
 | `build_actor` | Construit une nouvelle fiche D&D 2024 sans modèle depuis les compendiums de classe/espèce/historique, niveau et caractéristiques ; **simulation par défaut**, choix obligatoires avant `apply: true` |
 | `rebuild_actor` | Reconstruit dans une nouvelle fiche classe + espèce + historique par avancement, puis réconcilie les sorts, objets et récompenses ; **simulation par défaut**, écriture seulement avec `apply: true` |
@@ -106,7 +107,18 @@ Les sources doivent déclarer `system.source.rules: "2024"`. Le niveau et les ca
 3. `apply: true` sauvegarde l'état complet utile de l'acteur et de ses objets **avant** la montée de niveau, applique les choix puis vérifie le niveau final. La réponse indique `instantane`.
 4. En cas d'erreur, `snapshots` permet `show`, puis `restore` avec `dry_run: true`, enfin `restore` après vérification. Cette restauration possède à son tour un instantané d'annulation.
 
-La restauration **refuse de remplacer les modifications ultérieures** à la montée de niveau. `advance` accepte aussi `apply: false` pour une simulation en lecture seule ; ses appels existants continuent d'appliquer par défaut. `progress_actor` reste dédié à la montée de niveau ; les changements d'objets et de sorts relèvent de `edit_actor` ci-dessous. Les classes multiples, la baisse de niveau et la conformité complète seront traitées séparément.
+La restauration **refuse de remplacer les modifications ultérieures** à la montée de niveau. `advance` accepte aussi `apply: false` pour une simulation en lecture seule ; ses appels existants continuent d'appliquer par défaut. `progress_actor` reste dédié à la classe unique ; `multiclass_actor` prend en charge les classes multiples et `edit_actor` les modifications d'objets et de sorts. La baisse de niveau et la conformité complète seront traitées séparément.
+
+### Multiclassage D&D 2024
+
+`multiclass_actor` fonctionne sur une fiche existante, uniquement pour des classes avec une source vérifiable `system.source.rules: "2024"`. Il ajoute une nouvelle classe secondaire (`class_source` = UUID exact d'un compendium) ou augmente une classe déjà présente (`item` = identifiant embarqué). **Un seul niveau de personnage par appel**, niveau total maximum 20. Sans `apply: true`, aucune écriture.
+
+1. Trouver la classe dans `search_compendium` puis appeler `multiclass_actor({ "actor": "ID_ACTEUR", "class_source": "Compendium.dnd5e.classes24.Item.ID_CLASSE" })`.
+2. Vérifier les `prerequis` : en entrant dans une nouvelle classe, le personnage doit avoir au moins 13 dans les caractéristiques principales **de chacune de ses classes**. Guerrier : FOR *ou* DEX ; Moine, Paladin et Rôdeur : les deux caractéristiques requises. Les éditions mélangées et les classes inconnues sont refusées.
+3. Fournir les `choix_requis` de l'avancement, relancer la simulation jusqu'à `pret: true`, puis confirmer avec `apply: true` : l'outil prend un instantané récupérable et vérifie le résultat. Les maîtrises secondaires sont sélectionnées selon les données officielles ; **l'équipement de départ d'une seconde classe n'est pas accordé**.
+4. Pour monter l'une des classes déjà présentes, utiliser `multiclass_actor({ "actor": "ID_ACTEUR", "item": "ID_CLASSE_EMBARQUEE", "level": 2 })`, avec le niveau correspondant au prochain niveau **de cette classe**, pas au niveau total.
+
+Les emplacements de sorts multiclasses 2024 comptent la moitié **arrondie au supérieur** des niveaux de Paladin et Rôdeur ; Pacte magique reste séparé. Les sorts à apprendre/préparer dépendent toujours du **niveau de chaque classe** : pas d'import automatique ni de certification globale du grimoire. L'outil ne gère pas la rétrogradation et ne remplace pas les contrôles complets des règles. La restauration s'effectue avec `snapshots` après vérification.
 
 ### Modifier l'équipement et les sorts préparés
 

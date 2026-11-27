@@ -13,7 +13,7 @@ Each player connects with **their own Foundry account**. Foundry permissions sti
 | World and documents | `world_info`, `list_documents`, `get_document`, `create_documents`, `update_documents`, `delete_documents` |
 | Safe changes and large results | `snapshots`, `next_page` |
 | Search and diagnostics | `search_text`, `find_references`, `audit_translation` |
-| D&D 5e characters | `actor_sheet`, `advance`, `progress_actor`, `edit_actor`, `build_actor`, `advancement_blueprint`, `rebuild_actor`, `compare_actors`, `roll`, `check`, `use_item`, `apply_damage`, `rest`, `give_loot` |
+| D&D 5e characters | `actor_sheet`, `advance`, `progress_actor`, `multiclass_actor`, `edit_actor`, `build_actor`, `advancement_blueprint`, `rebuild_actor`, `compare_actors`, `roll`, `check`, `use_item`, `apply_damage`, `rest`, `give_loot` |
 | Compendiums | `list_packs`, `search_compendium`, `get_compendium_entry`, `add_from_compendium`, `localize_actor` |
 | Other world features | `roll_table`, `cards`, `upload_file`, `send_chat` |
 | GM and assistant-GM actions | `gm_scene`, `gm_music`, `gm_show`, `gm_permissions`, `gm_tile`, `gm_token`, `gm_combat`, `gm_pause`, `gm_check_ids`, `gm_sync_items`, `gm_patch_items` |
@@ -71,7 +71,18 @@ Use `progress_actor` to level up **an existing single-class D&D 2024 character**
 
 Rollback refuses to run if the character has changed **after** the recorded level-up, to avoid overwriting subsequent player/GM edits. A failed partial progression is likewise identified and backed up when its final state can be recorded. `advance` also supports `apply: false` for strictly read-only planning; its pre-existing default remains `apply: true` for compatibility.
 
-**Scope:** this tool handles class level progression rather than free-form item edits (see `edit_actor` below). Multiclass leveling, de-leveling and full D&D 2024 rules-legality certification remain separate work.
+**Scope:** this tool handles single-class level progression rather than free-form item edits (see `edit_actor` below). Use `multiclass_actor` for 2024 multiclass progression. De-leveling and full D&D 2024 rules-legality certification remain separate work.
+
+### D&D 2024 multiclassing
+
+Use `multiclass_actor` to **add a secondary 2024 class** to an existing character, or advance **one class** on an already multiclass character. It is preview-first, changes an existing actor only with `apply: true`, and advances **exactly one character level per call**.
+
+1. Find the exact 2024 class UUID using `search_compendium(item_type="class", rules="2024")`. Preview a new class with `multiclass_actor({ "actor": "ACTOR_ID", "class_source": "Compendium.dnd5e.classes24.Item.FIGHTER_ID" })`. The target is class level 1 by default.
+2. Review `prerequis` and `choix_requis`. On entry to a new class, each **existing** class and the **new** class must meet its D&D 2024 primary-ability prerequisites (13 or higher; Fighter: STR **or** DEX; Monk, Paladin and Ranger: both listed scores). Mixed 2014/2024 classes, missing verification data, duplicate classes, exceeding character level 20 or skipping levels are rejected.
+3. Supply exact advancement `choices` and repeat the preview until `pret: true`, then explicitly set `apply: true`. The tool saves the complete pre-change actor state, invokes `advance` with secondary-class proficiencies and **without new-class starting equipment**, verifies each class level and returns `instantane` for `snapshots` restore.
+4. For a later level-up of any **existing** class on the multiclass actor, pass its embedded class item ID: `multiclass_actor({ "actor": "ACTOR_ID", "item": "CLASS_ITEM_ID", "level": 2 })`. The total character level and proficiency bonus follow the sum of class levels.
+
+Spell slots follow the D&D 2024 multiclass rule: full casters contribute all class levels, Paladin and Ranger contribute **half rounded up**, eligible third casters contribute one third rounded down, and Warlock Pact Magic remains separate. Each class still prepares/learns spells from **its own class-level limits**; this tool **does not** silently import spells or certify spellbook legality. Spells must be selected and verified separately. `edit_actor`, `rebuild_actor` and `progress_actor` still have their documented **single-class** restrictions. No de-leveling, cross-edition mixing, automatic class-specific spell acquisition or full rules certification is included.
 
 ### Change equipment and prepared spells on an existing character
 
