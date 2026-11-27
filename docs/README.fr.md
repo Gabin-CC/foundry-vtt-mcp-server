@@ -87,6 +87,8 @@ Les jets peuvent être publics, `mj`, `aveugle` ou `prive`.
 
 L'outil `build_actor` crée une fiche neuve, tandis que `rebuild_actor` (ci-dessous) reproduit une fiche existante.
 
+**Choix de maîtrises D&D 2024 :** les jokers `weapon:*` (maîtrise d'arme) et `tool:game:*` (jeux) sont développés à partir des objets de base du compendium installé `dnd5e.equipment24`. La simulation propose de vrais identifiants, par exemple `weapon:mar:longsword` et `tool:game:dice` : il faut fournir ces valeurs, **pas les jokers**. Les maîtrises d'armes sont limitées aux catégories d'armes déjà maîtrisées et enregistrées séparément des compétences d'armes. Un choix invalide ou répété bloque l'application (`pret: false`). Sans le compendium officiel, la simulation reste bloquée jusqu'à résolution des choix.
+
 1. Fournir un nom unique, les UUID de compendiums de **classe, espèce et historique 2024**, le niveau (1–20) et les six caractéristiques **avant les augmentations de l'historique**. L'agent peut retrouver les UUID par `search_compendium`. Un champ absent est signalé dans `parametres_requis` ; aucun élément n'est deviné.
 2. La simulation (par défaut) liste les `choix_requis` : dons, sous-classe, maîtrises, équipement de départ, etc. Répéter l'appel avec `choices` jusqu'à `pret: true`.
 3. Seul `apply: true` crée l'acteur, puis utilise le moteur `advance` pour rejouer classe → espèce → historique. Une erreur d'écriture identifie l'éventuel acteur partiel ; une fiche existante n'est jamais remplacée.

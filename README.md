@@ -42,6 +42,8 @@ Use `build_actor` for a **new character with no source actor**, and `rebuild_act
 2. Review the read-only preview: `choix_requis` includes missing advancement, subclass, feat and starting-equipment selections, with their exact option IDs/UUIDs. Supply them in `choices` and rerun until `pret: true`.
 3. Set `apply: true` to create **one separate actor**, then replay class → species → background via the normal `advance` engine. No existing actor is changed. If a later Foundry write fails, the response identifies the partial actor for GM inspection; it never silently deletes it.
 
+**Trait choices (D&D 2024):** weapon mastery (`weapon:*`) and gaming-set proficiency (`tool:game:*`) are expanded using installed `dnd5e.equipment24` base items. The preview shows concrete selections such as `weapon:mar:longsword` or `tool:game:dice`; supply **those keys**, never the wildcard. Weapon mastery is limited to weapon categories the character is proficient with, and is recorded separately from weapon proficiency. Invalid or repeated selections leave `pret: false` and cannot create an actor. If the official equipment compendium is missing, the tool cannot resolve these wildcards and stays in preview mode.
+
 Example preview (the first call will ask for all outstanding selections):
 
 ```json

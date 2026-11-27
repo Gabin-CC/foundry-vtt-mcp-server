@@ -116,7 +116,8 @@ export async function spellLists(fs) {
 }
 
 // ---------- description lisible des options ----------
-function traitLabel(k) {
+function traitLabel(k, labels) {
+  if (labels instanceof Map && labels.has(k)) return `${labels.get(k)} (${k})`;
   const [t, a, b] = k.split(":");
   if (t === "skills") return `${message(SKILLS_EN[a], SKILLS[a]?.[1]) || a} (${k})`;
   if (t === "saves") return `${message(`Saving throw ${ABIL_EN[a] || a}`, `Sauvegarde ${ABIL[a] || a}`)} (${k})`;
@@ -133,15 +134,60 @@ function expandPool(pool) {
   }
   return out;
 }
-const matchPool = (k, pool) => pool.some(p => p === k || (p.endsWith("*") && k.startsWith(p.slice(0, -1))) || (p.endsWith(":*") && k.startsWith(p.slice(0, -2))));
-
-
 // ---------- équipement de départ (system.startingEquipment) ----------
 const idxCache = new Map();
 async function packIdx(fs, pack, fields) {
   const k = pack + "|" + fields.join(",");
   if (!idxCache.has(k)) { let r = []; try { r = await fs.doc("get", "Item", { pack, query: {}, index: true, indexFields: ["_id", "name", ...fields] }); } catch { /* */ } idxCache.set(k, r); }
   return idxCache.get(k);
+}
+
+// Foundry's Trait choices resolve "weapon:*" and "tool:game:*" from the
+// installed base equipment, not as literal values the player can select.
+// Only ordinary 2024 base items are eligible; custom/magic variants must not
+// silently become new weapon mastery or gaming-set proficiency choices.
+async function equipmentTraitChoices(fs) {
+  if (fs._equipmentTraitChoices) return fs._equipmentTraitChoices;
+  const packs = ((fs._packs2 ??= ((await fs.worldData()).packs || [])))
+    .filter(p => p.type === "Item" && p.packageName === "dnd5e" && p.id === "dnd5e.equipment24");
+  const found = new Map();
+  for (const pk of packs) {
+    const rows = await packIdx(fs, pk.id, ["type", "system.type.value", "system.type.baseItem", "system.identifier",
+      "system.mastery", "system.ability", "system.source.rules", "system.rarity"]);
+    for (const e of rows) {
+      const type = e.system?.type?.value;
+      const base = e.system?.type?.baseItem;
+      if (!base || e.system?.identifier !== base || (e.system?.rarity && e.system.rarity !== "common")) continue;
+      if (e.system?.source?.rules && e.system.source.rules !== "2024") continue;
+      let key;
+      if (e.type === "weapon" && e.system?.mastery && /^(simple|martial)[MR]$/.test(type || ""))
+        key = `weapon:${type.startsWith("simple") ? "sim" : "mar"}:${base}`;
+      else if (e.type === "tool" && type === "game") key = `tool:game:${base}`;
+      if (key && !found.has(key)) found.set(key, { key, label: e.name, ability: e.system?.ability });
+    }
+  }
+  fs._equipmentTraitChoices = [...found.values()].sort((a, b) => a.key.localeCompare(b.key));
+  return fs._equipmentTraitChoices;
+}
+
+async function concreteTraitPool(fs, pool, mode, weaponProfs) {
+  const keys = new Set(expandPool(pool).filter(k => !k.includes("*")));
+  const labels = new Map(), toolAbilities = {};
+  if (pool.includes("weapon:*") || pool.includes("tool:game:*")) {
+    for (const e of await equipmentTraitChoices(fs)) {
+      if (!pool.some(p => p === "weapon:*" ? e.key.startsWith("weapon:") :
+        p === "tool:game:*" && e.key.startsWith("tool:game:"))) continue;
+      // Foundry only offers mastery for weapons the actor can use proficiently.
+      if (mode === "mastery" && e.key.startsWith("weapon:")) {
+        const [, group, name] = e.key.split(":");
+        if (!weaponProfs.has(group) && !weaponProfs.has(name)) continue;
+      }
+      keys.add(e.key);
+      labels.set(e.key, e.label);
+      if (e.key.startsWith("tool:") && e.ability) toolAbilities[e.key.split(":").at(-1)] = e.ability;
+    }
+  }
+  return { keys: [...keys], labels, toolAbilities };
 }
 const FOCUS_NAMES = { holy: /holy symbol|symbole sacr|amulet|emblem|reliquar/i, arcane: /arcane focus|focaliseur arcan|crystal|orb|rod|staff|wand/i, druidic: /druidic focus|focaliseur druid|sprig|totem|yew|wooden staff/i };
 async function categoryOptions(fs, entry) {
@@ -207,9 +253,20 @@ export async function planStartingEquipment(fs, item, choices) {
  * Construit le plan d'avancement d'un objet (et récursivement des objets accordés).
  * @returns {steps, pending} — pending = choix manquants à demander.
  */
-export async function plan(fs, actor, item, { fromLevel, toLevel, choices = {}, isFirstClass, depth = 0, skipStartingEquipment = false }) {
+export async function plan(fs, actor, item, { fromLevel, toLevel, choices = {}, isFirstClass, depth = 0,
+  skipStartingEquipment = false, traitContext = null }) {
   const steps = [], pending = [], warnings = [];
   const isClass = item.type === "class", isSub = item.type === "subclass";
+  const weaponProfs = new Set(traitContext?.weaponProfs || actor.system?.traits?.weaponProf?.value || []);
+  // The class grants proficiencies at level 1; recursively granted mastery
+  // feats are planned before those grants have been applied to the preview actor.
+  if (isClass) for (const a of advList(item)) {
+    if (a.type !== "Trait" || a.configuration?.mode === "mastery" || Number(a.level || 0) > toLevel) continue;
+    if (a.classRestriction === "primary" && !isFirstClass) continue;
+    if (a.classRestriction === "secondary" && isFirstClass) continue;
+    for (const k of a.configuration?.grants || []) if (k.startsWith("weapon:")) weaponProfs.add(k.split(":").at(-1));
+  }
+  const nestedTraits = { weaponProfs };
   const lvlOk = adv => { const l = Number(adv.level ?? 0); return l >= fromLevel && l <= toLevel; };
   const key = (adv, l) => adv._id + (l > 0 ? `@${l}` : "");
   const choice = (adv, l) => choices[key(adv, l)] ?? choices[adv._id];
@@ -273,7 +330,7 @@ export async function plan(fs, actor, item, { fromLevel, toLevel, choices = {}, 
       try { d = await fetchUuid(fs, u); } catch (e) { out.warnings.push(e.message); continue; }
       docs.push({ uuid: u, doc: d });
       if (depth < 3 && advList(d).length) {
-        const sub = await plan(fs, actor, d, { fromLevel: 0, toLevel: Math.max(toLevel, 0), choices, isFirstClass, depth: depth + 1 });
+        const sub = await plan(fs, actor, d, { fromLevel: 0, toLevel: Math.max(toLevel, 0), choices, isFirstClass, depth: depth + 1, traitContext: nestedTraits });
         subSteps.push(...sub.steps); out.pending.push(...sub.pending); out.warnings.push(...sub.warnings);
       }
     }
@@ -326,7 +383,7 @@ export async function plan(fs, actor, item, { fromLevel, toLevel, choices = {}, 
           try { d = await fetchUuid(fs, uuid); } catch (e) { warnings.push(message(`${item.name} lvl. ${l} — skipped: ${e.message}`, `${item.name} niv. ${l} — ignoré : ${e.message}`)); continue; }
           docs.push({ uuid, doc: d });
           if (depth < 3 && advList(d).length) {
-            const sub = await plan(fs, actor, d, { fromLevel: 0, toLevel: Math.max(toLevel, 0), choices, isFirstClass, depth: depth + 1 });
+            const sub = await plan(fs, actor, d, { fromLevel: 0, toLevel: Math.max(toLevel, 0), choices, isFirstClass, depth: depth + 1, traitContext: nestedTraits });
             subSteps.push(...sub.steps); pending.push(...sub.pending); warnings.push(...sub.warnings);
           }
         }
@@ -336,18 +393,37 @@ export async function plan(fs, actor, item, { fromLevel, toLevel, choices = {}, 
       case "Trait": {
         const chosen = [...(c.grants || [])];
         let missing = false;
+        const raw = choice(adv, l);
+        const submitted = Array.isArray(raw) ? raw : [];
+        const availableKeys = new Set(), labels = new Map(), toolAbilities = {};
+        const expectedPicks = (c.choices || []).reduce((n, ch) => n + ((ch.pool || []).length ? ch.count : 0), 0);
+        const concreteWildcards = (c.choices || []).some(ch => (ch.pool || []).some(k => ["weapon:*", "tool:game:*"].includes(k)));
         for (const [i, ch] of (c.choices || []).entries()) {
           if (!(ch.pool || []).length) continue; // choix sans liste (défaut de données) : ignoré, comme dans Foundry
-          const pool = expandPool(ch.pool);
-          const val = choice(adv, l);
-          const picks = Array.isArray(val) ? val.filter(v => matchPool(v, ch.pool) || pool.includes(v)) : [];
+          const pool = await concreteTraitPool(fs, ch.pool, c.mode, weaponProfs);
+          pool.keys.forEach(k => availableKeys.add(k));
+          for (const [k, v] of pool.labels) labels.set(k, v);
+          Object.assign(toolAbilities, pool.toolAbilities);
+          const picks = submitted.filter(v => pool.keys.includes(v) && !chosen.includes(v));
           if (picks.length < ch.count) {
             missing = true;
             pending.push({ id: key(adv, l), objet: item.name, niveau: l, type: "Trait", titre: adv.title || adv.name || message("Proficiencies", "Maîtrises"),
-              aide: strip(adv.hint), nombre: ch.count, options: pool.filter(o => !(c.grants || []).includes(o)).map(traitLabel) });
+              aide: strip(adv.hint), nombre: ch.count, options: pool.keys.filter(o => !(c.grants || []).includes(o)).map(o => traitLabel(o, labels)) });
           } else chosen.push(...picks.slice(0, ch.count));
         }
-        if (!missing) steps.push({ kind: "trait", item, adv, level: l, chosen, mode: c.mode });
+        // Invalid and duplicate values must not be silently ignored if a few
+        // valid picks also happen to satisfy the required number of choices.
+        const invalid = submitted.filter(k => !availableKeys.has(k));
+        if (submitted.length !== new Set(submitted).size || invalid.length ||
+          (concreteWildcards && submitted.filter(k => !(c.grants || []).includes(k)).length !== expectedPicks)) {
+          missing = true;
+          pending.push({ id: key(adv, l), objet: item.name, niveau: l, type: "Trait",
+            titre: adv.title || adv.name || message("Proficiencies", "Maîtrises"),
+            aide: message(`Invalid, repeated or excessive choices: ${invalid.join(", ") || "check the number of selections"}`,
+              `Choix invalides, répétés ou trop nombreux : ${invalid.join(", ") || "vérifier le nombre de sélections"}`),
+            options: [...availableKeys].map(k => traitLabel(k, labels)) });
+        }
+        if (!missing) steps.push({ kind: "trait", item, adv, level: l, chosen, mode: c.mode, toolAbilities });
         break;
       }
       case "AbilityScoreImprovement": {
@@ -362,7 +438,7 @@ export async function plan(fs, actor, item, { fromLevel, toLevel, choices = {}, 
         let featDoc = null, featSub = null;
         if (val?.feat) {
           featDoc = await fetchUuid(fs, val.feat);
-          if (depth < 3 && advList(featDoc).length) featSub = await plan(fs, actor, featDoc, { fromLevel: 0, toLevel: Math.max(toLevel, 0), choices, isFirstClass, depth: depth + 1 });
+          if (depth < 3 && advList(featDoc).length) featSub = await plan(fs, actor, featDoc, { fromLevel: 0, toLevel: Math.max(toLevel, 0), choices, isFirstClass, depth: depth + 1, traitContext: nestedTraits });
         } else if (val) {
           const pts = Object.values(val).reduce((a, b) => a + Number(b || 0), 0);
           if (pts > (c.points ?? 2) || Object.entries(val).some(([k, v]) => v > (c.cap ?? 2) || (c.locked || []).includes(k)))
@@ -419,7 +495,7 @@ export async function plan(fs, actor, item, { fromLevel, toLevel, choices = {}, 
           try { d = await fetchUuid(fs, u); } catch (e) { warnings.push(e.message); continue; }
           docs.push({ uuid: u, doc: d });
           if (depth < 3 && advList(d).length) {
-            const sub = await plan(fs, actor, d, { fromLevel: 0, toLevel: Math.max(toLevel, 0), choices, isFirstClass, depth: depth + 1 });
+            const sub = await plan(fs, actor, d, { fromLevel: 0, toLevel: Math.max(toLevel, 0), choices, isFirstClass, depth: depth + 1, traitContext: nestedTraits });
             subSteps.push(...sub.steps); pending.push(...sub.pending); warnings.push(...sub.warnings);
           }
         }
@@ -435,7 +511,7 @@ export async function plan(fs, actor, item, { fromLevel, toLevel, choices = {}, 
         }
         const sub = await fetchUuid(fs, val);
         steps.push({ kind: "subclass", item, adv, level: l, doc: sub, uuid: val });
-        const p = await plan(fs, actor, sub, { fromLevel: 0, toLevel, choices, isFirstClass, depth: depth + 1 });
+        const p = await plan(fs, actor, sub, { fromLevel: 0, toLevel, choices, isFirstClass, depth: depth + 1, traitContext: nestedTraits });
         steps.push(...p.steps.map(s => ({ ...s, ofSubclass: true }))); pending.push(...p.pending); warnings.push(...p.warnings);
         break;
       }
@@ -524,8 +600,18 @@ export async function apply(fs, actor, rootItemId, steps, { hpMode = "avg", isFi
           if (t === "saves") abil[a] = { ...(abil[a] || {}), proficient: 1 };
           else if (t === "skills") skills[a] = { ...(skills[a] || {}), value: Math.max(Number(skills[a]?.value) || 0, s.mode === "expertise" ? 2 : 1) };
           else if (t === "armor") { tr.armorProf ??= { value: [] }; addTo(tr.armorProf.value, a); }
-          else if (t === "weapon") { tr.weaponProf ??= { value: [] }; addTo(tr.weaponProf.value, b || a); }
-          else if (t === "tool") tools[b || a] = { ...(tools[b || a] || {}), value: 1 };
+          else if (t === "weapon") {
+            tr.weaponProf ??= { value: [] };
+            if (s.mode === "mastery") {
+              tr.weaponProf.mastery ??= { value: [] };
+              addTo(tr.weaponProf.mastery.value, k.split(":").at(-1));
+            } else addTo(tr.weaponProf.value, k.split(":").at(-1));
+          }
+          else if (t === "tool") {
+            const tool = k.split(":").at(-1);
+            tools[tool] = { ...(tools[tool] || {}), value: s.mode === "expertise" ? 2 : 1,
+              ...(!tools[tool]?.ability && s.toolAbilities?.[tool] ? { ability: s.toolAbilities[tool] } : {}) };
+          }
           else if (t === "languages") { tr.languages ??= { value: [] }; addTo(tr.languages.value, b || a); }
           else if (["di", "dr", "dv", "ci"].includes(t)) { tr[t] ??= { value: [] }; addTo(tr[t].value, a); }
         }
