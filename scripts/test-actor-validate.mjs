@@ -351,6 +351,89 @@ test("class-level spell ceiling rejects Fireball even though shared slots reach 
   assert.deepEqual(f.writes, []);
 });
 
+test("a copied spell with a forged lower level cannot bypass its official spell ceiling", async () => {
+  const f = fixture();
+  const fireball = makeSpell("fireball", 0);
+  fireball.system.level = 1; // its exact official 2024 source is level 3
+  f.actor.items.push(fireball);
+  const report = await audit(f.fs);
+  assert.ok(report.diagnostics.some(d => d.code === "spell_level_source_mismatch" &&
+    d.severity === "error" && d.subject === fireball._id));
+  assert.ok(!report.diagnostics.some(d => d.code === "spell_above_class_level" &&
+    d.subject === fireball._id), "The separate level ceiling still sees the forged owned level");
+  fireball.system.level = 3;
+  const restored = await audit(f.fs);
+  assert.ok(restored.diagnostics.some(d => d.code === "spell_above_class_level" &&
+    d.subject === fireball._id));
+  assert.ok(!restored.diagnostics.some(d => d.code === "spell_level_source_mismatch"));
+  assert.deepEqual(f.writes, []);
+});
+
+test("a cantrip disguised as a leveled spell is contradicted by its exact source", async () => {
+  const f = fixture();
+  const acid = f.actor.items.find(i => i._id === id("ownedacid"));
+  acid.system.level = 1; // official Acid Splash remains a cantrip
+  const report = await audit(f.fs);
+  assert.ok(report.diagnostics.some(d => d.code === "spell_level_source_mismatch" &&
+    d.severity === "error" && d.subject === acid._id));
+  assert.deepEqual(f.writes, []);
+});
+
+test("official class spell levels use one pack index lookup per audit", async () => {
+  const f = fixture();
+  const oldDoc = f.fs.doc.bind(f.fs);
+  let lookups = 0;
+  f.fs.doc = async (action, type, opts = {}) => {
+    if (action === "get" && type === "Item" && opts.pack === "dnd5e.spells24" && opts.index)
+      lookups++;
+    return oldDoc(action, type, opts);
+  };
+  const report = await audit(f.fs);
+  assert.equal(report.status, "passed_scoped_checks", JSON.stringify(report.diagnostics));
+  assert.equal(lookups, 1, "The audit should not fetch every owned spell as a full document");
+  assert.deepEqual(f.writes, []);
+});
+
+test("a same-ID world fallback never proves the official level of an owned class spell", async () => {
+  const f = fixture();
+  shadowOfficialSource(f, "dnd5e.spells24", id("missile"),
+    compendiumSpells.find(s => s._id === id("missile")));
+  const spell = f.actor.items.find(i => i._id === id("ownedmissile"));
+  const report = await audit(f.fs);
+  assert.ok(report.diagnostics.some(d => d.code === "spell_source_index_unavailable" &&
+    d.severity === "unverified" && d.subject === spell._id));
+  assert.ok(!report.diagnostics.some(d => d.code === "spell_level_source_mismatch" &&
+    d.subject === spell._id));
+  assert.deepEqual(f.writes, []);
+});
+
+test("a spell index lacking a usable 2024 level stays unverified, never a false contradiction", async () => {
+  const f = fixture();
+  const oldDoc = f.fs.doc.bind(f.fs);
+  f.fs.doc = async (action, type, opts = {}) => {
+    const docs = await oldDoc(action, type, opts);
+    if (action === "get" && type === "Item" && opts.pack === "dnd5e.spells24" && opts.index)
+      for (const doc of docs) if (doc._id === id("acid")) doc.system.level = null;
+    return docs;
+  };
+  const report = await audit(f.fs);
+  assert.ok(report.diagnostics.some(d => d.code === "spell_source_level_unavailable" &&
+    d.severity === "unverified" && d.subject === id("ownedacid")));
+  assert.ok(!report.diagnostics.some(d => d.code === "spell_level_source_mismatch" &&
+    d.subject === id("ownedacid")));
+  assert.deepEqual(f.writes, []);
+});
+
+test("an owned cantrip cannot use a null level as if it were zero", async () => {
+  const f = fixture();
+  const acid = f.actor.items.find(i => i._id === id("ownedacid"));
+  acid.system.level = null;
+  const report = await audit(f.fs);
+  assert.ok(report.diagnostics.some(d => d.code === "spell_level_source_mismatch" &&
+    d.severity === "error" && d.subject === acid._id));
+  assert.deepEqual(f.writes, []);
+});
+
 test("class spells with mixed-case sourceClass still count toward official spell limits", async () => {
   const f = fixture();
   for (const spell of f.actor.items.filter(i => i.type === "spell"))

@@ -78,6 +78,33 @@ export async function validateActor2024(fs, actor) {
   const verifiedSpellcasting = new Map();
   const declaredAlwaysPrepared = new Set();
   const verifiedAdvancements = [];
+  // Load each *exact* installed spell pack index at most once. Foundry's Item
+  // index exposes official spell levels without fetching hundreds of full
+  // documents or allowing fetchUuid's same-ID cross-pack fallback.
+  const spellIndexes = new Map();
+  let installedItemPacks = null;
+  async function officialSpellEntry(uuid) {
+    const parsed = /^Compendium\.([^.]+\.[^.]+)\.Item\.([A-Za-z0-9]{16})$/.exec(uuid || "");
+    if (!parsed) return { status: "invalid" };
+    const [, pack, itemId] = parsed;
+    if (!installedItemPacks) {
+      try { installedItemPacks = new Set(((await fs.worldData()).packs || [])
+        .filter(p => p.type === "Item").map(p => p.id)); }
+      catch { return { status: "unavailable" }; }
+    }
+    if (!installedItemPacks.has(pack)) return { status: "unavailable" };
+    if (!spellIndexes.has(pack)) {
+      try {
+        const docs = await fs.doc("get", "Item", { pack, query: {}, index: true,
+          indexFields: ["_id", "type", "system.level", "system.source.rules"] });
+        spellIndexes.set(pack, Array.isArray(docs) ? new Map(docs.map(doc => [doc._id, doc])) : null);
+      } catch { spellIndexes.set(pack, null); }
+    }
+    const index = spellIndexes.get(pack);
+    if (!index) return { status: "unavailable" };
+    const entry = index.get(itemId);
+    return entry ? { status: "ok", entry } : { status: "missing" };
+  }
   for (const origin of items.filter(i => ["race", "background"].includes(i.type))) {
     const uuid = sourceUuid(origin);
     const pack = /^Compendium\.([^.]+\.[^.]+)\.Item\./.exec(uuid || "")?.[1];
@@ -263,6 +290,25 @@ export async function validateActor2024(fs, actor) {
     for (const spell of owned) {
       const lvl = Number(spell.system?.level);
       const src = sourceUuid(spell);
+      if (Number(spell.system?.prepared) !== 2 && allowed?.has(src)) {
+        const source = await officialSpellEntry(src);
+        if (source.status !== "ok")
+          check("unverified", "spell_source_index_unavailable",
+            `${spell.name}: its exact official spell source cannot be checked in the installed compendium index.`, spell._id, [src]);
+        else if (source.entry.type !== "spell")
+          check("error", "spell_source_type_mismatch",
+            `${spell.name}: the recorded official source is not a spell.`, spell._id, [src]);
+        else if (source.entry.system?.source?.rules !== "2024" ||
+            source.entry.system?.level == null || source.entry.system.level === "" ||
+            !Number.isInteger(Number(source.entry.system?.level)) ||
+            Number(source.entry.system?.level) < 0 || Number(source.entry.system?.level) > 9)
+          check("unverified", "spell_source_level_unavailable",
+            `${spell.name}: the official source index does not prove a 2024 spell level.`, spell._id, [src]);
+        else if (spell.system?.level == null || spell.system.level === "" ||
+            !Number.isInteger(lvl) || lvl !== Number(source.entry.system.level))
+          check("error", "spell_level_source_mismatch",
+            `${spell.name}: its recorded level ${String(spell.system?.level)} differs from the exact official 2024 spell level ${source.entry.system.level}.`, spell._id, [src]);
+      }
       if (Number(spell.system?.prepared) !== 2 && lvl >= 1 && lvl > highest) {
         if (allowed?.has(src))
           check("error", "spell_above_class_level",
