@@ -13,7 +13,7 @@ Each player connects with **their own Foundry account**. Foundry permissions sti
 | World and documents | `world_info`, `list_documents`, `get_document`, `create_documents`, `update_documents`, `delete_documents` |
 | Safe changes and large results | `snapshots`, `next_page` |
 | Search and diagnostics | `search_text`, `find_references`, `audit_translation` |
-| D&D 5e characters | `actor_sheet`, `advance`, `advancement_blueprint`, `rebuild_actor`, `compare_actors`, `roll`, `check`, `use_item`, `apply_damage`, `rest`, `give_loot` |
+| D&D 5e characters | `actor_sheet`, `advance`, `progress_actor`, `build_actor`, `advancement_blueprint`, `rebuild_actor`, `compare_actors`, `roll`, `check`, `use_item`, `apply_damage`, `rest`, `give_loot` |
 | Compendiums | `list_packs`, `search_compendium`, `get_compendium_entry`, `add_from_compendium`, `localize_actor` |
 | Other world features | `roll_table`, `cards`, `upload_file`, `send_chat` |
 | GM and assistant-GM actions | `gm_scene`, `gm_music`, `gm_show`, `gm_permissions`, `gm_tile`, `gm_token`, `gm_combat`, `gm_pause`, `gm_check_ids`, `gm_sync_items`, `gm_patch_items` |
@@ -59,6 +59,19 @@ Example preview (the first call will ask for all outstanding selections):
 ```
 
 **Spells:** the default `spells: "none"` postpones class spell selection. For 2024 classes with a supported prepared-spell progression, choose `spells: "selected"`: the preview requests `choices["spells:prepared"]` (and `choices["spells:cantrips"]` when applicable), arrays of **exact 2024 compendium UUIDs**. It enforces the number of choices, class spell list, spell level, edition and uniqueness, then imports **only those selections**, marking the leveled spells prepared. Automatically granted subclass/class spells are excluded from selection where verifiable. A missing official class spell list blocks creation. The legacy `spells: "all"` still imports **all accessible class spells**, which may produce an illegal spellbook. Full rules legality, ability-generation method, Wizard spellbook constraints and magic effects still require separate verification.
+
+### Progress an existing D&D 2024 character safely
+
+Use `progress_actor` to level up **an existing single-class D&D 2024 character** without cloning or replacing it:
+
+1. Call `progress_actor({ "actor": "ACTOR_ID", "level": 9 })`. It returns a **read-only preview** with the planned level changes and `choix_requis` (subclass, feat, mastery, ability score improvements, etc.). No Foundry update occurs, including background advancement-marker repairs.
+2. Provide the explicit choices from the preview, such as `progress_actor({ "actor": "ACTOR_ID", "level": 9, "choices": { "ADVANCEMENT_ID@8": { "str": 2 } } })`. Repeat until `pret: true`.
+3. Only then set `"apply": true`. The tool saves a **pre-change character snapshot before writing**, advances the selected class through `advance`, verifies the final class level, and returns `instantane`.
+4. If something goes wrong, inspect `snapshots({ "action": "show", "id": "SNAPSHOT_ID" })`, preview rollback with `"action": "restore", "dry_run": true`, then restore explicitly. Restoring itself creates an undo snapshot.
+
+Rollback refuses to run if the character has changed **after** the recorded level-up, to avoid overwriting subsequent player/GM edits. A failed partial progression is likewise identified and backed up when its final state can be recorded. `advance` also supports `apply: false` for strictly read-only planning; its pre-existing default remains `apply: true` for compatibility.
+
+**Scope:** this is class level progression, not a free-form character editor. It supports a verified existing 2024 class and all normal advancement choices; multiclass leveling, de-leveling, manual spell preparation, equipment changes, and full D&D 2024 rules-legality certification remain separate work.
 
 ### Rebuild a character using recorded advancement choices
 

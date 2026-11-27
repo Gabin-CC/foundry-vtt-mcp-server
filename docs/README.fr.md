@@ -36,6 +36,7 @@ Claude (CLI / Desktop) ──HTTPS + Basic auth──▶ foundry-vtt-mcp-server 
 | `actor_sheet` | Fiche calculée : niveau, maîtrise, mods, CA estimée, PV, compétences, attaque/DD de sort, emplacements |
 | `advancement_blueprint` | Lit les choix de progression réellement enregistrés sur une fiche à classe unique, la source exacte de la classe et les caractéristiques avant progression de classe (lecture seule) |
 | `advance` avec `replay_from` | Rejoue automatiquement ces choix sur une autre fiche avec la même classe ; demande uniquement les choix introuvables dans la source |
+| `progress_actor` | Fait progresser une **fiche existante** D&D 2024 à classe unique : simulation sans écriture par défaut, choix explicites, sauvegarde avant application et restauration contrôlée |
 | `build_actor` | Construit une nouvelle fiche D&D 2024 sans modèle depuis les compendiums de classe/espèce/historique, niveau et caractéristiques ; **simulation par défaut**, choix obligatoires avant `apply: true` |
 | `rebuild_actor` | Reconstruit dans une nouvelle fiche classe + espèce + historique par avancement, puis réconcilie les sorts, objets et récompenses ; **simulation par défaut**, écriture seulement avec `apply: true` |
 | `compare_actors` | Compare deux fiches calculées et détaille les différences de caractéristiques, PV, sorts, aptitudes et inventaire (lecture seule) |
@@ -94,6 +95,17 @@ L'outil `build_actor` crée une fiche neuve, tandis que `rebuild_actor` (ci-dess
 3. Seul `apply: true` crée l'acteur, puis utilise le moteur `advance` pour rejouer classe → espèce → historique. L'armure de départ, un bouclier compatible et une arme principale sont automatiquement équipés (`auto_equip: false` désactive cette option). Une erreur d'écriture identifie l'éventuel acteur partiel ; une fiche existante n'est jamais remplacée.
 
 Les sources doivent déclarer `system.source.rules: "2024"`. Le niveau et les caractéristiques sont contrôlés, mais **la méthode de génération des caractéristiques et toute la légalité des règles ne sont pas certifiées**. Par défaut, `spells: "none"` reporte le choix des sorts à `advance`. Le nouveau mode `spells: "selected"` demande des listes d'UUID officiels exacts dans `choices["spells:prepared"]` et, si nécessaire, `choices["spells:cantrips"]` : nombre, doublons, classe, niveau et édition sont contrôlés **avant toute création**. Seuls ces sorts sont importés et préparés. En l'absence de liste officielle installée, la création reste bloquée. L'option historique `spells: "all"` importe toute la liste accessible et ne constitue **pas** un grimoire conforme pour un Magicien ou une autre classe à sorts connus limités.
+
+### Faire progresser une fiche existante (D&D 2024)
+
+`progress_actor` fonctionne sur un personnage **déjà présent**, possédant une seule classe 2024. Il conserve son identifiant, ses objets et ses choix antérieurs.
+
+1. `progress_actor({ "actor": "ID_ACTEUR", "level": 9 })` liste les changements à venir et les `choix_requis`, **sans aucune écriture**.
+2. Fournir les choix manquants dans `choices`, puis répéter la simulation jusqu'à `pret: true`. Les caractéristiques, dons, aptitudes et maîtrises sont traités par le même moteur d'avancement que `advance`.
+3. `apply: true` sauvegarde l'état complet utile de l'acteur et de ses objets **avant** la montée de niveau, applique les choix puis vérifie le niveau final. La réponse indique `instantane`.
+4. En cas d'erreur, `snapshots` permet `show`, puis `restore` avec `dry_run: true`, enfin `restore` après vérification. Cette restauration possède à son tour un instantané d'annulation.
+
+La restauration **refuse de remplacer les modifications ultérieures** à la montée de niveau. `advance` accepte aussi `apply: false` pour une simulation en lecture seule ; ses appels existants continuent d'appliquer par défaut. Limites de `progress_actor` : classes multiples, baisse de niveau, changement manuel de sorts préparés ou d'équipement non gérés ici. La conformité D&D 2024 complète sera un chantier séparé.
 
 ### Reconstruire un personnage pour tester le MCP
 

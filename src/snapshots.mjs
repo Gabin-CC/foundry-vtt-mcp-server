@@ -10,6 +10,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { message } from "./i18n.mjs";
+import { captureActorState, restoreActorState } from "./actor-progress.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const DIR = process.env.SNAPSHOT_DIR || path.join(ROOT, "data", "snapshots");
@@ -83,9 +84,10 @@ async function prune() {
 /**
  * Enregistre un instantané. ops : [{ action: "update", type, pack?, parent?, entries }]
  *                                 [{ action: "delete", type, pack?, parent?, docs }]
+ *                                 [{ action: "actor_state", type: "Actor", actor_id, before, after? }]
  */
 export async function saveSnapshot(fs, tool, label, ops) {
-  ops = ops.filter(o => (o.entries?.length || o.docs?.length));
+  ops = ops.filter(o => (o.entries?.length || o.docs?.length || (o.action === "actor_state" && o.before)));
   if (!ops.length) return null;
   await ensureDir();
   const id = `${Date.now()}-${crypto.randomBytes(3).toString("hex")}`;
@@ -95,13 +97,25 @@ export async function saveSnapshot(fs, tool, label, ops) {
   return id;
 }
 
+/** Record the precise post-write state for optimistic, conflict-safe actor restoration. */
+export async function finalizeActorSnapshot(id, actorId, after) {
+  const s = await load(id);
+  const o = s.ops.find(o => o.action === "actor_state" && o.actor_id === actorId);
+  if (!o || o.after) throw new Error("Invalid or already finalized character progression snapshot.");
+  if (after.actor_id !== actorId) throw new Error("Character snapshot actor ID mismatch.");
+  o.after = after;
+  await fsp.writeFile(file(id), JSON.stringify(s));
+}
+
 async function load(id) {
   if (!/^\d{13}-[0-9a-f]{6}$/.test(String(id))) throw new Error(message(`Invalid snapshot ID: ${id}`, `Identifiant d'instantané invalide : ${id}`));
   try { return JSON.parse(await fsp.readFile(file(id), "utf8")); } catch { throw new Error(message(`Snapshot not found: ${id}`, `Instantané introuvable : ${id}`)); }
 }
 const canSee = (fs, s, isGM) => isGM || s.user === fs.userId;
 const summary = s => ({ id: s.id, date: s.date, utilisateur: s.user_name, outil: s.tool, libelle: s.label,
-  operations: s.ops.map(o => message(`${o.action} ${o.type}${o.parent ? ` (in ${o.parent})` : ""}${o.pack ? ` [${o.pack}]` : ""}: ${(o.entries || o.docs).length} document(s)`, `${o.action} ${o.type}${o.parent ? ` (dans ${o.parent})` : ""}${o.pack ? ` [${o.pack}]` : ""} : ${(o.entries || o.docs).length} document(s)`)),
+  operations: s.ops.map(o => o.action === "actor_state"
+    ? message(`Character state: ${o.actor_id} (${o.after ? "restorable" : "not finalized"})`, `État du personnage : ${o.actor_id} (${o.after ? "restaurable" : "non finalisé"})`)
+    : message(`${o.action} ${o.type}${o.parent ? ` (in ${o.parent})` : ""}${o.pack ? ` [${o.pack}]` : ""}: ${(o.entries || o.docs).length} document(s)`, `${o.action} ${o.type}${o.parent ? ` (dans ${o.parent})` : ""}${o.pack ? ` [${o.pack}]` : ""} : ${(o.entries || o.docs).length} document(s)`)),
   restaure: s.restored || undefined });
 
 export async function listSnapshots(fs, isGM, { limit = 30, tool } = {}) {
@@ -122,7 +136,10 @@ export async function listSnapshots(fs, isGM, { limit = 30, tool } = {}) {
 export async function showSnapshot(fs, isGM, id) {
   const s = await load(id);
   if (!canSee(fs, s, isGM)) throw new Error(message("Snapshot belongs to another user", "Instantané d'un autre utilisateur"));
-  return { ...summary(s), detail: s.ops.map(o => ({ action: o.action, type: o.type, parent: o.parent, pack: o.pack,
+  return { ...summary(s), detail: s.ops.map(o => o.action === "actor_state"
+    ? { action: "actor_state", type: "Actor", acteur: o.actor_id, restaurable: !!o.after,
+      objets_avant: o.before.items.length, objets_apres: o.after?.items.length }
+    : ({ action: o.action, type: o.type, parent: o.parent, pack: o.pack,
     documents: o.action === "update"
       ? o.entries.map(e => ({ _id: e._id, nom: e.nom, champs: [...Object.entries(e.avant).map(([k, v]) => ({ champ: k, valeur_sauvegardee: excerpt(v), valeur_apres: excerpt(e.apres?.[k]) })),
           ...e.absents.map(k => ({ champ: k, valeur_sauvegardee: message("(missing)", "(absent)"), valeur_apres: excerpt(e.apres?.[k]) }))] }))
@@ -147,7 +164,18 @@ export async function restoreSnapshot(fs, isGM, id, { dryRun = false } = {}) {
   const report = [], undoOps = [];
   // ordre inverse : la dernière opération est annulée en premier
   for (const o of [...s.ops].reverse()) {
-    if (o.action === "update") {
+    if (o.action === "actor_state") {
+      if (!o.after) throw new Error(message("Character snapshot was not finalized; cannot restore it automatically.",
+        "Instantané de personnage non finalisé : restauration automatique impossible."));
+      const result = await restoreActorState(fs, o.after, o.before, { dryRun });
+      report.push({ action: "actor_state", type: "Actor", ...result });
+      if (!dryRun) {
+        const restored = (await currentDocs(fs, { type: "Actor" }, [o.actor_id])).find(x => x._id === o.actor_id);
+        if (!restored) throw new Error("Restored character is missing.");
+        undoOps.push({ action: "actor_state", type: "Actor", actor_id: o.actor_id,
+          before: o.after, after: captureActorState(restored) });
+      }
+    } else if (o.action === "update") {
       const updates = o.entries.map(e => {
         const u = { _id: e._id, ...e.avant };
         for (const p of e.absents) { const ks = p.split("."); u[[...ks.slice(0, -1), `-=${ks.at(-1)}`].join(".")] = null; }
