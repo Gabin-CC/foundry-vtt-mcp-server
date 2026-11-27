@@ -34,6 +34,28 @@ Highlights:
 
 Tool **names and discovery descriptions are in English**. Some response keys, legacy argument values, enum values, and Foundry-specific status labels remain in French for backward compatibility. Renaming those fields requires an explicitly versioned protocol migration. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
+### Build a new D&D 2024 character
+
+Use `build_actor` for a **new character with no source actor**, and `rebuild_actor` below to reproduce an existing character. An AI agent can find the required compendium UUIDs with `search_compendium` / `get_compendium_entry`, but should **not guess** an ambiguous class, species, background, subclass or feat.
+
+1. Call `build_actor` with a unique `name`, `class_source`, `species_source`, `background_source`, a `level` (1–20), and six base `abilities` **before** background increases. These three sources must declare `system.source.rules: "2024"`. The tool also accepts partial inputs: it returns `parametres_requis` without writing.
+2. Review the read-only preview: `choix_requis` includes missing advancement, subclass, feat and starting-equipment selections, with their exact option IDs/UUIDs. Supply them in `choices` and rerun until `pret: true`.
+3. Set `apply: true` to create **one separate actor**, then replay class → species → background via the normal `advance` engine. No existing actor is changed. If a later Foundry write fails, the response identifies the partial actor for GM inspection; it never silently deletes it.
+
+Example preview (the first call will ask for all outstanding selections):
+
+```json
+{
+  "name": "New Cleric", "level": 3,
+  "class_source": "Compendium.dnd5e.classes24.Item.phbclcCleric0000",
+  "species_source": "Compendium.dnd5e.origins24.Item.phbspHuman000000",
+  "background_source": "Compendium.dnd5e.origins24.Item.phbbgSage0000000",
+  "abilities": { "str": 8, "dex": 14, "con": 12, "int": 10, "wis": 15, "cha": 10 }
+}
+```
+
+**Spells:** the default `spells: "none"` does not import a full class spell list. Use `advance` to pick spells afterwards. The optional `spells: "all"` follows the existing `advance` behavior of importing **all accessible class spells** and asking for cantrip/preparation choices; it is not a legal spellbook-building mode for classes with limited known spells (notably Wizard). Full rules legality, ability-generation method, spellbook constraints and magic effects still require separate verification.
+
 ### Rebuild a character using recorded advancement choices
 
 For the complete workflow, use `rebuild_actor`:

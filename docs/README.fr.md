@@ -36,6 +36,7 @@ Claude (CLI / Desktop) ──HTTPS + Basic auth──▶ foundry-vtt-mcp-server 
 | `actor_sheet` | Fiche calculée : niveau, maîtrise, mods, CA estimée, PV, compétences, attaque/DD de sort, emplacements |
 | `advancement_blueprint` | Lit les choix de progression réellement enregistrés sur une fiche à classe unique, la source exacte de la classe et les caractéristiques avant progression de classe (lecture seule) |
 | `advance` avec `replay_from` | Rejoue automatiquement ces choix sur une autre fiche avec la même classe ; demande uniquement les choix introuvables dans la source |
+| `build_actor` | Construit une nouvelle fiche D&D 2024 sans modèle depuis les compendiums de classe/espèce/historique, niveau et caractéristiques ; **simulation par défaut**, choix obligatoires avant `apply: true` |
 | `rebuild_actor` | Reconstruit dans une nouvelle fiche classe + espèce + historique par avancement, puis réconcilie les sorts, objets et récompenses ; **simulation par défaut**, écriture seulement avec `apply: true` |
 | `compare_actors` | Compare deux fiches calculées et détaille les différences de caractéristiques, PV, sorts, aptitudes et inventaire (lecture seule) |
 | `roll` | Jet de dés libre posté dans le chat (`2d20kh1+5`, `8d6`, `4d6kh3`…) |
@@ -81,6 +82,16 @@ même quand le joueur est connecté.
 Les jets peuvent être publics, `mj`, `aveugle` ou `prive`.
 
 **Traduction FR** : si le module [`dnd5e_fr-FR`](https://foundryvtt.com/packages/dnd5e_fr-FR) est installé, les noms et descriptions des compendiums sont traduits (recherche et import).
+
+### Construire un personnage D&D 2024 sans modèle
+
+L'outil `build_actor` crée une fiche neuve, tandis que `rebuild_actor` (ci-dessous) reproduit une fiche existante.
+
+1. Fournir un nom unique, les UUID de compendiums de **classe, espèce et historique 2024**, le niveau (1–20) et les six caractéristiques **avant les augmentations de l'historique**. L'agent peut retrouver les UUID par `search_compendium`. Un champ absent est signalé dans `parametres_requis` ; aucun élément n'est deviné.
+2. La simulation (par défaut) liste les `choix_requis` : dons, sous-classe, maîtrises, équipement de départ, etc. Répéter l'appel avec `choices` jusqu'à `pret: true`.
+3. Seul `apply: true` crée l'acteur, puis utilise le moteur `advance` pour rejouer classe → espèce → historique. Une erreur d'écriture identifie l'éventuel acteur partiel ; une fiche existante n'est jamais remplacée.
+
+Les sources doivent déclarer `system.source.rules: "2024"`. Le niveau et les caractéristiques sont contrôlés, mais **la méthode de génération des caractéristiques et toute la légalité des règles ne sont pas certifiées**. Par défaut, `spells: "none"` reporte le choix des sorts à `advance`. L'option `spells: "all"` importe toute la liste de sorts de classe accessible et demande certains choix ; elle ne constitue **pas** un grimoire conforme pour un Magicien ou une autre classe à sorts connus limités.
 
 ### Reconstruire un personnage pour tester le MCP
 
