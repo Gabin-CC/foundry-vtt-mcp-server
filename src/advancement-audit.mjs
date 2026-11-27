@@ -37,6 +37,7 @@ export async function auditRecordedAdvancements(fs, actor, sources, check) {
     .reduce((n, i) => n + (Number(i.system?.levels) || 0), 0);
   const oneClass = classes.length === 1;
   const featFeatureGrants = new Map();
+  const verifiedFeatureIdentifiers = new Map();
   for (const { embedded, official, level } of sources) {
     const recorded = new Map(list(embedded).filter(a => a?._id).map(a => [a._id, a]));
     for (const advancement of list(official)) {
@@ -47,10 +48,11 @@ export async function auditRecordedAdvancements(fs, actor, sources, check) {
         const additions = entries(recorded.get(advancement._id)?.value?.added);
         // Ownership alone cannot date a feature: the saved official grant must
         // point to the same embedded item and its exact source UUID.
-        if (!additions.some(([id, uuid]) => uuid === grant.uuid &&
-          byId.has(id) && sourceUuid(byId.get(id)) === grant.uuid)) continue;
+        const matched = additions.filter(([id, uuid]) => uuid === grant.uuid &&
+          byId.has(id) && sourceUuid(byId.get(id)) === grant.uuid);
+        if (matched.length !== 1) continue;
         const origin = ["race", "background"].includes(embedded.type);
-        const proof = { at, lower: origin && at === 0 ? 1 : Math.max(1, at),
+        const proof = { itemId: matched[0][0], at, lower: origin && at === 0 ? 1 : Math.max(1, at),
           exact: origin && at === 0 ? 1 : oneClass ? Math.max(1, at) : null };
         if (!featFeatureGrants.has(grant.uuid)) featFeatureGrants.set(grant.uuid, []);
         featFeatureGrants.get(grant.uuid).push(proof);
@@ -65,7 +67,7 @@ export async function auditRecordedAdvancements(fs, actor, sources, check) {
     if (["race", "background"].includes(root.type) && milestone === 0)
       return { lower: 1, exact: 1 };
     const proofs = featFeatureGrants.get(sourceUuid(root)) || [];
-    if (root.type !== "feat" || proofs.length !== 1) return null;
+    if (root.type !== "feat" || proofs.length !== 1 || proofs[0].itemId !== root._id) return null;
     const parent = proofs[0];
     return milestone === 0 || milestone === parent.at ? parent : { lower: parent.lower, exact: null };
   };
@@ -117,7 +119,16 @@ export async function auditRecordedAdvancements(fs, actor, sources, check) {
     }
     // Today's ability scores cannot establish scores when the feat was taken.
     const prereqs = feat.system?.prerequisites || {};
+    // 2024 Fighting Style feats require the Fighting Style feature. This one
+    // prerequisite can be proven by the *exact* source feature, its official
+    // ItemChoice restriction, and a saved ItemGrant to the same owned item.
+    const fightingStyleProven = root.type === "feat" && sourceUuid(root) === src &&
+      verifiedFeatureIdentifiers.get(src) === "fighting-style" &&
+      restriction?.type === "feat" && restriction.subtype === "fightingStyle" &&
+      feat.system?.type?.subtype === "fightingStyle" &&
+      (featFeatureGrants.get(src) || []).length === 1 && featFeatureGrants.get(src)[0].itemId === root._id;
     if (Object.entries(prereqs).some(([key, val]) => !["level", "repeatable"].includes(key) && val !== "" && val !== false && val != null &&
+        !(key === "items" && Array.isArray(val) && fightingStyleProven && val.every(v => v === "fighting-style")) &&
         !(Array.isArray(val) && !val.length) && !(object(val) && !Object.keys(val).length)))
       check("unverified", "feat_historical_prerequisite", `${feat.name}: historical or conditional feat prerequisites cannot be certified from current attributes.`, root._id, [uuid]);
   }
@@ -335,6 +346,7 @@ export async function auditRecordedAdvancements(fs, actor, sources, check) {
       check("unverified", "feat_choice_feature_source_mismatch", `${item.name}: the official feat-choice feature source could not be established.`, item._id, [uuid]);
       continue;
     }
+    verifiedFeatureIdentifiers.set(uuid, official.system?.identifier);
     await checkAdvancement(item, official, totalLevel, uuid);
   }
   return [...verifiedFeats];

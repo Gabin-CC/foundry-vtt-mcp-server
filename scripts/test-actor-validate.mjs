@@ -259,6 +259,25 @@ function nestedFeatChoiceFixture() {
   return { ...f, ids, sources, style, versatile, featureDocs, featDocs };
 }
 
+function proveFightingStyleGrant(f) {
+  f.featureDocs[0].system.identifier = "fighting-style";
+  f.featDocs[0].system.prerequisites.items = ["fighting-style"];
+  const grant = { _id: id("recordedStyleGrant"), type: "ItemGrant", level: 2,
+    configuration: { items: [{ uuid: f.sources.style, optional: false }] },
+    value: { added: { [f.style._id]: f.sources.style } } };
+  f.actor.items[0].system.advancement.push(structuredClone(grant));
+  const originalDoc = f.fs.doc.bind(f.fs);
+  f.fs.doc = async (action, type, opts = {}) => {
+    const docs = await originalDoc(action, type, opts);
+    if (action === "get" && type === "Item" && opts.pack === "dnd5e.classes24") {
+      const paladin = docs.find(d => d._id === id("paladin"));
+      if (paladin) paladin.system.advancement.push(structuredClone(grant));
+    }
+    return docs;
+  };
+  return grant;
+}
+
 async function audit(fs) {
   const result = await handleTool(fs, { name: "validate_actor", arguments: { actor: ACTOR } });
   assert.equal(result.isError, undefined, result.content?.[0]?.text);
@@ -665,5 +684,96 @@ test("an official feature grant without saved item provenance cannot date a feat
   const report = await audit(f.fs);
   assert.ok(report.diagnostics.some(d => d.code === "feat_level_at_choice_unverified" && d.severity === "unverified"));
   assert.ok(!report.diagnostics.some(d => d.code === "feat_level_prerequisite_unmet_at_choice"));
+  assert.deepEqual(f.writes, []);
+});
+
+test("official Paladin without a base cantrip scale has no false unavailable-scale warning", async () => {
+  const f = fixture();
+  const originalDoc = f.fs.doc.bind(f.fs);
+  f.fs.doc = async (action, type, opts = {}) => {
+    const docs = await originalDoc(action, type, opts);
+    if (action === "get" && type === "Item" && opts.pack === "dnd5e.classes24") {
+      const paladin = docs.find(d => d._id === id("paladin"));
+      if (paladin) paladin.system.advancement = paladin.system.advancement.filter(a =>
+        a.configuration?.identifier !== "cantrips-known");
+    }
+    return docs;
+  };
+  const report = await audit(f.fs);
+  assert.ok(!report.diagnostics.some(d => d.code === "cantrip_scale_unavailable" && d.subject === f.actor.items[0]._id));
+  assert.deepEqual(f.writes, []);
+});
+
+test("missing cantrip scales remain unverified for casters that do learn class cantrips", async () => {
+  const f = fixture();
+  const originalDoc = f.fs.doc.bind(f.fs);
+  f.fs.doc = async (action, type, opts = {}) => {
+    const docs = await originalDoc(action, type, opts);
+    if (action === "get" && type === "Item" && opts.pack === "dnd5e.classes24") {
+      const sorcerer = docs.find(d => d._id === id("sorcerer"));
+      if (sorcerer) sorcerer.system.advancement = sorcerer.system.advancement.filter(a =>
+        a.configuration?.identifier !== "cantrips-known");
+    }
+    return docs;
+  };
+  const report = await audit(f.fs);
+  assert.ok(report.diagnostics.some(d => d.code === "cantrip_scale_unavailable" && d.subject === f.actor.items[1]._id));
+  assert.deepEqual(f.writes, []);
+});
+
+test("Paladin with a recorded ordinary class cantrip still needs verified scale or feature evidence", async () => {
+  const f = fixture();
+  // Inconsistent saved spell level, but an attributed official class-list UUID:
+  // the absence of a baseline scale must still be flagged, not ignored.
+  const suspicious = makeSpell("cure", 0, "paladin");
+  suspicious.system.level = 0;
+  f.actor.items.push(suspicious);
+  const originalDoc = f.fs.doc.bind(f.fs);
+  f.fs.doc = async (action, type, opts = {}) => {
+    const docs = await originalDoc(action, type, opts);
+    if (action === "get" && type === "Item" && opts.pack === "dnd5e.classes24") {
+      const paladin = docs.find(d => d._id === id("paladin"));
+      if (paladin) paladin.system.advancement = paladin.system.advancement.filter(a =>
+        a.configuration?.identifier !== "cantrips-known");
+    }
+    return docs;
+  };
+  const report = await audit(f.fs);
+  assert.ok(report.diagnostics.some(d => d.code === "cantrip_scale_unavailable" && d.subject === f.actor.items[0]._id));
+  assert.deepEqual(f.writes, []);
+});
+
+test("Fighting Style prerequisite is proven by the exact official feature and saved grant", async () => {
+  const f = nestedFeatChoiceFixture();
+  proveFightingStyleGrant(f);
+  const report = await audit(f.fs);
+  assert.ok(!report.diagnostics.some(d => d.code === "feat_historical_prerequisite" && d.subject === f.style._id));
+  assert.deepEqual(report.summary, { errors: 0, warnings: 0, unverified: 0 });
+  assert.deepEqual(f.writes, []);
+});
+
+test("Fighting Style prerequisite remains unverified when the saved grant or another condition is missing", async () => {
+  const f = nestedFeatChoiceFixture();
+  const grant = proveFightingStyleGrant(f);
+  f.actor.items[0].system.advancement.find(a => a._id === grant._id).value.added = {};
+  const missing = await audit(f.fs);
+  assert.ok(missing.diagnostics.some(d => d.code === "feat_historical_prerequisite" && d.subject === f.style._id));
+  f.actor.items[0].system.advancement.find(a => a._id === grant._id).value.added = {
+    [f.style._id]: f.sources.style };
+  f.featDocs[0].system.prerequisites.items = ["fighting-style", "unverified-special-condition"];
+  const extra = await audit(f.fs);
+  assert.ok(extra.diagnostics.some(d => d.code === "feat_historical_prerequisite" && d.subject === f.style._id));
+  assert.deepEqual(f.writes, []);
+});
+
+test("duplicate Fighting Style feature copies cannot borrow another item's saved grant proof", async () => {
+  const f = nestedFeatChoiceFixture();
+  proveFightingStyleGrant(f);
+  const copy = structuredClone(f.style);
+  copy._id = id("ungrantedStyleCopy");
+  f.actor.items.push(copy);
+  const report = await audit(f.fs);
+  assert.ok(report.diagnostics.some(d => d.code === "feat_historical_prerequisite" && d.subject === copy._id));
+  assert.ok(!report.diagnostics.some(d => d.code === "feat_historical_prerequisite" && d.subject === f.style._id));
   assert.deepEqual(f.writes, []);
 });
