@@ -31,7 +31,8 @@ import { render, nextPage, MAX_OUT } from "./paging.mjs";
 import { auditTranslation, searchText, findReferences } from "./corpus.mjs";
 import { TABLE_TOOLS, CARD_TOOLS, handleTable, handleCards } from "./tables.mjs";
 import { resolveTarget, propose, applyDamage } from "./targets.mjs";
-import { diffUpdates, saveSnapshot, currentDocs, listSnapshots, showSnapshot, restoreSnapshot } from "./snapshots.mjs";
+import { diffUpdates, saveSnapshot, finalizeActorSnapshot, currentDocs, listSnapshots, showSnapshot, restoreSnapshot } from "./snapshots.mjs";
+import { captureActorState, summarizeLevelPlan } from "./actor-progress.mjs";
 import { rollFormula, derive, checkBonus, sheet, slotMax, useItem, translations, translateDoc, trFor, refreshUnits, localizeItem, actorTranslationContext, actorMetricUpdates, UNITS, ABIL, SKILLS } from "./dnd5e.mjs";
 import { setSafePath } from "./security.mjs";
 import { restrictedSession, isStub, limitedError } from "./access.mjs";
@@ -134,7 +135,7 @@ export const TOOL_DEFINITIONS = [
     inputSchema: { type: "object", required: ["type", "ids"], properties: {
       type: typeProp, pack: packProp, parent: parentProp, ids: { type: "array", items: { type: "string" } },
       dry_run: { type: "boolean", description: "Liste ce qui serait supprimé, sans supprimer" } } } },
-  { name: "snapshots", description: "Instantanés de restauration pris automatiquement avant update_documents, delete_documents et localize_actor (valeurs d'origine des champs modifiés, documents supprimés). list (les plus récents), show (détail avant/après), restore (remet les valeurs d'origine ; dry_run pour un aperçu ; la restauration est elle-même annulable).",
+  { name: "snapshots", description: "Instantanés de restauration pris automatiquement avant les mises à jour, suppressions, traductions et progressions de personnage. list (les plus récents), show (détail avant/après), restore (dry_run pour un aperçu ; restauration annulable). Une progression ne peut être restaurée si la fiche a été modifiée depuis.",
     inputSchema: { type: "object", properties: {
       action: { type: "string", enum: ["list", "show", "restore"], default: "list" }, id: { type: "string", description: "Identifiant de l'instantané (show/restore)" },
       dry_run: { type: "boolean", description: "restore : aperçu sans rien modifier" }, tool: { type: "string", description: "list : filtrer par outil d'origine" },
@@ -224,7 +225,16 @@ export const TOOL_DEFINITIONS = [
       replay_from: { type: "string", description: "Acteur source (ID de préférence) : rejoue ses choix d'avancement enregistrés sur la même classe officielle ; pour un acteur vierge, restaure aussi les caractéristiques avant la montée de niveau. Les choix absents restent demandés." },
       skip_starting_equipment: { type: "boolean", description: "Ne pas ajouter l'équipement de départ de l'avancement ; réservé à une reconstruction qui réimporte ensuite l'inventaire source." },
       choices: { type: "object" }, hp: { type: "string", enum: ["avg", "max"], default: "avg" },
+      apply: { type: "boolean", default: true, description: "false : simulation strictement sans écriture, y compris pour les réparations d'anciens marqueurs ; le comportement historique applique par défaut" },
       spells: { type: "string", enum: ["none", "all"], default: "none", description: "'all' : ajoute tous les sorts de la classe accessibles (liste construite depuis tous les compendiums installés) et demande sorts mineurs (choices['spells:cantrips']) et sorts préparés (choices['spells:prepared'])" } } } },
+  { name: "progress_actor", description: "Fait progresser une classe D&D 2024 déjà présente sur un personnage : aperçu sans écriture par défaut, choix explicites, sauvegarde récupérable avant apply=true, contrôle du niveau après application. Ne crée pas de nouveau personnage et ne touche pas aux sorts préparés manuellement.",
+    inputSchema: { type: "object", required: ["actor", "level"], properties: {
+      actor: { type: "string", description: "Identifiant ou nom exact du personnage existant" },
+      level: { type: "integer", minimum: 1, maximum: 20, description: "Nouveau niveau de la classe (strictement supérieur à l'actuel)" },
+      choices: { type: "object", description: "Choix de progression explicitement fournis après simulation (avancement id → valeur)" },
+      hp: { type: "string", enum: ["avg", "max"], default: "avg" },
+      apply: { type: "boolean", default: false, description: "Appliquer à la fiche existante uniquement une fois tous les choix vérifiés" }
+    } } },
   { name: "advancement_blueprint", description: "Inspecte un acteur à classe unique et renvoie sa classe/source, ses choix d'avancement réellement enregistrés et ses caractéristiques avant progression de classe, sans rien modifier. Les équipements et sorts non enregistrés comme choix restent à contrôler.",
     inputSchema: { type: "object", required: ["actor"], properties: { actor: { type: "string" } } } },
   { name: "compare_actors", description: "Compare deux fiches calculées (niveaux, PV, caractéristiques, sorts, inventaire, aptitudes, ressources) sans modifier les acteurs. Une comparaison structurelle ne remplace pas l'audit des règles.",
@@ -1036,6 +1046,58 @@ async function runTool(session, params) {
           return out({ message: id });
         }
 
+        case "progress_actor": {
+          const actor = await findActor(fs, a.actor);
+          const classes = (actor.items || []).filter(i => i.type === "class");
+          if (actor.type !== "character" || classes.length !== 1)
+            throw new Error("progress_actor requires an existing single-class character.");
+          const cls = classes[0];
+          const oldLevel = Number(cls.system?.levels) || 0;
+          if (!Number.isInteger(a.level) || a.level <= oldLevel || a.level > 20)
+            throw new Error(`Target class level must be an integer from ${oldLevel + 1} to 20.`);
+          if (cls.system?.source?.rules !== "2024")
+            throw new Error("progress_actor requires a D&D 2024 class.");
+          if (a.hp !== undefined && !["avg", "max"].includes(a.hp)) throw new Error("hp must be avg or max.");
+          if (!a.choices || typeof a.choices !== "object" || Array.isArray(a.choices)) {
+            if (a.choices != null) throw new Error("choices must be an object.");
+          }
+          if (Object.keys(a.choices || {}).some(k => k.startsWith("spells:")))
+            throw new Error("progress_actor does not yet change manually prepared class spells; use separate spell tools.");
+          const params = { actor: actor._id, item: cls._id, level: a.level, choices: a.choices || {},
+            hp: a.hp || "avg", spells: "none" };
+          const preflight = await runTool(session, { name: "advance", arguments: { ...params, apply: false } });
+          if (!preflight[OUT]) return preflight;
+          const preview = summarizeLevelPlan(actor, a.level, preflight.value);
+          if (!a.apply || !preview.pret) return out(preview);
+          const before = captureActorState(actor);
+          const snapshot = await saveSnapshot(fs, "progress_actor", `${actor.name} ${oldLevel}→${a.level}`,
+            [{ action: "actor_state", type: "Actor", actor_id: actor._id, before }]);
+          let finalized = false;
+          try {
+            const applied = await runTool(session, { name: "advance", arguments: { ...params, apply: true } });
+            if (!applied[OUT]) throw new Error(applied.content?.[0]?.text || "Advancement failed.");
+            if (applied.value?.choix_requis?.length) throw new Error("Unresolved choices on apply; review actor state.");
+            const fresh = await findActor(fs, actor._id);
+            await finalizeActorSnapshot(snapshot, actor._id, captureActorState(fresh));
+            finalized = true;
+            const current = fresh.items.find(i => i._id === cls._id);
+            if (Number(current?.system?.levels) !== a.level)
+              throw new Error(`Class level mismatch after apply: expected ${a.level}, got ${current?.system?.levels}.`);
+            return out({ simulation: false, acteur: { id: fresh._id, name: fresh.name },
+              niveau_avant: oldLevel, niveau_apres: a.level, applique: applied.value?.applique || [],
+              avertissements: applied.value?.avertissements || [], instantane: snapshot,
+              rappel: `The pre-advancement state can be reviewed/restored using snapshots show/restore with id ${snapshot}.` });
+          } catch (error) {
+            if (!finalized) {
+              try { await finalizeActorSnapshot(snapshot, actor._id,
+                captureActorState(await findActor(fs, actor._id))); finalized = true; } catch { /* See note below. */ }
+            }
+            return out({ erreur: error.message, acteur_partiel: { id: actor._id, name: actor.name },
+              instantane: snapshot, restauration_disponible: finalized,
+              note: finalized ? "Use snapshots.restore after previewing it to revert the partial progression."
+                : "Snapshot exists but post-state finalization failed; automatic restore is unavailable; inspect the actor." });
+          }
+        }
         case "advance": {
           let actor = await findActor(fs, a.actor);
           const blueprint = a.replay_from ? advancementBlueprint(await findActor(fs, a.replay_from)) : null;
@@ -1044,7 +1106,7 @@ async function runTool(session, params) {
           const inputSource = a.source || (blueprint && !a.item ? { uuid: blueprint.class_source } : null);
           const effectiveChoices = { ...(blueprint?.choices || {}), ...(a.choices || {}) };
           // fiches créées avant que le MCP écrive advancementRoot : on le complète en remontant la chaîne d'origines
-          {
+          if (a.apply !== false) {
             const byId = new Map((actor.items || []).map(i => [i._id, i]));
             const rootFor = (it, seen = new Set()) => {
               const f = it.flags?.dnd5e || {};
@@ -1148,6 +1210,11 @@ async function runTool(session, params) {
             pending.push(...spellPlan.pending);
           }
           if (pending.length) return out({ choix_requis: pending, rejeu_depuis: blueprint?.actor_id, avertissements: warnings.length ? warnings : undefined, rappel: message("Call 'advance' again with the same parameters + choices { id: value }. Nothing has been applied yet.", "Rappelle 'advance' avec les mêmes paramètres + choices { id: valeur }. Rien n'a encore été appliqué.") });
+          if (a.apply === false) return out({ simulation: true, pret: true,
+            niveau_actuel: current, niveau_cible: target,
+            etapes: steps.map(s => ({ type: s.kind, niveau: s.level, objet: s.item?.name,
+              ...(s.kind === "grant" ? { objets_accordes: (s.docs || []).map(d => d.doc?.name || d.uuid) } : {}) })),
+            avertissements: warnings });
           // A brand-new actor needs the source's pre-class abilities, not its
           // level-12 final scores. Never overwrite an actor containing items.
           if (blueprint && isNew && isFirstClass && !(actor.items || []).length) {
