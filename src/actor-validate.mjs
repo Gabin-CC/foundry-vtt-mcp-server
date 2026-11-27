@@ -370,6 +370,36 @@ export async function validateActor2024(fs, actor) {
   // An exact, independently traced always-prepared subclass grant is enough
   // evidence to avoid repeating an unnecessary uncertainty.
   const provenSpells = new Set([...rulesSources.subclass_spells, ...rulesSources.class_granted_spells]);
+  // Always-prepared grants bypass ordinary class spell limits, but the exact
+  // official spell still has a fixed level. Verify that level independently
+  // using the same exact-pack index as ordinary class spells, never a same-ID
+  // fallback. Only fully proven grants qualify, avoiding extra uncertainty
+  // when an official grant itself could not be resolved.
+  for (const spell of spells.filter(s => Number(s.system?.prepared) === 2 &&
+      provenSpells.has(sourceUuid(s)))) {
+    const src = sourceUuid(spell);
+    const source = await officialSpellEntry(src);
+    if (source.status !== "ok")
+      check("unverified", "granted_spell_source_index_unavailable",
+        `${spell.name}: the exact official level of this permanently granted spell cannot be read from its compendium index.`, spell._id, [src]);
+    else if (source.entry.type == null)
+      check("unverified", "granted_spell_source_level_unavailable",
+        `${spell.name}: the official index does not expose this granted item's document type.`, spell._id, [src]);
+    else if (source.entry.type !== "spell")
+      check("error", "granted_spell_source_type_mismatch",
+        `${spell.name}: the recorded official grant points to a non-spell item in the exact compendium index.`, spell._id, [src]);
+    else if (source.entry.system?.source?.rules !== "2024" ||
+        source.entry.system?.level == null || source.entry.system.level === "" ||
+        !Number.isInteger(Number(source.entry.system.level)) ||
+        Number(source.entry.system.level) < 0 || Number(source.entry.system.level) > 9)
+      check("unverified", "granted_spell_source_level_unavailable",
+        `${spell.name}: the exact official index does not establish a 2024 spell level.`, spell._id, [src]);
+    else if (spell.system?.level == null || spell.system.level === "" ||
+        !Number.isInteger(Number(spell.system.level)) ||
+        Number(spell.system.level) !== Number(source.entry.system.level))
+      check("error", "granted_spell_level_source_mismatch",
+        `${spell.name}: its recorded level ${String(spell.system?.level)} differs from its exact official 2024 spell level ${source.entry.system.level}.`, spell._id, [src]);
+  }
   for (const spell of spells.filter(s => !String(s.system?.sourceClass || "").trim())) {
     if (Number(spell.system?.prepared) === 2 &&
         (provenSpells.has(sourceUuid(spell)) || declaredAlwaysPrepared.has(sourceUuid(spell)))) continue;

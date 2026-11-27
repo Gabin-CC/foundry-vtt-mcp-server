@@ -736,6 +736,48 @@ test("exact official class feature grants prove always-prepared spells without s
   assert.deepEqual(f.writes, []);
 });
 
+test("an officially granted class spell cannot record a different spell level", async () => {
+  const f = classSpellGrantFixture();
+  const cure = f.actor.items.find(i => i._id === id("ownedcure"));
+  cure.system.level = 3;
+  const report = await audit(f.fs);
+  assert.equal(report.status, "issues", JSON.stringify(report.diagnostics));
+  assert.ok(report.diagnostics.some(d => d.code === "granted_spell_level_source_mismatch" &&
+    d.subject === cure._id && d.severity === "error"));
+  assert.deepEqual(f.writes, []);
+});
+
+test("a missing official index cannot invent a granted spell's official level", async () => {
+  const f = classSpellGrantFixture();
+  f.actor.items.find(i => i._id === id("ownedcure")).system.level = 3;
+  const originalDoc = f.fs.doc.bind(f.fs);
+  f.fs.doc = async (action, type, opts = {}) =>
+    action === "get" && type === "Item" && opts.pack === "dnd5e.spells24" && opts.index ?
+      [] : originalDoc(action, type, opts);
+  const report = await audit(f.fs);
+  assert.equal(report.status, "incomplete", JSON.stringify(report.diagnostics));
+  assert.ok(report.diagnostics.some(d => d.code === "granted_spell_source_index_unavailable" &&
+    d.severity === "unverified"));
+  assert.ok(!report.diagnostics.some(d => d.code === "granted_spell_level_source_mismatch"));
+  assert.deepEqual(f.writes, []);
+});
+
+test("an incomplete granted-spell index cannot prove a document-type contradiction", async () => {
+  const f = classSpellGrantFixture();
+  const originalDoc = f.fs.doc.bind(f.fs);
+  f.fs.doc = async (action, type, opts = {}) => {
+    const docs = await originalDoc(action, type, opts);
+    return action === "get" && type === "Item" && opts.pack === "dnd5e.spells24" && opts.index ?
+      docs.map(doc => doc._id === id("cure") ? { ...doc, type: undefined } : doc) : docs;
+  };
+  const report = await audit(f.fs);
+  assert.equal(report.status, "incomplete", JSON.stringify(report.diagnostics));
+  assert.ok(report.diagnostics.some(d => d.code === "granted_spell_source_level_unavailable" &&
+    d.severity === "unverified"));
+  assert.ok(!report.diagnostics.some(d => d.code === "granted_spell_source_type_mismatch"));
+  assert.deepEqual(f.writes, []);
+});
+
 test("a class-granted spell from the wrong pack stays unverified without duplicate attribution warning", async () => {
   const f = classSpellGrantFixture();
   shadowOfficialSource(f, "dnd5e.spells24", id("cure"), compendiumSpells.find(s => s._id === id("cure")));
@@ -802,6 +844,21 @@ test("official subclass ItemGrant chains prove always-prepared spells without co
   f.actor.items = f.actor.items.filter(i => i._id !== id("ownedcure"));
   const missing = await audit(f.fs);
   assert.ok(missing.diagnostics.some(d => d.code === "missing_subclass_spell"));
+  assert.deepEqual(f.writes, []);
+});
+
+test("a mandatory subclass spell also keeps its exact official level", async () => {
+  const f = subclassFixture();
+  f.actor.items.push({ _id: id("oathOwned"), type: "subclass", name: "Official Oath",
+    _stats: { compendiumSource: f.source },
+    system: { identifier: "test-oath", classIdentifier: "paladin", source: { rules: "2024" } } });
+  const cure = makeSpell("cure", 2, "paladin");
+  cure.system.level = 0;
+  f.actor.items.push(cure, makeSpell("feather", 2, "paladin"));
+  const report = await audit(f.fs);
+  assert.equal(report.status, "issues", JSON.stringify(report.diagnostics));
+  assert.ok(report.diagnostics.some(d => d.code === "granted_spell_level_source_mismatch" &&
+    d.subject === cure._id && d.severity === "error"));
   assert.deepEqual(f.writes, []);
 });
 
