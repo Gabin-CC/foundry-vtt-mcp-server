@@ -17,7 +17,7 @@ import { advancementBlueprint, compareAdvancementSheets } from "./advancement-re
 import { planActorRebuild, copyResidualItems, copyResidualActorEffects,
   syncRebuiltItemState, compareRebuiltItemDetails } from "./actor-rebuild.mjs";
 import { planActorBuild, equipStartingItems } from "./actor-build.mjs";
-import { planClassSpells, planSelectedClassSpells, applyClassSpells } from "./spells.mjs";
+import { planClassSpells, planSelectedClassSpells, applyClassSpells, spellKey } from "./spells.mjs";
 import { ensureCastSpells } from "./cast.mjs";
 import { GM_TOOLS, GM_ROLE, handleGm } from "./gm.mjs";
 import { sanitizeItemData, itemWarnings } from "./repair.mjs";
@@ -35,6 +35,7 @@ import { diffUpdates, saveSnapshot, finalizeActorSnapshot, currentDocs, listSnap
 import { captureActorState, summarizeLevelPlan } from "./actor-progress.mjs";
 import { rulesQuery } from "./rules-api.mjs";
 import { planMulticlass } from "./actor-multiclass.mjs";
+import { planMulticlassSpells } from "./actor-multiclass-spells.mjs";
 import { planActorEdits } from "./actor-edit.mjs";
 import { rollFormula, derive, checkBonus, sheet, slotMax, useItem, translations, translateDoc, trFor, refreshUnits, localizeItem, actorTranslationContext, actorMetricUpdates, UNITS, ABIL, SKILLS } from "./dnd5e.mjs";
 import { setSafePath } from "./security.mjs";
@@ -250,13 +251,14 @@ export const TOOL_DEFINITIONS = [
       hp: { type: "string", enum: ["avg", "max"], default: "avg" },
       apply: { type: "boolean", default: false, description: "Appliquer à la fiche existante uniquement une fois tous les choix vérifiés" }
     } } },
-  { name: "multiclass_actor", description: "Ajoute une classe secondaire D&D 2024 ou fait progresser l'une des classes existantes d'un personnage multiclasse : vérifie les prérequis (13+), les éditions et la limite de niveau 20. Un niveau par appel, simulation sans écriture par défaut, choix explicites et instantané récupérable avant application. Ne prépare pas les sorts automatiquement.",
+  { name: "multiclass_actor", description: "Ajoute une classe secondaire D&D 2024 ou fait progresser l'une des classes existantes d'un personnage multiclasse : vérifie les prérequis (13+), les éditions et la limite de niveau 20. Un niveau par appel, simulation sans écriture par défaut, choix explicites et instantané récupérable avant application. spells=selected sélectionne uniquement les sorts 2024 officiels de cette classe.",
     inputSchema: { type: "object", required: ["actor"], properties: {
       actor: { type: "string", description: "Personnage existant, nom ou identifiant" },
       class_source: { type: "string", description: "UUID exact d'une nouvelle classe de compendium D&D 2024 ; exclusif avec item" },
       item: { type: "string", description: "Identifiant de classe embarquée à augmenter ; exclusif avec class_source" },
       level: { type: "integer", minimum: 1, maximum: 20, description: "Niveau cible dans la classe choisie, exactement un niveau après l'actuel (ou 1 si nouvelle classe)" },
-      choices: { type: "object", description: "Choix exacts demandés pendant la simulation, identifiant d'avancement vers valeur" },
+      choices: { type: "object", description: "Choix exacts demandés pendant la simulation ; pour spells=selected : spells:cantrips, spells:prepared, et spells:spellbook (Wizard seulement), valeurs UUID officiels 2024" },
+      spells: { type: "string", enum: ["none", "selected"], default: "none", description: "none : aucune sélection de sorts ; selected : choix stricts et validés pour la seule classe qui progresse" },
       hp: { type: "string", enum: ["avg", "max"], default: "avg" },
       apply: { type: "boolean", default: false, description: "false : simulation sans écriture ; true : appliquer avec instantané de récupération" }
     } } },
@@ -1185,10 +1187,12 @@ async function runTool(session, params, { rulesAudience } = {}) {
           if (!!a.class_source === !!a.item)
             throw new Error("Specify exactly one of class_source (new class) or item (existing class ID).");
           if (a.hp !== undefined && !["avg", "max"].includes(a.hp)) throw new Error("hp must be avg or max.");
+          if (a.spells !== undefined && !["none", "selected"].includes(a.spells))
+            throw new Error("spells must be none or selected.");
           if (a.choices != null && (typeof a.choices !== "object" || Array.isArray(a.choices)))
             throw new Error("choices must be an object.");
-          if (Object.keys(a.choices || {}).some(k => k.startsWith("spells:")))
-            throw new Error("Multiclass spell selection is not automated; use separately verified class spell choices.");
+          if (a.spells !== "selected" && Object.keys(a.choices || {}).some(k => k.startsWith("spells:")))
+            throw new Error("Spell choices require spells=selected; no implicit spell import.");
           const classes = (actor.items || []).filter(i => i.type === "class");
           let incoming, src;
           if (a.class_source) {
@@ -1204,13 +1208,23 @@ async function runTool(session, params, { rulesAudience } = {}) {
             if (!incoming) throw new Error("item must be the exact embedded ID of an existing class.");
           }
           const plan = planMulticlass(actor, { incoming, existingItem: a.item, level: a.level });
+          // `advance` historically treats ANY spells:* choice as spells=all,
+          // even if spells=none. Keep spell selections exclusively in this
+          // class-scoped multiclass planner to avoid implicit bulk imports.
+          const advanceChoices = Object.fromEntries(Object.entries(a.choices || {})
+            .filter(([key]) => !key.startsWith("spells:")));
           const params = { actor: actor._id, ...(src ? { source: { uuid: src } } : { item: a.item }),
-            level: plan.newLevel, hp: a.hp || "avg", choices: a.choices || {}, spells: "none",
+            level: plan.newLevel, hp: a.hp || "avg", choices: advanceChoices, spells: "none",
             skip_starting_equipment: true };
           const preflight = await runTool(session, { name: "advance", arguments: { ...params, apply: false } });
           if (!preflight[OUT]) return preflight;
-          const choicesNeeded = preflight.value?.choix_requis || [];
+          const spellPlan = a.spells === "selected"
+            ? await planMulticlassSpells(fs, actor, incoming, plan.newLevel, a.choices || {}) : null;
+          const choicesNeeded = [...(preflight.value?.choix_requis || []), ...(spellPlan?.pending || [])];
           const ready = !!preflight.value?.pret && choicesNeeded.length === 0;
+          const projectedItems = a.item
+            ? (actor.items || []).map(i => i._id === a.item ? { ...i, system: { ...i.system, levels: plan.newLevel } } : i)
+            : [...(actor.items || []), { ...incoming, system: { ...incoming.system, levels: plan.newLevel } }];
           const preview = { simulation: true, pret: ready,
             acteur: { id: actor._id, name: actor.name },
             classe: { name: incoming.name, identifiant: incoming.system?.identifier,
@@ -1219,7 +1233,10 @@ async function runTool(session, params, { rulesAudience } = {}) {
             niveau_total_avant: plan.totalBefore, niveau_total_apres: plan.totalAfter,
             prerequis: plan.requirements, choix_requis: choicesNeeded,
             etapes: preflight.value?.etapes || [], avertissements: preflight.value?.avertissements || [],
-            rappel: "Resolve all choices before apply=true. Class spells must be selected separately for each class." };
+            emplacements_apres: slotMax({ ...actor, items: projectedItems }),
+            ...(spellPlan ? { sorts: { classe: incoming.system?.identifier, selections: spellPlan.counts,
+              niveau_max_classe: spellPlan.maxLevel, emplacements_classe: spellPlan.classSlots } } : {}),
+            rappel: "Resolve every advancement and class-specific spell choice before apply=true. Shared slots never unlock higher-level spells for an individual class." };
           if (!a.apply || !ready) return out(preview);
 
           const before = captureActorState(actor);
@@ -1231,9 +1248,7 @@ async function runTool(session, params, { rulesAudience } = {}) {
             const applied = await runTool(session, { name: "advance", arguments: { ...params, apply: true } });
             if (!applied[OUT]) throw new Error(applied.content?.[0]?.text || "Multiclass advancement failed.");
             if (applied.value?.choix_requis?.length) throw new Error("Unresolved choices during multiclass apply.");
-            const fresh = await findActor(fs, actor._id);
-            await finalizeActorSnapshot(snapshot, actor._id, captureActorState(fresh));
-            finalized = true;
+            let fresh = await findActor(fs, actor._id);
             const afterClasses = (fresh.items || []).filter(i => i.type === "class");
             const selected = afterClasses.filter(c => c.system?.identifier === incoming.system?.identifier);
             if (selected.length !== 1 || Number(selected[0].system?.levels) !== plan.newLevel ||
@@ -1241,12 +1256,29 @@ async function runTool(session, params, { rulesAudience } = {}) {
                 plan.existingClasses.some(c => Number(afterClasses.find(x => x._id === c.id)?.system?.levels) !==
                   (c.id === a.item ? plan.newLevel : c.level)))
               throw new Error("Class levels after advancement differ from the verified multiclass plan.");
+            let spellsApplied = null;
+            if (spellPlan) {
+              spellsApplied = await applyClassSpells(fs, fresh,
+                { ...spellPlan.step, cls: selected[0] }, selected[0]._id);
+              fresh = await findActor(fs, actor._id);
+              const ownSpells = (fresh.items || []).filter(i => i.type === "spell" &&
+                i.system?.sourceClass === incoming.system?.identifier);
+              const sources = new Set(ownSpells.map(i => i._stats?.compendiumSource || i.flags?.dnd5e?.sourceId));
+              if (spellPlan.selectedUuids.some(uuid => !sources.has(uuid)))
+                throw new Error("Some selected 2024 class spells were not imported; inspect and restore the partial actor.");
+              if ([...spellPlan.step.prepared].some(key => !ownSpells.some(s =>
+                spellKey(s.system?.identifier || s.name) === key && Number(s.system?.prepared) === 1)))
+                throw new Error("Selected class prepared spells were not prepared; inspect and restore the partial actor.");
+            }
+            await finalizeActorSnapshot(snapshot, actor._id, captureActorState(fresh));
+            finalized = true;
             return out({ ...preview, simulation: false, pret: true, choix_requis: [],
               acteur: { id: fresh._id, name: fresh.name },
               classe: { id: selected[0]._id, name: selected[0].name, identifiant: selected[0].system?.identifier },
-              applique: applied.value?.applique || [], avertissements: applied.value?.avertissements || [],
+              applique: [...(applied.value?.applique || []), ...(spellsApplied ? [spellsApplied] : [])],
+              avertissements: applied.value?.avertissements || [],
               instantane: snapshot,
-              rappel: "Review/restore this pre-change state using snapshots; choose spells separately for each class." });
+              rappel: "Review/restore this state using snapshots; spell selections were verified for this class, separately from shared spell slots." });
           } catch (error) {
             if (!finalized) {
               try { await finalizeActorSnapshot(snapshot, actor._id,

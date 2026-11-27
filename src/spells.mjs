@@ -17,7 +17,7 @@ function scaleAt(cls, identifier, level) {
   return v == null ? null : Number(v);
 }
 // bonus d'effets actifs sur un compteur de classe (ex. Thaumaturge : +1 sort mineur)
-function scaleBonus(actor, clsId, identifier) {
+export function scaleBonus(actor, clsId, identifier) {
   let b = 0;
   for (const i of actor.items || []) for (const e of i.effects || []) {
     if (e.disabled) continue;
@@ -206,24 +206,27 @@ const UUID_SPELL = /^Compendium\.[^.]+\.[^.]+\.Item\.[A-Za-z0-9]{16}$/;
 export async function applyClassSpells(fs, actor, step, classItemId) {
   const data = [];
   // l'acteur est relu après l'avancement : on saute ce qui a été accordé entre-temps (ex. sorts de domaine)
-  const have = new Set((actor.items || []).filter(i => i.type === "spell").map(i => i.system?.identifier || norm(i.name)));
   const id = step.cls.system?.identifier;
+  const own = i => i.type === "spell" && (!step.perClass || i.system?.sourceClass === id);
+  const itemKey = i => step.perClass ? spellKey(i.system?.identifier || i.name) : i.system?.identifier || norm(i.name);
+  const selectionKey = s => step.perClass ? spellKey(s.key) : s.key;
+  const have = new Set((actor.items || []).filter(own).map(itemKey));
   const cMax = (scaleAt(step.cls, "cantrips-known", step.level) ?? 0) + scaleBonus(actor, id, "cantrips-known");
   const cOwn = (actor.items || []).filter(i => i.type === "spell" && Number(i.system?.level) === 0 && i.system?.sourceClass === id).length;
-  step.cantrips = step.cantrips.filter(c => !have.has(c.key)).slice(0, Math.max(0, cMax - cOwn));
+  step.cantrips = step.cantrips.filter(c => !have.has(selectionKey(c))).slice(0, Math.max(0, cMax - cOwn));
   for (const s of [...step.cantrips, ...step.leveled]) {
-    if (have.has(s.key)) continue;
+    if (have.has(selectionKey(s))) continue;
     let d;
     try { d = structuredClone(await fetchUuid(fs, s.uuid)); } catch { continue; }
     delete d._id; delete d.folder; delete d.sort; delete d.ownership; delete d.__pack;
     d._stats = { ...(d._stats || {}), compendiumSource: s.uuid };
     d.system.sourceClass = step.cls.system?.identifier;
-    if (s.level >= 1) d.system.prepared = step.prepared.has(s.key) ? 1 : 0;
+    if (s.level >= 1) d.system.prepared = step.prepared.has(selectionKey(s)) ? 1 : 0;
     if (d.system.method === undefined || d.system.method === "") d.system.method = "spell";
     data.push(d);
   }
   // préparation de sorts déjà présents (ex. relancer avec une nouvelle sélection)
-  const upd = (actor.items || []).filter(i => i.type === "spell" && step.prepared.has(i.system?.identifier || norm(i.name)) && Number(i.system?.prepared) === 0).map(i => ({ _id: i._id, "system.prepared": 1 }));
+  const upd = (actor.items || []).filter(i => own(i) && step.prepared.has(itemKey(i)) && Number(i.system?.prepared) === 0).map(i => ({ _id: i._id, "system.prepared": 1 }));
   if (data.length) await fs.doc("create", "Item", { parentUuid: `Actor.${actor._id}`, data, modifiedTime: Date.now() });
   if (upd.length) await fs.doc("update", "Item", { parentUuid: `Actor.${actor._id}`, updates: upd, modifiedTime: Date.now() });
   return message(`${step.cantrips.length} cantrip(s), ${step.leveled.length} class spell(s) (levels 1 to ${step.maxLvl}), ${step.prepared.size} prepared`, `${step.cantrips.length} sort(s) mineur(s), ${step.leveled.length} sort(s) de classe (niv. 1 à ${step.maxLvl}), ${step.prepared.size} préparé(s)`);
