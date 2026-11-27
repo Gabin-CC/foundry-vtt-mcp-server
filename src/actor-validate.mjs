@@ -368,21 +368,49 @@ export async function validateActor2024(fs, actor) {
   if (shields.length && worn.some(i => i.type === "weapon" && (i.system?.properties || []).includes("two")))
     check("warning", "two_handed_with_shield", "A shield and a two-handed weapon are marked equipped; check what is actually being wielded.");
 
-  const counts = { errors: 0, warnings: 0, unverified: 0 };
-  for (const d of diagnostics) counts[d.severity === "error" ? "errors" : d.severity === "warning" ? "warnings" : "unverified"]++;
   // The expected slot table must not inherit a contradictory progression from
   // an owned class or subclass once the exact official source was verified.
   const slotItems = items.map(item => verifiedSpellcasting.has(item._id) ? {
     ...item, system: { ...item.system,
       spellcasting: { ...item.system?.spellcasting, progression: verifiedSpellcasting.get(item._id) } }
   } : item);
+  const slotActor = { ...actor, items: slotItems };
+  const expectedSlots = slotMax(slotActor); // Legacy/current sheet maxima, including explicit overrides.
+  const slotEvidenceComplete = classes.length > 0 && classes.every(c => verifiedSpellcasting.has(c._id)) &&
+    subclasses.every(s => verifiedSubclasses.has(String(s.system?.classIdentifier || "").toLowerCase()));
+  // An override must not redefine the *official rules baseline*. Keep both
+  // values separately and treat unexplained deviations as unverified, since
+  // magic items or campaign-specific effects may legitimately add slots.
+  const baseSlots = slotEvidenceComplete ? slotMax({ ...slotActor, system: { ...actor.system,
+    spells: Object.fromEntries(Object.entries(actor.system?.spells || {}).map(([key, value]) =>
+      [key, value && typeof value === "object" ? { ...value, override: null } : value])) } }) : null;
+  if (baseSlots) for (const key of [...Array.from({ length: 9 }, (_, i) => `spell${i + 1}`), "pact"]) {
+    const slot = actor.system?.spells?.[key];
+    const override = slot?.override;
+    const baseline = Number(baseSlots[key]) || 0;
+    const hasOverride = override != null && override !== "";
+    if (hasOverride && (!Number.isInteger(Number(override)) || Number(override) < 0 || Number(override) !== baseline))
+      check("unverified", "spell_slot_override_unverified",
+        `${key}: the recorded maximum override differs from the verified 2024 class table; a feature or campaign rule may explain it.`, actor._id);
+    const remaining = slot?.value;
+    if (remaining == null || remaining === "") continue;
+    const n = Number(remaining);
+    if (!Number.isInteger(n) || n < 0)
+      check("error", "invalid_spell_slot_value", `${key}: remaining spell slots must be a nonnegative integer.`, actor._id);
+    else if (!hasOverride && n > baseline)
+      check("unverified", "spell_slots_above_official_base",
+        `${key}: ${n} remaining slots exceed the verified class-table maximum ${baseline}; an extra grant or stale value needs review.`, actor._id);
+  }
+  const counts = { errors: 0, warnings: 0, unverified: 0 };
+  for (const d of diagnostics) counts[d.severity === "error" ? "errors" : d.severity === "warning" ? "warnings" : "unverified"]++;
   return {
     actor: { id: actor._id, name: actor.name, class_levels: classes.map(c => ({ id: c._id, name: c.name,
       identifier: c.system?.identifier, level: c.system?.levels })), total_level: sum },
     read_only: true,
     status: counts.errors ? "issues" : counts.unverified ? "incomplete" : counts.warnings ? "review" : "passed_scoped_checks",
     summary: counts,
-    expected_spell_slots: slotMax({ ...actor, items: slotItems }),
+    expected_spell_slots: expectedSlots,
+    official_base_spell_slots: baseSlots,
     verified_sources: Object.fromEntries(Object.entries(rulesSources)
       .map(([kind, sources]) => [kind, [...new Set(sources)]])),
     diagnostics,
