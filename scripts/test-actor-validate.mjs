@@ -376,6 +376,36 @@ test("blank spell slot overrides preserve the verified expected table without di
   assert.deepEqual(f.writes, []);
 });
 
+test("an official Eldritch Knight with Pact Magic retains its single-Spellcasting-class slot table", async () => {
+  const f = subclassFixture();
+  const fighter = classItem("fighter", 4);
+  fighter.system.spellcasting.progression = "none";
+  const warlock = classItem("warlock", 3);
+  warlock.system.spellcasting.progression = "pact";
+  f.actor.items = [fighter, warlock, {
+    _id: id("ownedEldritchKnight"), name: "Eldritch Knight", type: "subclass",
+    _stats: { compendiumSource: f.thirdSource },
+    system: { identifier: "eldritch-knight", classIdentifier: "fighter", source: { rules: "2024" },
+      spellcasting: { progression: "third" }, advancement: [] }
+  }];
+  const oldDoc = f.fs.doc.bind(f.fs);
+  f.fs.doc = async (action, type, opts = {}) => {
+    const docs = await oldDoc(action, type, opts);
+    if (action === "get" && type === "Item" && opts.pack === "dnd5e.classes24" &&
+        (!opts.query?._id || opts.query._id === id("warlock"))) {
+      const official = officialClass("warlock", 2, 2);
+      official.system.spellcasting.progression = "pact";
+      return [...docs, official];
+    }
+    return docs;
+  };
+  const report = await audit(f.fs);
+  assert.equal(report.expected_spell_slots.spell1, 3, "Fighter 4 has three first-level spell slots");
+  assert.equal(report.expected_spell_slots.pact, 2);
+  assert.equal(report.official_base_spell_slots?.spell1, 3);
+  assert.deepEqual(f.writes, []);
+});
+
 test("spell slot resource values cannot be negative, and unexplained excess stays unverified", async () => {
   const f = fixture();
   f.actor.system.spells.spell1 = { value: -1 };
