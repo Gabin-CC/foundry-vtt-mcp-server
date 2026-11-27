@@ -16,8 +16,8 @@ import { plan as advPlan, apply as advApply, fetchUuid, preferOfficialClass, ret
 import { advancementBlueprint, compareAdvancementSheets } from "./advancement-replay.mjs";
 import { planActorRebuild, copyResidualItems, copyResidualActorEffects,
   syncRebuiltItemState, compareRebuiltItemDetails } from "./actor-rebuild.mjs";
-import { planActorBuild } from "./actor-build.mjs";
-import { planClassSpells, applyClassSpells } from "./spells.mjs";
+import { planActorBuild, equipStartingItems } from "./actor-build.mjs";
+import { planClassSpells, planSelectedClassSpells, applyClassSpells } from "./spells.mjs";
 import { ensureCastSpells } from "./cast.mjs";
 import { GM_TOOLS, GM_ROLE, handleGm } from "./gm.mjs";
 import { sanitizeItemData, itemWarnings } from "./repair.mjs";
@@ -238,7 +238,7 @@ export const TOOL_DEFINITIONS = [
       hp: { type: "string", enum: ["avg", "max"], description: "Mode de PV si non enregistré sur la source" },
       folder: { type: "string", description: "Dossier cible optionnel, sinon même dossier que l'acteur source" }
     } } },
-  { name: "build_actor", description: "Crée un personnage D&D 2024 sans fiche source, à partir des UUID vérifiables de classe/espèce/historique et des caractéristiques avant bonus d'historique. Simulation sans écriture par défaut ; demande les choix de progression et d'équipement manquants. apply=true crée un nouvel acteur puis utilise advance. Les listes de sorts complètes sont optionnelles (spells=all), sans garantie de conformité d'un grimoire limité.",
+  { name: "build_actor", description: "Crée un personnage D&D 2024 sans fiche source : simulation des avancements et choix obligatoires, puis création séparée avec équipement de départ porté. spells=selected exige les UUID exacts des sorts de classe autorisés ; spells=all conserve l'import exhaustif historique (sans garantie de conformité).",
     inputSchema: { type: "object", required: ["name"], properties: {
       name: { type: "string", description: "Nom unique de la nouvelle fiche" },
       class_source: { type: "string", description: "UUID Compendium de la classe 2024" },
@@ -251,7 +251,8 @@ export const TOOL_DEFINITIONS = [
       } },
       choices: { type: "object", description: "Choix des avancements et de l'équipement (identifiant vers valeur)" },
       hp: { type: "string", enum: ["avg", "max"], default: "avg" },
-      spells: { type: "string", enum: ["none", "all"], default: "none", description: "none = sélection ultérieure ; all = importer la liste entière de sorts de classe (pas adapté à tous les grimoires)" },
+      spells: { type: "string", enum: ["none", "selected", "all"], default: "none", description: "none = aucun sort de classe sélectionné ; selected = sélectionner exactement les UUID officiels 2024 dans choices['spells:prepared'] et choices['spells:cantrips'] ; all = importer toute la liste historique" },
+      auto_equip: { type: "boolean", default: true, description: "Équiper automatiquement une armure, un bouclier compatible et une arme principale parmi les objets de départ" },
       folder: { type: "string", description: "Dossier cible optionnel" },
       apply: { type: "boolean", default: false, description: "Créer la fiche uniquement si tous les paramètres et choix sont résolus" }
     } } },
@@ -572,6 +573,7 @@ async function runTool(session, params) {
           const coreChoices = Object.fromEntries(Object.entries(a.choices || {})
             .filter(([key]) => !key.startsWith("spells:")));
           try {
+            let exactSpellUuids = [];
             for (const stage of plan.etapes) {
               const result = await runTool(session, { name: "advance", arguments: {
                 actor: created._id, source: { uuid: stage.source },
@@ -596,12 +598,38 @@ async function runTool(session, params) {
                 throw new Error(`Unresolved spell choices: ${spellsResult.value.choix_requis.map(x => x.id).join(", ")}`);
               log.push({ type: "spells", nom: cls.name, applique: spellsResult.value?.applique || [] });
             }
+            if (a.spells === "selected") {
+              const progressed = await findActor(fs, created._id);
+              const cls = (progressed.items || []).find(x => x.type === "class");
+              if (!cls) throw new Error("Imported class is missing before spell selection.");
+              const selected = await planSelectedClassSpells(fs, progressed, cls, plan.niveau, a.choices || {});
+              if (selected.pending.length)
+                throw new Error(`Unresolved spell choices after preflight: ${selected.pending.map(x => x.id).join(", ")}`);
+              const detail = await applyClassSpells(fs, progressed, selected.step, cls._id);
+              exactSpellUuids = [...selected.step.cantrips, ...selected.step.leveled].map(s => s.uuid);
+              const after = await findActor(fs, created._id);
+              const selectedSources = new Set((after.items || []).filter(i => i.type === "spell" &&
+                i.system?.sourceClass === cls.system?.identifier &&
+                (Number(i.system?.level) === 0 || Number(i.system?.prepared) === 1))
+                .map(i => i._stats?.compendiumSource || i.flags?.dnd5e?.sourceId));
+              if (exactSpellUuids.some(uuid => !selectedSources.has(uuid)))
+                throw new Error("One or more selected class spells were not imported and (where applicable) prepared; review the partial actor.");
+              log.push({ type: "spells", nom: cls.name, applique: [detail] });
+            }
+            let equipment = [];
+            if (a.auto_equip !== false) {
+              equipment = await equipStartingItems(fs, await findActor(fs, created._id));
+              log.push({ type: "equipment", nom: "Starting equipment", applique: equipment.map(i => i.name) });
+            }
             const target = await findActor(fs, created._id);
+            if (equipment.some(i => !(target.items || []).some(x => x._id === i.id && x.system?.equipped)))
+              throw new Error("Starting equipment was not marked equipped; review the partial actor.");
             const fiche = sheet(target);
             if (fiche.niveau !== plan.niveau)
               throw new Error(`Rebuilt class level mismatch: expected ${plan.niveau}, got ${fiche.niveau}.`);
             return out({ simulation: false, acteur: { id: target._id, name: target.name },
-              niveau: fiche.niveau, etapes_appliquees: log, fiche,
+              niveau: fiche.niveau, etapes_appliquees: log, fiche, equipement_porte: equipment,
+              verification: { objets_equipes: equipment.length, sorts_choisis_importes: exactSpellUuids.length },
               avertissements: plan.avertissements,
               note: "The class/species/background advancements were applied. This is a structural build, not a complete rules-legality certification." });
           } catch (e) {

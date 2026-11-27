@@ -48,7 +48,7 @@ export async function classSpellList(fs, cls) {
   const best = new Map();
   for (const pk of packs) {
     let idx = [];
-    try { idx = await fs.doc("get", "Item", { pack: pk.id, query: {}, index: true, indexFields: ["_id", "name", "type", "system.level", "system.identifier", "flags.plutonium.spellClassNames", "system.sourceClass"] }); } catch { continue; }
+    try { idx = await fs.doc("get", "Item", { pack: pk.id, query: {}, index: true, indexFields: ["_id", "name", "type", "system.level", "system.identifier", "system.source.rules", "flags.plutonium.spellClassNames", "system.sourceClass"] }); } catch { continue; }
     const tr = await translations(pk.id);
     for (const e of idx) {
       if (e.type !== "spell") continue;
@@ -58,7 +58,8 @@ export async function classSpellList(fs, cls) {
       // clé = nom anglais sans possessif : « Tasha's Hideous Laughter » (2014) et « Hideous Laughter » (2024),
       // « Leomund's Tiny Hut » / « Tiny Hut »… sont le même sort (la version 2024 officielle est gardée par le rang)
       const k = spellKey(e.name) || e.system?.identifier;
-      const cand = { uuid, name: trFor(tr, e)?.name || e.name, name_en: e.name, level: Number(e.system?.level) || 0, key: k, rank: rank(pk) };
+      const cand = { uuid, name: trFor(tr, e)?.name || e.name, name_en: e.name, level: Number(e.system?.level) || 0,
+        key: k, rank: rank(pk), rules: e.system?.source?.rules };
       const cur = best.get(k);
       if (!cur || cand.rank < cur.rank) best.set(k, cand);
     }
@@ -126,6 +127,81 @@ export async function planClassSpells(fs, actor, cls, level, choices) {
   // ex. Thaumaturge +1 sort mineur, n'existent pas encore sur la fiche au moment du plan)
   return { pending, step: { cls, level, cantrips, leveled, prepared: new Set(prepared.map(s => s.key)), maxLvl } };
 }
+
+/**
+ * Strict 2024 character-build mode: import ONLY selected, officially listed
+ * class spells. The legacy planClassSpells intentionally imports every spell
+ * in its pool; it must not be used for a rules-bounded new character.
+ */
+export async function planSelectedClassSpells(fs, actor, cls, level, choices = {},
+  { grantedUuids = [], grantedIdentifiers = [] } = {}) {
+  if (String(cls.system?.source?.rules || "") !== "2024")
+    throw new Error("Selected spell import requires a verified 2024 class.");
+  const id = cls.system?.identifier;
+  const list = await classSpellList(fs, cls);
+  const official = (await spellLists(fs)).get(`class:${id}`) || new Set();
+  if (!official.size) throw new Error(`No installed official spell list for class ${id}; selected import cannot be verified.`);
+  const fake = { items: [{ type: "class", system: { ...cls.system, levels: level } }], system: { spells: {} } };
+  const slots = slotMax(fake);
+  const maxLvl = Math.max(0, Number(slots.pactLevel) || 0,
+    ...Object.keys(slots).filter(k => /^spell\d$/.test(k)).map(k => Number(k.slice(5))));
+  const have = new Set((actor.items || []).filter(i => i.type === "spell")
+    .map(i => i._stats?.compendiumSource || i.flags?.dnd5e?.sourceId).filter(Boolean));
+  const haveKeys = new Set((actor.items || []).filter(i => i.type === "spell")
+    .map(i => norm(i.system?.identifier || i.name)));
+  for (const id of grantedIdentifiers) haveKeys.add(norm(id));
+  const excluded = new Set([...have, ...grantedUuids]);
+  const allowed = list.filter(s => official.has(s.uuid) && s.rules === "2024" &&
+    !excluded.has(s.uuid) && !haveKeys.has(norm(s.key)));
+  const cantripMax = (scaleAt(cls, "cantrips-known", level) ?? 0) + scaleBonus(actor, id, "cantrips-known");
+  const alreadyCantrips = (actor.items || []).filter(i => i.type === "spell" &&
+    Number(i.system?.level) === 0 && i.system?.sourceClass === id).length;
+  const preparedMax = scaleAt(cls, "max-prepared", level);
+  if (preparedMax == null && cantripMax === 0)
+    throw new Error(`${cls.name}: no supported 2024 prepared-spell progression; use spells=none.`);
+  const alreadyPrepared = (actor.items || []).filter(i => i.type === "spell" &&
+    Number(i.system?.prepared) === 1 && i.system?.sourceClass === id).length;
+  const needCantrips = Math.max(0, cantripMax - alreadyCantrips);
+  const needPrepared = Math.max(0, (preparedMax || 0) - alreadyPrepared);
+  const pending = [];
+
+  async function selected(kind, count, pool) {
+    if (!count) {
+      if ((choices[kind] || []).length) throw new Error(`${kind}: this class requires no selections.`);
+      return [];
+    }
+    const raw = choices[kind];
+    if (raw == null || (Array.isArray(raw) && raw.length < count)) {
+      pending.push({ id: kind, objet: cls.name, type: "Spells", titre: message("Choose class spells", "Choisir les sorts de classe"),
+        nombre: count, options: pool.map(s => `${message("lvl.", "niv.")}${s.level} ${s.name} — ${s.uuid}`),
+        aide: message(`Provide exactly ${count} distinct, official 2024 spell UUIDs.`,
+          `Fournir exactement ${count} UUID de sorts 2024 officiels et distincts.`) });
+      return [];
+    }
+    if (!Array.isArray(raw) || raw.length !== count || new Set(raw).size !== raw.length)
+      throw new Error(`${kind}: exactly ${count} distinct spell UUIDs are required.`);
+    const byUuid = new Map(pool.map(s => [s.uuid, s]));
+    const picked = [];
+    for (const uuid of raw) {
+      if (!UUID_SPELL.test(uuid) || !byUuid.has(uuid))
+        throw new Error(`${kind}: ${uuid} is not a verified, eligible 2024 ${cls.name} spell UUID.`);
+      const spell = await fetchUuid(fs, uuid);
+      if (spell.type !== "spell" || spell.system?.source?.rules !== "2024")
+        throw new Error(`${kind}: ${uuid} does not declare D&D 2024 rules.`);
+      picked.push(byUuid.get(uuid));
+    }
+    return picked;
+  }
+
+  const cantrips = await selected("spells:cantrips", needCantrips, allowed.filter(s => s.level === 0));
+  const prepared = await selected("spells:prepared", needPrepared,
+    allowed.filter(s => s.level >= 1 && s.level <= maxLvl));
+  return { pending, step: { cls, level, cantrips, leveled: prepared,
+    prepared: new Set(prepared.map(s => s.key)), maxLvl },
+  counts: { cantrips: needCantrips, prepared: needPrepared } };
+}
+
+const UUID_SPELL = /^Compendium\.[^.]+\.[^.]+\.Item\.[A-Za-z0-9]{16}$/;
 
 export async function applyClassSpells(fs, actor, step, classItemId) {
   const data = [];
