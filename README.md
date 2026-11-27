@@ -13,7 +13,7 @@ Each player connects with **their own Foundry account**. Foundry permissions sti
 | World and documents | `world_info`, `list_documents`, `get_document`, `create_documents`, `update_documents`, `delete_documents` |
 | Safe changes and large results | `snapshots`, `next_page` |
 | Search and diagnostics | `search_text`, `find_references`, `audit_translation` |
-| D&D 5e characters | `actor_sheet`, `advance`, `progress_actor`, `build_actor`, `advancement_blueprint`, `rebuild_actor`, `compare_actors`, `roll`, `check`, `use_item`, `apply_damage`, `rest`, `give_loot` |
+| D&D 5e characters | `actor_sheet`, `advance`, `progress_actor`, `edit_actor`, `build_actor`, `advancement_blueprint`, `rebuild_actor`, `compare_actors`, `roll`, `check`, `use_item`, `apply_damage`, `rest`, `give_loot` |
 | Compendiums | `list_packs`, `search_compendium`, `get_compendium_entry`, `add_from_compendium`, `localize_actor` |
 | Other world features | `roll_table`, `cards`, `upload_file`, `send_chat` |
 | GM and assistant-GM actions | `gm_scene`, `gm_music`, `gm_show`, `gm_permissions`, `gm_tile`, `gm_token`, `gm_combat`, `gm_pause`, `gm_check_ids`, `gm_sync_items`, `gm_patch_items` |
@@ -71,7 +71,26 @@ Use `progress_actor` to level up **an existing single-class D&D 2024 character**
 
 Rollback refuses to run if the character has changed **after** the recorded level-up, to avoid overwriting subsequent player/GM edits. A failed partial progression is likewise identified and backed up when its final state can be recorded. `advance` also supports `apply: false` for strictly read-only planning; its pre-existing default remains `apply: true` for compatibility.
 
-**Scope:** this is class level progression, not a free-form character editor. It supports a verified existing 2024 class and all normal advancement choices; multiclass leveling, de-leveling, manual spell preparation, equipment changes, and full D&D 2024 rules-legality certification remain separate work.
+**Scope:** this tool handles class level progression rather than free-form item edits (see `edit_actor` below). Multiclass leveling, de-leveling and full D&D 2024 rules-legality certification remain separate work.
+
+### Change equipment and prepared spells on an existing character
+
+Use `edit_actor` on a single-class 2024 character. Both maps use the **embedded Item IDs** from `list_documents(type="Item", parent="Actor.ACTOR_ID")`:
+
+```json
+{
+  "actor": "ACTOR_ID",
+  "equipment": { "OLD_WEAPON_ITEM_ID": false, "NEW_WEAPON_ITEM_ID": true },
+  "prepared_spells": { "OLD_SPELL_ITEM_ID": false, "NEW_SPELL_ITEM_ID": true }
+}
+```
+
+1. Without `apply: true`, the tool is read-only and previews each before/after state, as well as the resulting number of prepared class spells.
+2. It accepts only owned equipment and already-known 2024 class spells, refuses preparing always-granted feature spells or exceeding the class's verified `max-prepared` scale, and checks the unlocked spell level. It also refuses equipping a two-handed weapon together with a shield.
+3. It **warns**, without rejecting, if armor is worn without training (2024: Disadvantage on Strength/Dexterity D20 Tests and inability to cast spells), a shield is used without training (no shield AC bonus), or a weapon is used without proficiency (no Proficiency Bonus to its attacks). Multiple equipped one-handed weapons are allowed; the actual hands used during an attack remain the player's/GM's decision.
+4. With `apply: true`, the MCP snapshots the actor and inventory **before** changing only the requested item flags; the response returns `instantane`. Review and restore it via the existing `snapshots` tool, including a read-only rollback preview and conflict check.
+
+This changes **existing** item states; it does not learn new spells, resolve long-rest timing or certify every class restriction. New spells must be acquired through the normal advancement/compendium workflow, with legal choices verified independently.
 
 ### Rebuild a character using recorded advancement choices
 

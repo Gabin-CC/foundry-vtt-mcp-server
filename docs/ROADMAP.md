@@ -7,8 +7,9 @@ The earlier four-step plan was **feature-oriented**; its proposed PR numbers no 
 | Rebuild an existing character from verifiable recorded choices | Available | `advancement_blueprint`, `rebuild_actor`, and orphaned-choice recovery (through PRs #22–#23) |
 | Create a new character with class, species, background, advancements and equipment | Available | `build_actor` in PR #24; concrete Trait choices and replay validation in PRs #25–#26 |
 | Finish a new character ready to play | Available | Equip starting gear and select an exact official spell set (`spells=selected`); PR #27, live-tested with a Paladin 2024 level 8 (AC 19, seven selected spells) |
-| Level an existing single-class 2024 character with preview and rollback | In progress | `progress_actor`, write-free `advance` preflight and recoverable snapshots; PR #28 |
-| Edit existing equipment, prepared spells and multiclass progress | Planned | Preview-first item/spell editing, per-class advancement, strict source and choice checks; do not guess |
+| Level an existing single-class 2024 character with preview and rollback | Available | `progress_actor`, write-free `advance` preflight and recoverable snapshots; PR #28, live-tested 8→9→8 |
+| Edit owned equipment and prepared class spells | In progress | `edit_actor` previews state changes and validates equipment/spell constraints, with restorable snapshots; PR #29 |
+| Multiclass and new spell acquisition | Planned | Multi-class advancements, authorized spell discovery and verified class eligibility, not merely preparation toggles |
 | Certify D&D 2024 rules legality | Planned | Validate prerequisites, edition, class/subclass/feat progression, spellbook limits, selected equipment, and derived sheet values against verified sources |
 
 ## Principles
@@ -22,6 +23,7 @@ The earlier four-step plan was **feature-oriented**; its proposed PR numbers no 
 ## Acceptance checks for the upcoming update-and-rules milestones
 
 - New character: Paladin 2024 / Human / Soldier level 8, exact advancement choices, armor/shield/weapon equipped, and seven explicitly selected class spells without importing the entire class list.
-- Progress existing character: level 8 to 9 in preview and apply modes, with changes limited to the chosen actor and a recorded recovery snapshot; test restore and failed intermediate writes. PR #28 covers the protocol and mock cases; live validation awaits merge/deployment.
+- Progress existing character: level 8 to 9 in preview and apply modes, with changes limited to the chosen actor and a recorded recovery snapshot; restore and failed intermediate writes tested. PR #28 was also validated live: Paladin 8→9 (68→76 HP, 54→57 items) and rollback 9→8 with no inventory differences.
+- Modify existing character: swap equipped items and prepared class spells with a read-only preview; reject two-handed weapon/shield conflicts, excessive preparation and 2014-only spells; warn about missing training without inventing a prohibition; restore exact prior item states.
 - Rules validation: reject a spell outside the class list or above the unlocked slot level, duplicate or excess prepared spells, incompatible rule editions, and impossible equipment combinations.
 - Compare post-update values (HP, saves, class level, subclass, features, spell slots, mastery, armor class and spells) with independently computed expectations.

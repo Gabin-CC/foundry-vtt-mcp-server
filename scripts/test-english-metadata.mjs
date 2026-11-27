@@ -25,9 +25,9 @@ function collectDescriptions(value, result = []) {
   return result;
 }
 
-test("all 44 MCP tool declarations expose English descriptions", () => {
-  assert.equal(TOOLS.length, 44);
-  assert.equal(new Set(TOOLS.map(tool => tool.name)).size, 44);
+test("all 45 MCP tool declarations expose English descriptions", () => {
+  assert.equal(TOOLS.length, 45);
+  assert.equal(new Set(TOOLS.map(tool => tool.name)).size, 45);
   for (const tool of TOOLS) {
     assert.match(tool.description, /^[A-Z]/, tool.name);
     const descriptions = collectDescriptions(tool.inputSchema);

@@ -37,6 +37,7 @@ Claude (CLI / Desktop) ──HTTPS + Basic auth──▶ foundry-vtt-mcp-server 
 | `advancement_blueprint` | Lit les choix de progression réellement enregistrés sur une fiche à classe unique, la source exacte de la classe et les caractéristiques avant progression de classe (lecture seule) |
 | `advance` avec `replay_from` | Rejoue automatiquement ces choix sur une autre fiche avec la même classe ; demande uniquement les choix introuvables dans la source |
 | `progress_actor` | Fait progresser une **fiche existante** D&D 2024 à classe unique : simulation sans écriture par défaut, choix explicites, sauvegarde avant application et restauration contrôlée |
+| `edit_actor` | Modifie l'équipement porté et les sorts de classe préparés d'une fiche existante : simulation, contrôles D&D 2024, instantané et restauration |
 | `build_actor` | Construit une nouvelle fiche D&D 2024 sans modèle depuis les compendiums de classe/espèce/historique, niveau et caractéristiques ; **simulation par défaut**, choix obligatoires avant `apply: true` |
 | `rebuild_actor` | Reconstruit dans une nouvelle fiche classe + espèce + historique par avancement, puis réconcilie les sorts, objets et récompenses ; **simulation par défaut**, écriture seulement avec `apply: true` |
 | `compare_actors` | Compare deux fiches calculées et détaille les différences de caractéristiques, PV, sorts, aptitudes et inventaire (lecture seule) |
@@ -105,7 +106,25 @@ Les sources doivent déclarer `system.source.rules: "2024"`. Le niveau et les ca
 3. `apply: true` sauvegarde l'état complet utile de l'acteur et de ses objets **avant** la montée de niveau, applique les choix puis vérifie le niveau final. La réponse indique `instantane`.
 4. En cas d'erreur, `snapshots` permet `show`, puis `restore` avec `dry_run: true`, enfin `restore` après vérification. Cette restauration possède à son tour un instantané d'annulation.
 
-La restauration **refuse de remplacer les modifications ultérieures** à la montée de niveau. `advance` accepte aussi `apply: false` pour une simulation en lecture seule ; ses appels existants continuent d'appliquer par défaut. Limites de `progress_actor` : classes multiples, baisse de niveau, changement manuel de sorts préparés ou d'équipement non gérés ici. La conformité D&D 2024 complète sera un chantier séparé.
+La restauration **refuse de remplacer les modifications ultérieures** à la montée de niveau. `advance` accepte aussi `apply: false` pour une simulation en lecture seule ; ses appels existants continuent d'appliquer par défaut. `progress_actor` reste dédié à la montée de niveau ; les changements d'objets et de sorts relèvent de `edit_actor` ci-dessous. Les classes multiples, la baisse de niveau et la conformité complète seront traitées séparément.
+
+### Modifier l'équipement et les sorts préparés
+
+`edit_actor` agit sur les **objets déjà possédés** par un personnage à classe unique D&D 2024. La simulation est la valeur par défaut ; seule l'option `apply: true` écrit dans Foundry. Récupérer les identifiants des objets embarqués avec `list_documents` et le parent `Actor.ID_ACTEUR`.
+
+```json
+{
+  "actor": "ID_ACTEUR",
+  "equipment": { "ID_ANCIENNE_ARME": false, "ID_NOUVELLE_ARME": true },
+  "prepared_spells": { "ID_SORT_A_RETIRER": false, "ID_SORT_A_PREPARER": true }
+}
+```
+
+- Pour l'équipement : une seule armure et un seul bouclier ; pas d'arme à deux mains utilisée avec un bouclier. L'absence de formation **n'interdit pas** l'usage selon les règles 2024 : une armure sans formation impose le désavantage aux tests de d20 fondés sur FOR/DEX et empêche de lancer des sorts ; un bouclier sans formation n'accorde pas son bonus de CA. Une arme sans maîtrise ne bénéficie pas du bonus de maîtrise à l'attaque. Ces cas déclenchent des avertissements. Plusieurs armes à une main peuvent être marquées portées ; les mains utilisées sont à contrôler pendant l'action.
+- Pour les sorts : seuls les sorts de classe 2024 **déjà présents sur la fiche** peuvent être préparés ou retirés ; les sorts accordés en permanence ne sont pas modifiables. Le maximum de préparation provenant de la classe et le niveau des emplacements disponibles sont vérifiés. Pour remplacer un sort lorsque le maximum est atteint, retirer et préparer dans **le même appel**.
+- La réponse affiche les états avant/après ; `apply: true` sauvegarde l'état initial et renvoie `instantane`, restaurable avec l'outil `snapshots` après un aperçu `dry_run`.
+
+Ce changement d'état ne crée aucun sort, ne juge pas si le repos nécessaire pour modifier la préparation a été effectué et ne certifie pas toute la légalité D&D 2024.
 
 ### Reconstruire un personnage pour tester le MCP
 
