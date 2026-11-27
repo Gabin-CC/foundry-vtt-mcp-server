@@ -4,6 +4,7 @@ import { slotMax } from "./dnd5e.mjs";
 import { PRIMARY } from "./actor-multiclass.mjs";
 import { scaleBonus } from "./spells.mjs";
 import { verifySubclass, subclassAlwaysPrepared, THIRD_CASTER_WIZARD_LIST } from "./subclass-spells.mjs";
+import { auditRecordedAdvancements } from "./advancement-audit.mjs";
 
 const UUID = /^Compendium\.[^.]+\.[^.]+\.Item\.[A-Za-z0-9]{16}$/;
 const attr = (actor, key) => Number(actor.system?.abilities?.[key]?.value);
@@ -71,8 +72,9 @@ export async function validateActor2024(fs, actor) {
     }
   }
 
-  const rulesSources = { classes: [], subclasses: [], spells: [], subclass_spells: [] };
+  const rulesSources = { classes: [], subclasses: [], spells: [], subclass_spells: [], feats: [] };
   const verifiedSubclasses = new Map();
+  const verifiedAdvancements = [];
   for (const sub of subclasses) {
     const id = String(sub.system?.classIdentifier || "").toLowerCase();
     if (!id || !ids.includes(id)) {
@@ -89,6 +91,8 @@ export async function validateActor2024(fs, actor) {
     }
     verifiedSubclasses.set(id, evidence);
     rulesSources.subclasses.push(evidence.source);
+    verifiedAdvancements.push({ embedded: sub, official: evidence.doc,
+      level: Number(cls.system?.levels) || 0, uuid: evidence.source });
     const grants = await subclassAlwaysPrepared(fs, evidence.doc, Number(cls.system?.levels) || 0);
     for (const reason of grants.unresolved)
       check("unverified", "subclass_grant_unverified", `${sub.name}: ${reason}`, sub._id, [evidence.source]);
@@ -117,7 +121,9 @@ export async function validateActor2024(fs, actor) {
         const doc = await fetchUuid(fs, classSource);
         if (doc.type !== "class" || String(doc.system?.identifier || "").toLowerCase() !== id || doc.system?.source?.rules !== "2024")
           check("error", "class_source_mismatch", `${cls.name}: recorded class source disagrees with its identifier or rules edition.`, cls._id, [classSource]);
-        else { officialClass = doc; rulesSources.classes.push(classSource); }
+        else { officialClass = doc; rulesSources.classes.push(classSource);
+          verifiedAdvancements.push({ embedded: cls, official: doc,
+            level: Number(cls.system?.levels) || 0, uuid: classSource }); }
       } catch {
         check("unverified", "class_source_unavailable", `${cls.name}: recorded source cannot be read from installed compendiums.`, cls._id, [classSource]);
       }
@@ -196,6 +202,7 @@ export async function validateActor2024(fs, actor) {
 
   for (const spell of spells.filter(s => s.system?.sourceClass && !ids.includes(String(s.system.sourceClass).toLowerCase())))
     check("unverified", "orphan_spell_class", `${spell.name}: sourceClass does not match any embedded class.`, spell._id);
+  rulesSources.feats.push(...await auditRecordedAdvancements(fs, actor, verifiedAdvancements, check));
   const worn = items.filter(i => ["weapon", "equipment"].includes(i.type) && i.system?.equipped);
   const armor = worn.filter(i => i.type === "equipment" && equipmentKind(i) && equipmentKind(i) !== "shl");
   const shields = worn.filter(i => i.type === "equipment" && equipmentKind(i) === "shl");
@@ -225,7 +232,7 @@ export async function validateActor2024(fs, actor) {
       .map(([kind, sources]) => [kind, [...new Set(sources)]])),
     diagnostics,
     limits: ["This reports only deterministic checks supported by installed sources, not full D&D 2024 legality.",
-      "Advancement decisions, feat choices, hit point rolls, historical ability scores and subclass exceptions require separate evidence.",
+      "Recorded ability increases, feats, subclass choices and class feature grants are checked only against exact official advancements; historical ability scores, custom feats and HP rolls remain unverifiable.",
       "Unknown subclass sources, unverified feature grants, spell replacements and unusual magic items require case-by-case review."],
   };
 }
