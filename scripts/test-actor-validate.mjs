@@ -693,13 +693,31 @@ test("a class found by ID in another pack cannot replace the missing official cl
   assert.deepEqual(f.writes, []);
 });
 
-test("always-granted feature spells are not overcounted as selected prepared spells", async () => {
+test("an unproven permanently prepared spell is not overcounted but cannot silently pass", async () => {
   const f = fixture();
   const granted = makeSpell("burning", 2);
   f.actor.items.push(granted);
   const report = await audit(f.fs);
-  assert.equal(report.status, "passed_scoped_checks", JSON.stringify(report.diagnostics));
+  assert.equal(report.status, "incomplete", JSON.stringify(report.diagnostics));
+  assert.ok(report.diagnostics.some(d => d.code === "always_prepared_origin_unverified" &&
+    d.subject === granted._id && d.severity === "unverified"));
   assert.ok(!report.diagnostics.some(d => d.code === "too_many_prepared"));
+  assert.deepEqual(f.writes, []);
+});
+
+test("a permanent spell grant is class-scoped rather than borrowed by another class", async () => {
+  const f = classSpellGrantFixture();
+  const cure = f.actor.items.find(i => i._id === id("ownedcure"));
+  cure.system.sourceClass = "paladin";
+  const correct = await audit(f.fs);
+  assert.equal(correct.status, "passed_scoped_checks", JSON.stringify(correct.diagnostics));
+  assert.ok(!correct.diagnostics.some(d => d.code === "always_prepared_origin_unverified"));
+
+  cure.system.sourceClass = "sorcerer";
+  const wrong = await audit(f.fs);
+  assert.equal(wrong.status, "incomplete", JSON.stringify(wrong.diagnostics));
+  assert.ok(wrong.diagnostics.some(d => d.code === "always_prepared_origin_unverified" &&
+    d.subject === cure._id));
   assert.deepEqual(f.writes, []);
 });
 
@@ -728,6 +746,10 @@ test("a class-granted spell from the wrong pack stays unverified without duplica
     /different compendium/.test(d.detail)));
   assert.ok(!report.diagnostics.some(d => d.code === "unattributed_spell_origin"),
     "The existing official class-grant source warning already covers this same spell");
+  f.actor.items.find(i => i._id === id("ownedcure")).system.sourceClass = "paladin";
+  const attributed = await audit(f.fs);
+  assert.ok(!attributed.diagnostics.some(d => d.code === "always_prepared_origin_unverified"),
+    "An unresolved official grant must not add a second permanent-preparation diagnostic");
   assert.deepEqual(f.writes, []);
 });
 
