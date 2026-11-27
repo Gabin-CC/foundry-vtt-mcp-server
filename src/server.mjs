@@ -16,6 +16,7 @@ import { plan as advPlan, apply as advApply, fetchUuid, preferOfficialClass, ret
 import { advancementBlueprint, compareAdvancementSheets } from "./advancement-replay.mjs";
 import { planActorRebuild, copyResidualItems, copyResidualActorEffects,
   syncRebuiltItemState, compareRebuiltItemDetails } from "./actor-rebuild.mjs";
+import { planActorBuild } from "./actor-build.mjs";
 import { planClassSpells, applyClassSpells } from "./spells.mjs";
 import { ensureCastSpells } from "./cast.mjs";
 import { GM_TOOLS, GM_ROLE, handleGm } from "./gm.mjs";
@@ -236,6 +237,23 @@ export const TOOL_DEFINITIONS = [
       choices: { type: "object", description: "Choix manquants fournis explicitement (identifiant d'avancement vers valeur)" },
       hp: { type: "string", enum: ["avg", "max"], description: "Mode de PV si non enregistré sur la source" },
       folder: { type: "string", description: "Dossier cible optionnel, sinon même dossier que l'acteur source" }
+    } } },
+  { name: "build_actor", description: "Crée un personnage D&D 2024 sans fiche source, à partir des UUID vérifiables de classe/espèce/historique et des caractéristiques avant bonus d'historique. Simulation sans écriture par défaut ; demande les choix de progression et d'équipement manquants. apply=true crée un nouvel acteur puis utilise advance. Les listes de sorts complètes sont optionnelles (spells=all), sans garantie de conformité d'un grimoire limité.",
+    inputSchema: { type: "object", required: ["name"], properties: {
+      name: { type: "string", description: "Nom unique de la nouvelle fiche" },
+      class_source: { type: "string", description: "UUID Compendium de la classe 2024" },
+      species_source: { type: "string", description: "UUID Compendium de l'espèce 2024" },
+      background_source: { type: "string", description: "UUID Compendium de l'historique 2024" },
+      level: { type: "integer", minimum: 1, maximum: 20, default: 1 },
+      abilities: { type: "object", description: "Valeurs des 6 caractéristiques avant les augmentations d'historique", properties: {
+        str: { type: "integer" }, dex: { type: "integer" }, con: { type: "integer" },
+        int: { type: "integer" }, wis: { type: "integer" }, cha: { type: "integer" }
+      } },
+      choices: { type: "object", description: "Choix des avancements et de l'équipement (identifiant vers valeur)" },
+      hp: { type: "string", enum: ["avg", "max"], default: "avg" },
+      spells: { type: "string", enum: ["none", "all"], default: "none", description: "none = sélection ultérieure ; all = importer la liste entière de sorts de classe (pas adapté à tous les grimoires)" },
+      folder: { type: "string", description: "Dossier cible optionnel" },
+      apply: { type: "boolean", default: false, description: "Créer la fiche uniquement si tous les paramètres et choix sont résolus" }
     } } },
   { name: "audit_translation", description: "Audit de traduction FR du monde et/ou des compendiums : champs restés en anglais (nom, description, activités, pages de journal, faces de cartes, résultats de tables, effets, objets des acteurs) avec UUID, champ, extrait, statut (anglais / mixte / inconnu ; « traduit » = traduction Babele) et correctif disponible (localize_actor). mode=coverage : part des entrées traduites par compendium / type de document. Heuristique mots-outils FR/EN + noms connus des compendiums traduits. Les compendiums complets sont lourds (≈ 40 s pour tout) : préférer 'packs'.",
     inputSchema: { type: "object", properties: {
@@ -525,6 +543,71 @@ async function runTool(session, params) {
           const source = await findActor(fs, a.source), target = await findActor(fs, a.target);
           return out({ source: { id: source._id, name: source.name }, target: { id: target._id, name: target.name },
             ...compareAdvancementSheets(sheet(source), sheet(target)) });
+        }
+        case "build_actor": {
+          const newName = String(a.name || "").trim();
+          if (!newName || newName.length > 100) throw new Error(message(
+            "A new actor name (1–100 characters) is required.", "Un nom de fiche (1 à 100 caractères) est nécessaire."));
+          const existing = (await fs.doc("get", "Actor", { query: {} }))
+            .filter(x => x.name?.trim().toLowerCase() === newName.toLowerCase());
+          if (existing.length) throw new Error(message(
+            `An actor named "${newName}" already exists; choose a distinct name.`,
+            `Une fiche « ${newName} » existe déjà ; choisis un autre nom.`));
+          const plan = await planActorBuild(fs, a);
+          const preview = { simulation: !a.apply || !plan.pret, cible: plan.nom, niveau: plan.niveau,
+            caracteristiques_initiales: plan.caracteristiques_initiales, etapes: plan.etapes,
+            parametres_requis: plan.parametres_requis, choix_requis: plan.choix_requis,
+            avertissements: plan.avertissements, pret: plan.pret,
+            rappel: "Supply exact 2024 compendium UUIDs and pre-background ability scores; pass the requested choices and apply=true only when ready." };
+          if (!a.apply || !plan.pret) return out(preview);
+          const actorData = { name: newName, type: "character",
+            ...(a.folder ? { folder: a.folder } : {}),
+            system: { abilities: Object.fromEntries(Object.entries(plan.caracteristiques_initiales)
+              .map(([key, value]) => [key, { value }])) } };
+          const [created] = await fs.doc("create", "Actor", { data: [actorData], modifiedTime: Date.now() });
+          if (!created?._id) throw new Error("Foundry did not return an actor ID after creation.");
+          const log = [];
+          // advance interprets any spells:* choice as an implicit spells=all.
+          // Defer spell choices until after class and origin features exist.
+          const coreChoices = Object.fromEntries(Object.entries(a.choices || {})
+            .filter(([key]) => !key.startsWith("spells:")));
+          try {
+            for (const stage of plan.etapes) {
+              const result = await runTool(session, { name: "advance", arguments: {
+                actor: created._id, source: { uuid: stage.source },
+                ...(stage.type === "class" ? { level: plan.niveau } : {}),
+                choices: coreChoices, hp: a.hp || "avg", spells: "none"
+              } });
+              if (!result[OUT]) throw new Error(result.content?.[0]?.text || "Advancement failed.");
+              if (result.value?.choix_requis?.length)
+                throw new Error(`Unresolved choices after preflight: ${result.value.choix_requis.map(x => x.id).join(", ")}`);
+              log.push({ type: stage.type, nom: stage.nom, applique: result.value?.applique || [] });
+            }
+            if (a.spells === "all") {
+              const progressed = await findActor(fs, created._id);
+              const cls = (progressed.items || []).find(x => x.type === "class");
+              if (!cls) throw new Error("Imported class is missing before spell selection.");
+              const spellsResult = await runTool(session, { name: "advance", arguments: {
+                actor: created._id, item: cls._id, level: plan.niveau,
+                choices: a.choices || {}, hp: a.hp || "avg", spells: "all"
+              } });
+              if (!spellsResult[OUT]) throw new Error(spellsResult.content?.[0]?.text || "Spell import failed.");
+              if (spellsResult.value?.choix_requis?.length)
+                throw new Error(`Unresolved spell choices: ${spellsResult.value.choix_requis.map(x => x.id).join(", ")}`);
+              log.push({ type: "spells", nom: cls.name, applique: spellsResult.value?.applique || [] });
+            }
+            const target = await findActor(fs, created._id);
+            const fiche = sheet(target);
+            if (fiche.niveau !== plan.niveau)
+              throw new Error(`Rebuilt class level mismatch: expected ${plan.niveau}, got ${fiche.niveau}.`);
+            return out({ simulation: false, acteur: { id: target._id, name: target.name },
+              niveau: fiche.niveau, etapes_appliquees: log, fiche,
+              avertissements: plan.avertissements,
+              note: "The class/species/background advancements were applied. This is a structural build, not a complete rules-legality certification." });
+          } catch (e) {
+            return out({ erreur: e.message, acteur_partiel: { id: created._id, name: newName },
+              note: "Character creation stopped. Review the partial target before continuing; no existing actor was modified." });
+          }
         }
         case "rebuild_actor": {
           const source = await findActor(fs, a.source);
