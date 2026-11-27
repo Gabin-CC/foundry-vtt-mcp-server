@@ -13,7 +13,7 @@ Each player connects with **their own Foundry account**. Foundry permissions sti
 | World and documents | `world_info`, `list_documents`, `get_document`, `create_documents`, `update_documents`, `delete_documents` |
 | Safe changes and large results | `snapshots`, `next_page` |
 | Search and diagnostics | `search_text`, `find_references`, `audit_translation` |
-| D&D 5e characters | `actor_sheet`, `roll`, `check`, `use_item`, `apply_damage`, `rest`, `give_loot` |
+| D&D 5e characters | `actor_sheet`, `advance`, `advancement_blueprint`, `compare_actors`, `roll`, `check`, `use_item`, `apply_damage`, `rest`, `give_loot` |
 | Compendiums | `list_packs`, `search_compendium`, `get_compendium_entry`, `add_from_compendium`, `localize_actor` |
 | Other world features | `roll_table`, `cards`, `upload_file`, `send_chat` |
 | GM and assistant-GM actions | `gm_scene`, `gm_music`, `gm_show`, `gm_permissions`, `gm_tile`, `gm_token`, `gm_combat`, `gm_pause`, `gm_check_ids`, `gm_sync_items`, `gm_patch_items` |
@@ -27,10 +27,29 @@ Highlights:
 - `use_item` rolls attacks, damage and healing, consumes resources where applicable, and can generate per-target proposals (AC, saves, resistance, vulnerability, immunity). `apply_damage` applies an approved proposal or explicit values.
 - Compendium lookups can use French or English names when compatible Babele translations are installed. `localize_actor` can apply translations and metric units to an existing actor.
 - `advance` replays the dnd5e advancement workflow server-side (class, subclass, species, background, feat). Classes, subclasses, backgrounds and feats imported by Plutonium into world compendiums often lack dnd5e advancements; they are rebuilt on the fly from the Plutonium flags and the 5etools text (see [Plutonium content](#plutonium-content-in-world-compendiums)).
+- `advancement_blueprint` reads the exact advancement decisions recorded on an existing single-class actor. `advance` can reuse those decisions with `replay_from`, including the official class source and pre-class ability scores for an empty target actor; `compare_actors` reports what still differs.
 - `gm_show` supports recipient selection and a preview. `gm_permissions` reports what players can view or modify.
 - `gm_sync_items` and `gm_patch_items` preview changes by default and require explicit application.
 
 Tool **names and discovery descriptions are in English**. Some response keys, legacy argument values, enum values, and Foundry-specific status labels remain in French for backward compatibility. Renaming those fields requires an explicitly versioned protocol migration. See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+### Rebuild a character using recorded advancement choices
+
+This tests the advancement engine, **not** a byte-for-byte duplication of a finished actor.
+Use actor IDs to avoid matching an unintended character with a similar name.
+
+1. Call `advancement_blueprint({ "actor": "SOURCE_ACTOR_ID" })`. It returns the original class compendium UUID, target level, recorded choices (including nested choices inside class-granted feats), `base_abilities` (*before class advancements*, including previously applied background/species bonuses) and `pre_origin_abilities` (*before all recorded ability increases*).
+2. Call `create_documents({ "type": "Actor", "data": [{ "name": "MCP advancement test", "type": "character" }] })` to create an empty target actor. Do **not** copy the source's final level-12 ability scores onto the empty actor.
+3. Call `advance({ "actor": "TARGET_ACTOR_ID", "replay_from": "SOURCE_ACTOR_ID" })`. With no explicit `source`, it uses the exact class compendium source from the original (rather than a similarly named world-compendium class); with no explicit `level`, it targets the original level. If required choices were not saved, the tool returns `choix_requis` and **does not change the target**. Call it again with `choices` to resolve only those missing selections. When all are resolved, it restores the pre-class ability scores on an **empty** actor and applies advancements.
+4. Call `compare_actors({ "source": "SOURCE_ACTOR_ID", "target": "TARGET_ACTOR_ID" })`. Inspect the missing species, background, prepared spells, equipment and campaign rewards. Complete them through a *separate* origin-aware workflow; avoid double-applying origin ability increases. Compare again.
+
+Safety and limitations:
+
+- Replay is supported for **one class** and only when its original compendium UUID is verifiable. Multiclass or missing provenance is reported explicitly; the tool never guesses a replacement class.
+- Replay uses **persisted selections only** (ASI vs feat, subclass, skills, nested class features). Unrecorded starting-equipment choices, prepared spells and rewards remain unresolved; the tool will not invent them.
+- The target's ability scores are reset to their pre-class values **only when importing the class into an actor with no items**, after all pending choices have been resolved. Existing/partly built actors are not silently reset; a different class source is rejected.
+- **Do not advance a background or species after the class-only replay without rebuilding from `pre_origin_abilities` first**: `base_abilities` already includes those origin increases. This workflow verifies the class; it is not yet a one-call reconstruction of the full character.
+- The comparison is structural (including counts of duplicate items), not proof that every spell, enchantment or game rule has been interpreted correctly. Neither the blueprint nor the comparison modifies Foundry.
 
 ### Plutonium content in world compendiums
 
