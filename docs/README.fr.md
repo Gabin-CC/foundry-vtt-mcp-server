@@ -34,6 +34,9 @@ Claude (CLI / Desktop) ──HTTPS + Basic auth──▶ foundry-vtt-mcp-server 
 | `roll_table` | Tirage sur une table (monde ou compendium, traduite) comme Foundry : formule, tirage sans remise, tables imbriquées, carte dans le chat optionnelle ; `show`, `reset` |
 | `cards` | Cartes : `list`, `draw`, `deal`, `pass`, `discard`, `shuffle`, `recall` (mêmes opérations que le client Foundry) |
 | `actor_sheet` | Fiche calculée : niveau, maîtrise, mods, CA estimée, PV, compétences, attaque/DD de sort, emplacements |
+| `advancement_blueprint` | Lit les choix de progression réellement enregistrés sur une fiche à classe unique, la source exacte de la classe et les caractéristiques avant progression de classe (lecture seule) |
+| `advance` avec `replay_from` | Rejoue automatiquement ces choix sur une autre fiche avec la même classe ; demande uniquement les choix introuvables dans la source |
+| `compare_actors` | Compare deux fiches calculées et détaille les différences de caractéristiques, PV, sorts, aptitudes et inventaire (lecture seule) |
 | `roll` | Jet de dés libre posté dans le chat (`2d20kh1+5`, `8d6`, `4d6kh3`…) |
 | `check` | Test de caractéristique, sauvegarde, compétence, initiative |
 | `use_item` | Lance un sort / utilise une arme ou un consommable : attaque, dégâts (critiques, montée en niveau, cantrips), soins, DD de sauvegarde, consommation d'emplacement / utilisation / quantité, carte dans le chat. Avec `targets` (UUID de jetons `Scene.x.Token.y`, nom de jeton de la scène active ou `Actor.x`) : touché/raté selon la CA, sauvegarde de chaque cible, dégâts avec résistances / immunités / vulnérabilités, soins, effets/états → **proposition** à valider |
@@ -78,9 +81,18 @@ Les jets peuvent être publics, `mj`, `aveugle` ou `prive`.
 
 **Traduction FR** : si le module [`dnd5e_fr-FR`](https://foundryvtt.com/packages/dnd5e_fr-FR) est installé, les noms et descriptions des compendiums sont traduits (recherche et import).
 
+### Reconstruire un personnage pour tester le MCP
+
+1. `advancement_blueprint({ "actor": "ID_SOURCE" })` renvoie les choix effectivement sauvegardés (sous-classe, dons, augmentations de caractéristique, maîtrises et choix imbriqués) ainsi que la provenance du compendium de classe. Privilégier les **identifiants** d'acteurs aux noms partiels.
+2. Créer un acteur **vierge** avec `create_documents`. Ne pas y copier directement les caractéristiques finales du personnage niveau 12.
+3. `advance({ "actor": "ID_CIBLE", "replay_from": "ID_SOURCE" })` choisit automatiquement le même compendium de classe, le même niveau et les choix sauvegardés. S'il manque des décisions (par exemple l'équipement de départ), `choix_requis` les liste : **aucune modification n'est appliquée** à cette étape. Refaire l'appel avec `choices` pour les seuls choix restants. Sur une fiche sans objet, les caractéristiques avant avancement de classe sont restaurées juste avant l'application.
+4. `compare_actors({ "source": "ID_SOURCE", "target": "ID_CIBLE" })` montre ce qui diffère encore. Le rejeu de classe utilise `base_abilities` (bonus d'espèce/historique déjà intégrés). Pour reconstruire *également* les origines avec leur avancement, il faut repartir de `pre_origin_abilities` et ne pas appliquer deux fois ces bonus. Les sorts préparés, équipements et récompenses de campagne se traitent séparément.
+
+Le rejeu concerne pour l'instant **une seule classe**, avec provenance de compendium vérifiable. Il ne devine ni les choix non enregistrés, ni les règles propres à une campagne. La comparaison est structurelle, elle ne garantit pas à elle seule la conformité aux règles.
+
 ## Limites
 
-- L'assistant d'avancement de dnd5e (choix d'aptitudes, compétences de classe…) tourne dans le navigateur : il n'est pas exécuté. `add_from_compendium` remplit les PV de classe et les sauvegardes maîtrisées ; le reste s'ajoute explicitement.
+- L'assistant **graphique** de dnd5e tourne dans le navigateur et n'est pas lancé tel quel par le serveur. L'outil `advance` rejoue néanmoins côté serveur les avancements connus ; les choix non sauvegardés doivent toujours être fournis. `add_from_compendium` n'est pas équivalent à une montée de niveau complète.
 - Contenus **Plutonium** des compendiums du monde (classes, sous-classes, historiques, dons) : Plutonium ne leur donne pas d'avancements dnd5e. `advance` les reconstruit à la volée (rien n'est écrit dans les compendiums, identifiants déterministes) : pour une classe, aptitudes par niveau (compendiums du monde, drapeaux `flags.plutonium` page `classFeature` et hash `<aptitude>_<classe>_<source>_<niveau>_<source>`, aptitudes de sous-classe exclues), amélioration de caractéristique / don aux sections « Level N: Ability Score Improvement » ou « … or another feat of your choice » du texte 5etools, sous-classe au niveau de la section « <Classe> Subclass », don au choix (« gain a X feat of your choice ») si cette catégorie existe dans dnd5e ; maîtrises d'armures/armes/outils et équipement de départ repris de la classe officielle de même `system.identifier` et même version de règles. **Repli** : si aucune aptitude n'est reconstructible, `advance` utilise la classe officielle de même identifiant (ex. `fighter` → `dnd5e.classes24`) et l'indique dans `avertissements`. Une classe Plutonium déjà sur une fiche est complétée au `advance` suivant. Limites : les aptitudes répétées (ex. Indomptable aux niveaux 9, 13, 17) ne sont accordées qu'une fois, comme dans le compendium ; les choix propres à une aptitude (manifestations, maîtrise des armes…) ne sont pas reconstruits.
 - Les valeurs dérivées (CA, emplacements max…) sont recalculées côté serveur : bonnes pour les cas courants, approximatives pour les règles exotiques ou les effets actifs.
 - Le serveur utilise le protocole interne de Foundry (comme un navigateur), pas une API officielle : une mise à jour majeure de Foundry peut nécessiter une adaptation.

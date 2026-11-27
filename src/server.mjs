@@ -13,6 +13,7 @@ import { FoundrySession } from "./foundry.mjs";
 import { chatTimestamp, compareChatMessages } from "./chat-history.mjs";
 import { createFoundryOAuth, oauthEncryptionKey } from "./oauth.mjs";
 import { plan as advPlan, apply as advApply, fetchUuid, preferOfficialClass, retrofitClass } from "./advancement.mjs";
+import { advancementBlueprint, compareAdvancementSheets } from "./advancement-replay.mjs";
 import { planClassSpells, applyClassSpells } from "./spells.mjs";
 import { ensureCastSpells } from "./cast.mjs";
 import { GM_TOOLS, GM_ROLE, handleGm } from "./gm.mjs";
@@ -217,8 +218,13 @@ export const TOOL_DEFINITIONS = [
       source: { type: "object", description: "Objet à importer : {pack, id}, {pack, name} ou {uuid} (y compris objets du monde \"Item.<id>\")", properties: { pack: { type: "string" }, id: { type: "string" }, name: { type: "string" }, uuid: { type: "string" } } },
       item: { type: "string", description: "Classe déjà présente sur l'acteur (nom ou _id) à faire monter" },
       level: { type: "number", description: "Niveau de classe visé (défaut : niveau actuel + 1, ou 1 pour un import)" },
+      replay_from: { type: "string", description: "Acteur source (ID de préférence) : rejoue ses choix d'avancement enregistrés sur la même classe officielle ; pour un acteur vierge, restaure aussi les caractéristiques avant la montée de niveau. Les choix absents restent demandés." },
       choices: { type: "object" }, hp: { type: "string", enum: ["avg", "max"], default: "avg" },
       spells: { type: "string", enum: ["none", "all"], default: "none", description: "'all' : ajoute tous les sorts de la classe accessibles (liste construite depuis tous les compendiums installés) et demande sorts mineurs (choices['spells:cantrips']) et sorts préparés (choices['spells:prepared'])" } } } },
+  { name: "advancement_blueprint", description: "Inspecte un acteur à classe unique et renvoie sa classe/source, ses choix d'avancement réellement enregistrés et ses caractéristiques avant progression de classe, sans rien modifier. Les équipements et sorts non enregistrés comme choix restent à contrôler.",
+    inputSchema: { type: "object", required: ["actor"], properties: { actor: { type: "string" } } } },
+  { name: "compare_actors", description: "Compare deux fiches calculées (niveaux, PV, caractéristiques, sorts, inventaire, aptitudes, ressources) sans modifier les acteurs. Une comparaison structurelle ne remplace pas l'audit des règles.",
+    inputSchema: { type: "object", required: ["source", "target"], properties: { source: { type: "string" }, target: { type: "string" } } } },
   { name: "audit_translation", description: "Audit de traduction FR du monde et/ou des compendiums : champs restés en anglais (nom, description, activités, pages de journal, faces de cartes, résultats de tables, effets, objets des acteurs) avec UUID, champ, extrait, statut (anglais / mixte / inconnu ; « traduit » = traduction Babele) et correctif disponible (localize_actor). mode=coverage : part des entrées traduites par compendium / type de document. Heuristique mots-outils FR/EN + noms connus des compendiums traduits. Les compendiums complets sont lourds (≈ 40 s pour tout) : préférer 'packs'.",
     inputSchema: { type: "object", properties: {
       scope: { type: "string", enum: ["world", "packs", "all"], default: "world" },
@@ -502,6 +508,12 @@ async function runTool(session, params) {
         }
 
         case "actor_sheet": return out(sheet(await findActor(fs, a.actor)));
+        case "advancement_blueprint": return out(advancementBlueprint(await findActor(fs, a.actor)));
+        case "compare_actors": {
+          const source = await findActor(fs, a.source), target = await findActor(fs, a.target);
+          return out({ source: { id: source._id, name: source.name }, target: { id: target._id, name: target.name },
+            ...compareAdvancementSheets(sheet(source), sheet(target)) });
+        }
         case "roll": {
           const actor = a.actor ? await findActor(fs, a.actor) : null;
           const r = rollFormula(a.formula, { flavor: a.flavor });
@@ -823,6 +835,11 @@ async function runTool(session, params) {
 
         case "advance": {
           let actor = await findActor(fs, a.actor);
+          const blueprint = a.replay_from ? advancementBlueprint(await findActor(fs, a.replay_from)) : null;
+          if (blueprint?.actor_id === actor._id) throw new Error(message(
+            "Replay source and target must be different actors.", "L'acteur source et la cible du rejeu doivent être différents."));
+          const inputSource = a.source || (blueprint && !a.item ? { uuid: blueprint.class_source } : null);
+          const effectiveChoices = { ...(blueprint?.choices || {}), ...(a.choices || {}) };
           // fiches créées avant que le MCP écrive advancementRoot : on le complète en remontant la chaîne d'origines
           {
             const byId = new Map((actor.items || []).map(i => [i._id, i]));
@@ -841,14 +858,14 @@ async function runTool(session, params) {
           }
           const classes = (actor.items || []).filter(i => i.type === "class");
           let root, isNew = false;
-          if (a.source?.uuid) {
-            root = await fetchUuid(fs, a.source.uuid); root.__src = a.source.uuid; isNew = true;
-          } else if (a.source) {
-            const pack = (await packsOf(fs)).find(p => p.id === a.source.pack);
-            if (!pack) throw new Error(message(`Unknown compendium: ${a.source.pack}`, `Compendium inconnu : ${a.source.pack}`));
-            let id = a.source.id;
-            if (!id && a.source.name) { const q = norm(a.source.name); id = (await packIndex(fs, pack)).find(x => norm(x.name) === q || norm(x.name_fr) === q)?._id; }
-            if (!id) throw new Error(message(`Not found in ${pack.id}: ${a.source.name}`, `Introuvable dans ${pack.id} : ${a.source.name}`));
+          if (inputSource?.uuid) {
+            root = await fetchUuid(fs, inputSource.uuid); root.__src = inputSource.uuid; isNew = true;
+          } else if (inputSource) {
+            const pack = (await packsOf(fs)).find(p => p.id === inputSource.pack);
+            if (!pack) throw new Error(message(`Unknown compendium: ${inputSource.pack}`, `Compendium inconnu : ${inputSource.pack}`));
+            let id = inputSource.id;
+            if (!id && inputSource.name) { const q = norm(inputSource.name); id = (await packIndex(fs, pack)).find(x => norm(x.name) === q || norm(x.name_fr) === q)?._id; }
+            if (!id) throw new Error(message(`Not found in ${pack.id}: ${inputSource.name}`, `Introuvable dans ${pack.id} : ${inputSource.name}`));
             root = await fetchUuid(fs, `Compendium.${pack.id}.${pack.type}.${id}`);
             root.__src = `Compendium.${pack.id}.${pack.type}.${id}`; isNew = true;
           } else if (a.item) root = findItem(actor, a.item);
@@ -859,6 +876,16 @@ async function runTool(session, params) {
             const r = await preferOfficialClass(fs, root, root.__src);
             if (r.note) notes.push(r.note);
             if (r.root !== root) { root = r.root; root.__src = r.src; }
+          }
+          if (blueprint) {
+            const selected = isNew ? root.__src : (root._stats?.compendiumSource || root.flags?.dnd5e?.sourceId);
+            if (root.type !== "class" || selected !== blueprint.class_source)
+              throw new Error(message(
+                `Replay requires the original class source ${blueprint.class_source}; selected ${selected || "unknown"}. Create an empty actor and use replay_from without a different class.`,
+                `Le rejeu exige la classe d'origine ${blueprint.class_source} ; source choisie : ${selected || "inconnue"}. Crée un acteur vierge et utilise replay_from sans autre classe.`));
+            if (!a.hp && !blueprint.hp_mode && blueprint.level > 1)
+              throw new Error(message("Source HP progression is incomplete or mixed: specify hp=avg|max.", "Progression de PV absente ou mixte : précise hp=avg|max."));
+            notes.push(...blueprint.warnings);
           }
           // classe Plutonium déjà sur la fiche, importée sans ses aptitudes : avancements reconstruits à enregistrer
           let retro = null;
@@ -873,21 +900,21 @@ async function runTool(session, params) {
           const current = isNew ? 0 : Number(root.system?.levels) || 0;
           const charLevel = classes.reduce((t, c) => t + (Number(c.system?.levels) || 0), 0);
           // espèce / historique / don : paliers jusqu'au niveau de personnage actuel (min. 1)
-          const target = isClass ? (a.level ?? current + 1) : Math.max(1, charLevel);
+          const target = isClass ? (a.level ?? blueprint?.level ?? current + 1) : Math.max(1, charLevel);
           // le paramètre spells n'est pas exposé par tous les clients : des choix « spells:… » valent spells:"all"
-          const wantSpells = a.spells === "all" || Object.keys(a.choices || {}).some(k => k.startsWith("spells:"));
+          const wantSpells = a.spells === "all" || Object.keys(effectiveChoices).some(k => k.startsWith("spells:"));
           const onlySpells = isClass && target <= current && wantSpells;
           if (isClass && target <= current && !onlySpells) return out(message(`${root.name} is already level ${current}`, `${root.name} est déjà niveau ${current}`));
           const isFirstClass = isClass && (isNew ? classes.length === 0 : (actor.system?.details?.originalClass ? actor.system.details.originalClass === root._id : classes[0]?._id === root._id));
           const from = isClass ? current + 1 : 0;
           // inclut les avancements de la sous-classe existante
           const { steps, pending, warnings } = onlySpells ? { steps: [], pending: [], warnings: [] }
-            : await advPlan(fs, actor, root, { fromLevel: from, toLevel: target, choices: a.choices || {}, isFirstClass });
+            : await advPlan(fs, actor, root, { fromLevel: from, toLevel: target, choices: effectiveChoices, isFirstClass });
           warnings.unshift(...notes);
           // niveaux déjà acquis d'une classe complétée : aptitudes et maîtrises reconstruites qui manquent sur la fiche
           if (retro && current > 0) {
             const past = { ...root, system: { ...root.system, advancement: retro.added.filter(x => ["ItemGrant", "Trait"].includes(x.type)) } };
-            const pp = await advPlan(fs, actor, past, { fromLevel: 1, toLevel: current, choices: a.choices || {}, isFirstClass });
+            const pp = await advPlan(fs, actor, past, { fromLevel: 1, toLevel: current, choices: effectiveChoices, isFirstClass });
             const owned = new Set((actor.items || []).flatMap(i => [i._stats?.compendiumSource, i.flags?.dnd5e?.sourceId]).filter(Boolean));
             for (const s of pp.steps) if (s.kind === "grant") s.docs = s.docs.filter(d => !owned.has(d.uuid));
             steps.unshift(...pp.steps.filter(s => s.kind !== "grant" || s.docs.length));
@@ -910,14 +937,21 @@ async function runTool(session, params) {
             const leveled = (actor.items || []).filter(i => i._id !== root._id && origins.has(i._id)
               && Object.values(i.system?.advancement || {}).some(x => Number(x.level) > 0
                 || (x.type === "ItemChoice" && Object.entries(x.configuration?.choices || {}).some(([lv, v]) => Number(lv) > 0 && Number(v?.count ?? v) > 0))));
-            for (const it of leveled) { const p2 = await advPlan(fs, actor, it, { fromLevel: from, toLevel: target, choices: a.choices || {}, isFirstClass }); steps.push(...p2.steps); pending.push(...p2.pending); warnings.push(...p2.warnings); }
+            for (const it of leveled) { const p2 = await advPlan(fs, actor, it, { fromLevel: from, toLevel: target, choices: effectiveChoices, isFirstClass }); steps.push(...p2.steps); pending.push(...p2.pending); warnings.push(...p2.warnings); }
           }
           let spellPlan = null;
           if (wantSpells && isClass && root.system?.spellcasting?.progression && root.system.spellcasting.progression !== "none") {
-            spellPlan = await planClassSpells(fs, actor, root, Math.max(target, current), a.choices || {});
+            spellPlan = await planClassSpells(fs, actor, root, Math.max(target, current), effectiveChoices);
             pending.push(...spellPlan.pending);
           }
-          if (pending.length) return out({ choix_requis: pending, avertissements: warnings.length ? warnings : undefined, rappel: message("Call 'advance' again with the same parameters + choices { id: value }. Nothing has been applied yet.", "Rappelle 'advance' avec les mêmes paramètres + choices { id: valeur }. Rien n'a encore été appliqué.") });
+          if (pending.length) return out({ choix_requis: pending, rejeu_depuis: blueprint?.actor_id, avertissements: warnings.length ? warnings : undefined, rappel: message("Call 'advance' again with the same parameters + choices { id: value }. Nothing has been applied yet.", "Rappelle 'advance' avec les mêmes paramètres + choices { id: valeur }. Rien n'a encore été appliqué.") });
+          // A brand-new actor needs the source's pre-class abilities, not its
+          // level-12 final scores. Never overwrite an actor containing items.
+          if (blueprint && isNew && isFirstClass && !(actor.items || []).length) {
+            const base = Object.fromEntries(Object.entries(blueprint.base_abilities).map(([k, v]) => [`system.abilities.${k}.value`, v]));
+            await fs.doc("update", "Actor", { updates: [{ _id: actor._id, ...base }], diff: true, modifiedTime: Date.now() });
+            actor = await findActor(fs, actor._id);
+          }
           const hadClass = (actor.items || []).some(i => i.type === "class") || (await fs.doc("get", "Item", { parentUuid: `Actor.${actor._id}`, query: { type: "class" } })).some(i => i.type === "class");
           const slotsBefore = hadClass ? slotMax(actor) : {};
           const hpBefore = hadClass ? sheet(actor).pv : { max: 0 };   // PV avant (0 sans classe) : les PV gagnés s'ajoutent aux PV courants
@@ -938,7 +972,7 @@ async function runTool(session, params) {
             const advDefs = Object.fromEntries((retro?.added || []).map(x => [`system.advancement.${x._id}`, x]));
             await fs.doc("update", "Item", { parentUuid: `Actor.${actor._id}`, updates: [{ _id: root._id, "system.levels": target, ...advDefs }], modifiedTime: Date.now() });
           }
-          const log = await advApply(fs, actor, root._id, steps, { hpMode: a.hp || "avg", isFirstClass });
+          const log = await advApply(fs, actor, root._id, steps, { hpMode: a.hp || blueprint?.hp_mode || "avg", isFirstClass });
           if (spellPlan) log.push(message("Spells — ", "Sorts — ") + await applyClassSpells(fs, await findActor(fs, actor._id), spellPlan.step, root._id));
           const castNew = await ensureCastSpells(fs, actor._id);   // sorts des activités « Lancer un sort » (comme Foundry)
           if (castNew.length) log.push(message("Feature spells: ", "Sorts d'aptitude : ") + castNew.join(", "));
@@ -961,7 +995,7 @@ async function runTool(session, params) {
             await fs.doc("update", "Actor", { updates: [{ _id: actor._id, ...upd }], diff: true, modifiedTime: Date.now() });
             after = sheet(await findActor(fs, actor._id));
           }
-          return out({ applique: log, avertissements: warnings.length ? warnings : undefined, niveau: after.niveau, pv_max: after.pv.max, caracs: after.caracs,
+          return out({ applique: log, rejeu_depuis: blueprint?.actor_id, avertissements: warnings.length ? warnings : undefined, niveau: after.niveau, pv_max: after.pv.max, caracs: after.caracs,
             rappel_sorts: isClass && root.system?.spellcasting?.progression && root.system.spellcasting.progression !== "none" ? message("Select prepared/known spells next (search_compendium + add_from_compendium), as in Foundry.", "Les sorts préparés/connus se choisissent ensuite (search_compendium + add_from_compendium), comme dans Foundry.") : undefined });
         }
         default:
