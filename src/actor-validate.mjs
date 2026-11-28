@@ -306,6 +306,9 @@ export async function validateActor2024(fs, actor) {
         if (source.status !== "ok")
           check("unverified", "spell_source_index_unavailable",
             `${spell.name}: its exact official spell source cannot be checked in the installed compendium index.`, spell._id, [src]);
+        else if (source.entry.type == null || source.entry.type === "")
+          check("unverified", "spell_source_type_unavailable",
+            `${spell.name}: the official source index does not expose a document type.`, spell._id, [src]);
         else if (source.entry.type !== "spell")
           check("error", "spell_source_type_mismatch",
             `${spell.name}: the recorded official source is not a spell.`, spell._id, [src]);
@@ -382,8 +385,8 @@ export async function validateActor2024(fs, actor) {
     if (source.status !== "ok")
       check("unverified", "granted_spell_source_index_unavailable",
         `${spell.name}: the exact official level of this permanently granted spell cannot be read from its compendium index.`, spell._id, [src]);
-    else if (source.entry.type == null)
-      check("unverified", "granted_spell_source_level_unavailable",
+    else if (source.entry.type == null || source.entry.type === "")
+      check("unverified", "granted_spell_source_type_unavailable",
         `${spell.name}: the official index does not expose this granted item's document type.`, spell._id, [src]);
     else if (source.entry.type !== "spell")
       check("error", "granted_spell_source_type_mismatch",
