@@ -537,6 +537,37 @@ test("a spell index lacking a usable 2024 level stays unverified, never a false 
   assert.deepEqual(f.writes, []);
 });
 
+test("a missing ordinary spell index type is unverified, never a proven type mismatch", async () => {
+  const f = fixture();
+  const oldDoc = f.fs.doc.bind(f.fs);
+  f.fs.doc = async (action, type, opts = {}) => {
+    const docs = await oldDoc(action, type, opts);
+    return action === "get" && type === "Item" && opts.pack === "dnd5e.spells24" && opts.index ?
+      docs.map(doc => doc._id === id("missile") ? { ...doc, type: undefined } : doc) : docs;
+  };
+  const report = await audit(f.fs);
+  assert.equal(report.status, "incomplete", JSON.stringify(report.diagnostics));
+  assert.ok(report.diagnostics.some(d => d.code === "spell_source_type_unavailable" &&
+    d.severity === "unverified" && d.subject === id("ownedmissile")));
+  assert.ok(!report.diagnostics.some(d => d.code === "spell_source_type_mismatch"));
+  assert.deepEqual(f.writes, []);
+});
+
+test("an explicitly non-spell official index entry remains a proven mismatch", async () => {
+  const f = fixture();
+  const oldDoc = f.fs.doc.bind(f.fs);
+  f.fs.doc = async (action, type, opts = {}) => {
+    const docs = await oldDoc(action, type, opts);
+    return action === "get" && type === "Item" && opts.pack === "dnd5e.spells24" && opts.index ?
+      docs.map(doc => doc._id === id("missile") ? { ...doc, type: "feat" } : doc) : docs;
+  };
+  const report = await audit(f.fs);
+  assert.equal(report.status, "issues", JSON.stringify(report.diagnostics));
+  assert.ok(report.diagnostics.some(d => d.code === "spell_source_type_mismatch" &&
+    d.severity === "error" && d.subject === id("ownedmissile")));
+  assert.deepEqual(f.writes, []);
+});
+
 test("an owned cantrip cannot use a null level as if it were zero", async () => {
   const f = fixture();
   const acid = f.actor.items.find(i => i._id === id("ownedacid"));
@@ -772,7 +803,7 @@ test("an incomplete granted-spell index cannot prove a document-type contradicti
   };
   const report = await audit(f.fs);
   assert.equal(report.status, "incomplete", JSON.stringify(report.diagnostics));
-  assert.ok(report.diagnostics.some(d => d.code === "granted_spell_source_level_unavailable" &&
+  assert.ok(report.diagnostics.some(d => d.code === "granted_spell_source_type_unavailable" &&
     d.severity === "unverified"));
   assert.ok(!report.diagnostics.some(d => d.code === "granted_spell_source_type_mismatch"));
   assert.deepEqual(f.writes, []);
